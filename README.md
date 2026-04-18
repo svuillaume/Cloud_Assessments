@@ -21,7 +21,7 @@ Where \<keyfile> is the name of the api key file you downloaded.
 For example on an ARM based Mac download the ARM binary file from the "Releases" section of this page (lw_report_gen_mac_arm
 ) and execute it:
 
-`./lw_report_gen_mac_arm --gui --api-key-file example.json`
+`lw_report_gen.py --gui --api-key-file example.json`
 
 On Mac you may get an error regarding it being an unsigned application. If so you can read the following article on how to run the binary:
 
@@ -33,24 +33,8 @@ This tool leverages the Lacework FortiCNAPP API to create HTML and PDF reports.
 
 ## Downloading and Setting up the Tool
 
+
 ### Option 1:
-
-Use the compiled binary on the [releases page](https://github.com/lacework/extensible-reporting/releases/latest). This is the easiest option as you do not need to install python3 or any python libraries. To execute this binary:
-- Download the corresponding binary for your computer's OS from the [releases page](https://github.com/lacework/extensible-reporting/releases/latest)
-  - If running on MacOS or Linux you will need to:
-      1. Launch a terminal and execute `chmod +x lw_report_gen_mac` (replace "lw_report_gen_mac" with the name of the binary you downloaded)
-      2. Execute the binary FROM THE TERMINAL with the -h flag to review the command line options. You will need to provide API credentials. Read the section below on how to specify credentials, or use download a FortiCNAPP JSON credentials file and specify it:
-        `./lw_report_gen_mac --gui --api-key-file <instancename>.json`
-      3. On Mac, If prompted to trust this code to execute in your terminal, navigate to `System Preferences -> Security & Privacy -> Privacy (tab)` and scroll to `Developer Tools` and ensure that `Terminal` is checked. You will then need to relaunch your Terminal session
-
- 
-- If running on Windows you will need to:
-    1. Execute the binary FROM THE TERMINAL with the -h flag to review the command line options. You will need to provide API credentials. Read the section below on how to specify credentials, or use download a FortiCNAPP JSON credentials file and specify it:
-        `lw_report_gen.exe  --gui --api-key-file <instancename>.json`
- 
- The report will be generated in the same directory you execute the binary with a name of `CSA_Report_customer_date.html`
-
-### Option 2:
 
 This option involves running the `lw_report_gen.py` command directly in this repo but has a few prerequisites.
 
@@ -134,12 +118,12 @@ To use these flags you must specify a number of days and hours prior to executio
 
 For example to specify a 14 day window for alerts you would specify:
 ```
-./lw_report_gen_mac --author your_name --customer your_customer --alerts-start-time 14:0
+lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0
 ```
 
 Whereas to specify a 7 day window for alerts that starts 2 weeks in the past you would specify:
 ```
-./lw_report_gen_mac --author your_name --customer your_customer --alerts-start-time 14:0 --alerts-end-time 7:0
+lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0 --alerts-end-time 7:0
 ```
 ## Cached Data
 
