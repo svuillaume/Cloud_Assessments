@@ -1,7 +1,27 @@
 # Extensible Report Generator v.2
 
-Do NOT Use compiled binary on the releases page at https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2
-All the scripts havent been compiled yet - Only use Python Script until next Extensible-Reporting Release
+# Important Notice — Extensible Report Generator v2
+
+## Do Not Use the Compiled Binary (Release v2.0.2)
+
+Please **do not use the compiled binary** available on the Releases page:
+
+https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2
+
+At this time, **not all scripts have been compiled and included** in the binary package.
+
+## Recommended Usage
+
+Until the next **Extensible-Reporting** release is published:
+
+- Use the **Python script version only**
+- Run directly from source
+- Avoid relying on the current compiled executable
+
+## Summary
+
+**Temporary Guidance:**  
+Use Python scripts only until the next official release resolves binary packaging completeness.
 
 ## Description
 
