@@ -1,5 +1,8 @@
 # Extensible Report Generator v.2
 
+Do NOT Use compiled binary on the releases page at https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2
+All the scripts havent been compiled yet - Only use Python Script until next Extensible-Reporting Release
+
 ## Description
 
 A project to abstract the gathering, transformations, and rendering of datasets from FortiCNAPP into auto-generated reports.
