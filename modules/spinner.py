@@ -3,47 +3,14 @@ import sys
 import shutil
 import threading
 import time
-import random
 import logging
 import logzero
 
 _FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
-_STATS = [
-    # FortiCNAPP product insights
-    'FortiCNAPP is agentless — zero software to deploy on workloads',
-    'FortiCNAPP Risk Score weights CVSS, blast radius & live exploit code',
-    'FortiCNAPP scans AWS, Azure & GCP from a single unified console',
-    'FortiCNAPP CIEM shows exactly which permissions went unused in 90 days',
-    'FortiCNAPP detects secrets in running containers, configs & IaC',
-    'FortiCNAPP maps every finding to CIS, NIST, PCI-DSS & SOC2',
-    'FortiCNAPP composite alerts correlate multiple signals into one finding',
-    'FortiCNAPP baselines normal behaviour across 90 days of cloud activity',
-    'FortiCNAPP scans IaC templates pre-deployment — fix before it ships',
-    'FortiCNAPP CIEM can generate right-sized permission recommendations',
-    'FortiCNAPP Risk Score ≥ 9 = top 5% most dangerous CVEs in your env',
-    'FortiCNAPP integrates with Jira, Slack, and SIEM/SOAR platforms',
-    'FortiCNAPP detects lateral movement paths across cloud accounts',
-    'FortiCNAPP agentless scanning completes in minutes, not hours',
-    'FortiCNAPP correlates compliance, vulns & identity in one risk view',
-    'FortiCNAPP behavioral analytics detect anomalies no signature can catch',
-    'FortiCNAPP shows the blast radius of every misconfiguration',
-    'FortiCNAPP secret scanning covers SSH keys, API tokens & cloud creds',
-    'FortiCNAPP CSPM tracks drift from secure baseline in real time',
-    'FortiCNAPP unifies CSPM + CWPP + CIEM + secrets in one platform',
-    'FortiCNAPP is private by design — all scanning runs in your cloud env',
-    # Cloud security industry facts
-    '<1% of cloud permissions are actually used  — Gartner',
-    'Avg time to exploit a disclosed CVE: 12 days',
-    'MFA blocks 99.9% of automated account attacks  — Microsoft',
-    '194 days avg to detect a breach  — IBM',
-    'Cloud misconfiguration: #1 cloud breach vector',
-    '80%+ of cloud workloads are over-privileged',
-    '60% of breaches involve unpatched vulnerabilities',
-    'Containers running as root: 60% of deployments  — Sysdig',
-    'Shadow IT: 10× more SaaS than IT knows  — Gartner',
-    '45% of breaches now involve cloud assets  — Verizon',
-]
+_BAR_FILL  = '█'
+_BAR_EMPTY = '░'
+_BAR_WIDTH = 24
 
 
 def _get_console_handler():
@@ -63,25 +30,39 @@ class Spinner:
         self._devnull = None
         self._console_handler = None
         self._saved_handler_level = None
+        # progress state — updated from the main thread
+        self._pct  = 0
+        self._step = message
+        self._lock = threading.Lock()
+
+    def update(self, pct: int, step: str):
+        """Call from main thread to advance the progress bar."""
+        with self._lock:
+            self._pct  = max(0, min(100, pct))
+            self._step = step
+
+    def _render_bar(self, pct):
+        filled = int(_BAR_WIDTH * pct / 100)
+        bar = _BAR_FILL * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+        return f'[{bar}] {pct:3d}%'
 
     def _run(self):
         i = 0
-        tick = 0
-        acronym = random.choice(_STATS)
         while not self._stop.is_set():
+            with self._lock:
+                pct  = self._pct
+                step = self._step
+
             frame = _FRAMES[i % len(_FRAMES)]
-            cols = shutil.get_terminal_size((120, 20)).columns
-            line = f'  {frame}  {self.message}  ·  {acronym}   '
+            bar   = self._render_bar(pct)
+            cols  = shutil.get_terminal_size((120, 20)).columns
+            line  = f'  {frame}  {bar}  {step}   '
             if len(line) > cols:
                 line = line[:cols - 3] + '   '
             sys.__stdout__.write(f'\r{line}')
             sys.__stdout__.flush()
             time.sleep(0.08)
             i += 1
-            tick += 1
-            if tick >= 40:
-                acronym = random.choice(_STATS)
-                tick = 0
 
     def start(self):
         self._devnull = open(os.devnull, 'w')
@@ -108,7 +89,8 @@ class Spinner:
         if self._devnull:
             self._devnull.close()
 
-        mark = '✓' if success else '✗'
+        mark   = '✓' if success else '✗'
+        bar    = self._render_bar(100 if success else self._pct)
         suffix = 'done!' if success else 'failed — check lw_report_gen.log for details.'
-        sys.__stdout__.write(f'\r  {mark}  {self.message} — {suffix}                    \n')
+        sys.__stdout__.write(f'\r  {mark}  {bar}  {suffix}                    \n')
         sys.__stdout__.flush()

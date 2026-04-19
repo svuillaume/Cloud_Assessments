@@ -123,7 +123,8 @@ def main():
                                                 alerts_end_time=pre_processed_args['alerts_end_time'],
                                                 ciem_threshold=args.ciem_threshold,
                                                 compliance_framework=args.compliance_framework,
-                                                custom_logo=custom_logo
+                                                custom_logo=custom_logo,
+                                                progress_cb=spinner.update,
                                                 )
             elif args.report_format == "PDF":
                 report_generator = pre_processed_args['report_to_run'](basedir, use_cache=args.cache_data, api_key_file=pre_processed_args['api_key_file'], graph_scale=1.4)
@@ -138,6 +139,7 @@ def main():
                                                 custom_logo=custom_logo,
                                                 pagesize='a2',
                                                 pdf=True,
+                                                progress_cb=spinner.update,
                                                 )
         except Exception as e:
             spinner.stop(success=False)
