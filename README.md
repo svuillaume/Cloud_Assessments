@@ -1,63 +1,53 @@
-# FortiCNAPP Rapid Cloud Assessment 
+# FortiCNAPP Rapid Cloud Assessment Tool
 
-## Important Notice 
+> **Automated cloud security assessment reports powered by the FortiCNAPP API**
+>
+> Copyright 2025, Fortinet Inc. — Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
 
-### Do Not Use the Compiled Binary (Release v2.0.2)
+---
 
-Please **do not use the compiled binary** available on the Releases page:
+## ⚠️ Important Notice — Binary Release
 
-https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2
+**Do not use the compiled binary (Release v2.0.2).**
 
-At this time, **not all scripts have been compiled and included** in the binary package.
+The binary package available at the [Releases page](https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2) is incomplete — not all report scripts are compiled and included.
 
-### Recommended Usage
+**Until a new release is published, always run from source using the Python script.**
 
-Until the next **Extensible-Reporting** release is published:
+---
 
-- Use the **Python script version only**
-- Run directly from source
-- Avoid relying on the current compiled executable
+## Overview
 
-## Description
+This tool is a FortiCNAPP-enhanced fork of the [Lacework Extensible Reporting](https://github.com/lacework/extensible-reporting) project. It uses the FortiCNAPP API to automatically generate **Cloud Security Assessment (CSA)** reports in HTML and PDF formats — ideal for PreSales engagements, internal audits, and compliance reviews.
 
-A updated FortiCNAPP project forked from Lacework Extensible Report to generate automated Rapid Cloud Assessment Reports 
+**What it produces:**
+- Critical and high vulnerability findings across cloud workloads
+- CSPM misconfiguration findings ranked by severity
+- CIEM insights — over-privileged identities and unused permissions
+- Alert trend analysis using FortiCNAPP composite alert data
 
-## Quickstart
+---
 
-1. Ensure you have some method of authenticating against your FortiCNAPP API. The easiest
-    way is to download an API key file from your FortiCNAPP UI under Settings ->  API Keys. 
+## Prerequisites
 
-2. Run the python script using the following flags: 
+- Python 3.9 or later
+- A valid [FortiCNAPP API key](#authentication)
+- At least one cloud account onboarded in your FortiCNAPP instance
 
-`--gui --api-key-file <keyfile>`
+---
 
---gui is optional
+## Installation
 
-Where \<keyfile> is the name of the api key file you downloaded. 
+### Option 1: Virtual Environment (Recommended)
 
-For example on an ARM based Mac download the ARM binary file from the "Releases" section of this page (lw_report_gen_mac_arm
-) and execute it:
-
-`lw_report_gen.py --gui --api-key-file example.json`
-
-
-## Usage for CSA Reports
-
-This tool leverages the FortiCNAPP API to create HTML and PDF reports. 
-
-## Downloading and Setting up the Tool
-
-
-### Option 1: Run from source using a virtual environment (recommended)
-
-This option runs `lw_report_gen.py` directly from the cloned repo inside an isolated Python virtual environment so dependencies don't pollute your system Python.
-
-**Prerequisites:** `python3` (3.9+) available on your PATH.
-
-#### 1 — Create and activate the virtual environment
+Running inside a virtual environment keeps dependencies isolated from your system Python.
 
 ```bash
-# Create the venv (only needed once)
+# Clone the repository
+git clone https://github.com/lacework/extensible-reporting
+cd extensible-reporting
+
+# Create and activate the virtual environment (one-time setup)
 python3 -m venv venv
 
 # Activate — macOS / Linux
@@ -65,140 +55,252 @@ source venv/bin/activate
 
 # Activate — Windows (PowerShell)
 .\venv\Scripts\Activate.ps1
-```
+# If activation is blocked, run first:
+# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-You should see `(venv)` in your shell prompt once active.
-
-#### 2 — Install dependencies
-
-```bash
+# Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### 3 — Run the tool
+You should see `(venv)` in your shell prompt once active.
 
-GUI mode (recommended for first use):
-```bash
-python lw_report_gen.py --gui --api-key-file <instancename>.json
-```
-
-CLI mode (headless / automation):
-```bash
-python lw_report_gen.py \
-  --author "Your Name" \
-  --customer "Acme Corp" \
-  --report CSA_Detailed \
-  --report-format HTML \
-  --api-key-file <instancename>.json
-```
-
-#### 4 — Deactivate when done
+To deactivate the environment when you are done:
 
 ```bash
 deactivate
 ```
 
-> **Tip:** use `--cache-data` on subsequent runs to skip live API calls and reuse cached responses during development.
+---
 
-## Command Line Mode
+## Authentication
 
-If you do not want to run this tool in gui mode omit the `--gui' command line flag. You will likely need to specify additional flags
-such as specifying the report format (pdf or html) `--report-format PDF`.
+You need a valid FortiCNAPP API key before running the tool. To create and download one, go to **Settings → Configuration → API Keys** in your FortiCNAPP instance.
 
-Run the tool with the `-h` flag to see a full list of options. 
+Full API documentation: https://docs.fortinet.com/document/lacework-forticnapp/latest/api-reference/863111/about-the-lacework-forticnapp-api
 
-## Specifying a Lacework FortiCNAPP instance and credentials:
+Three authentication methods are supported:
 
-You must have a valid Lacework FortiCNAPP API key for your Lacework FortiCNAPP instance to run this tool. You can read about creating and downloading 
-an API key here: 
+### Method 1: JSON API Key File (Recommended)
 
-https://docs.fortinet.com/document/lacework-forticnapp/latest/api-reference/863111/about-the-lacework-forticnapp-api
+Download the API key JSON file from your FortiCNAPP instance and pass it directly:
 
-Once you have created an API key There are three ways to specify the Lacework FortiCNAPP API instance/credentials used when generating a report:
+```bash
+python lw_report_gen.py --api-key-file <instancename>.json
+```
 
-1. Install and configure the Lacework FortiCNAPP CLI to setup a credentials file which this tool will read.
-2. Specify a JSON file containing your API instance/credentials. 
-3. Specify your credentials via variables.
+### Method 2: FortiCNAPP CLI Profile
 
-### Method 1: Lacework FortiCNAPP CLI
-Though it is not required, you may wish to install and configure the Lacework FortiCNAPP CLI to create a .lacework.toml file containing your API credentials. Instructions to do so can be found here: https://docs.fortinet.com/document/lacework-forticnapp/latest/cli-reference/68020/get-started-with-the-lacework-forticnapp-cli
+If you have the FortiCNAPP CLI installed and configured (`~/.lacework.toml`), the tool reads credentials from it automatically — no additional flags required.
 
-### Method 2: JSON File
-
-You may download an API key JSON file from your Lacework FortiCNAPP instance (Settings > Configuration > API keys) and specify it using the ````"--api-key-file"```` command line
-parameter. 
+CLI setup guide: https://docs.fortinet.com/document/lacework-forticnapp/latest/cli-reference/68020/get-started-with-the-lacework-forticnapp-cli
 
 ### Method 3: Environment Variables
 
-If you wish to configure the Lacework FortiCNAPP Client instance using environment variables, this tool honors the same
-variables used by the Lacework FortiCNAPP CLI. The `account`, `subaccount`, `api_key`, `api_secret`, and `profile` parameters
-can all be configured as specified below.
+The tool honours the same environment variables as the FortiCNAPP CLI:
 
-| Environment Variable | Description                                                          | Required |
-| -------------------- | -------------------------------------------------------------------- | :------: |
-| `LW_PROFILE`         | Lacework CLI profile to use (configured at ~/.lacework.toml)         |    N     |
-| `LW_ACCOUNT`         | Lacework account/organization domain (i.e. `<account>`.lacework.net) |    Y     |
-| `LW_SUBACCOUNT`      | Lacework sub-account                                                 |    N     |
-| `LW_API_KEY`         | Lacework API Access Key                                              |    Y     |
-| `LW_API_SECRET`      | Lacework API Access Secret                                           |    Y     |
+| Variable | Description | Required |
+|---|---|:---:|
+| `LW_ACCOUNT` | Account domain, e.g. `mycompany.lacework.net` — domain only, no `https://` | ✅ |
+| `LW_API_KEY` | API access key | ✅ |
+| `LW_API_SECRET` | API access secret | ✅ |
+| `LW_SUBACCOUNT` | Sub-account name (multi-tenant deployments) | — |
+| `LW_PROFILE` | CLI profile name from `~/.lacework.toml` | — |
+
+```bash
+export LW_ACCOUNT="mycompany"
+export LW_API_KEY="<your-key>"
+export LW_API_SECRET="<your-secret>"
+```
+
+> **Note:** `LW_ACCOUNT` should be the subdomain only — `mycompany`, not `https://mycompany.lacework.net`.
+
+---
+
+## Running the Tool
+
+### GUI Mode (Recommended for First Use)
+
+Launches an interactive interface that guides you through report options:
+
+```bash
+python lw_report_gen.py --gui --api-key-file <instancename>.json
+```
+
+### CLI / Headless Mode
+
+Suitable for automation, scripting, and scheduled report generation:
+
+```bash
+python lw_report_gen.py \
+  --author "Your Name" \
+  --customer "Acme Corp" \
+  --report CSA_Detailed \
+  --report-format PDF \
+  --api-key-file <instancename>.json
+```
+
+Common `--report-format` values: `HTML` (default), `PDF`
+
+To see all available options:
+
+```bash
+python lw_report_gen.py -h
+```
+
+---
+
 ## Query Time Ranges
 
-By default the tool will query Lacework FortiCNAPP for data in the following time ranges:
-```
-Vulnerability Data Start: 25 hours prior to execution time -> End : Current time at execution
-Alert Data Start Time: 7 days prior to execution time -> End: Current time at execution
-```
-If you with to change the time range of these queries you can specify new start and stop times using the following flags:
+### Defaults
 
-```
---vulns-start-time
---vulns-end-time
---alerts-start-time
---alerts-end-time
+| Data Type | Default Query Window |
+|---|---|
+| Vulnerability data | 25 hours prior to execution → now |
+| Alert data | 7 days prior to execution → now |
+
+### Custom Time Ranges
+
+Time range flags accept values in `"days:hours"` format, representing time prior to execution.
+
+```bash
+# Extend alert window to 14 days
+python lw_report_gen.py \
+  --author "Your Name" --customer "Acme Corp" \
+  --alerts-start-time 14:0
+
+# Query a historical 7-day window that ended 2 weeks ago
+python lw_report_gen.py \
+  --author "Your Name" --customer "Acme Corp" \
+  --alerts-start-time 14:0 --alerts-end-time 7:0
 ```
 
-To use these flags you must specify a number of days and hours prior to execution time in the format `````"days:hours"`````
+Available flags:
 
-For example to specify a 14 day window for alerts you would specify:
-```
-lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0
-```
+| Flag | Description |
+|---|---|
+| `--alerts-start-time` | Start of the alert query window (`days:hours` prior to now) |
+| `--alerts-end-time` | End of the alert query window (`days:hours` prior to now) |
+| `--vulns-start-time` | Start of the vulnerability query window |
+| `--vulns-end-time` | End of the vulnerability query window |
 
-Whereas to specify a 7 day window for alerts that starts 2 weeks in the past you would specify:
-```
-lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0 --alerts-end-time 7:0
-```
-## Cached Data
+---
 
-To simplify development and limit the API calls made to a provider's backend, the main CLI interface supports the `--cache-data` flag. 
-If you are customizing this script you may wish to use this flag to speed up script execution during testing and eliminate most of the API calls to Lacework FortiCNAPP. 
-Note that the cache files created the first time you use this flag will be used in all subsequent runs in which you use this flag. They will not expire. 
-If you want to create new cache files you need to manually delete the cache files. For instance on Mac and Linux:
-```
+## Development — Caching API Responses
+
+The `--cache-data` flag saves API responses to disk on first run and reuses them on subsequent runs. This avoids repeated live API calls during report development and customization.
+
+```bash
+# First run — fetches from API and writes cache files
+python lw_report_gen.py --cache-data --api-key-file dev.json --report CSA_Detailed
+
+# Subsequent runs — reads from cache, no API calls
+python lw_report_gen.py --cache-data --api-key-file dev.json --report CSA_Detailed
+
+# Clear cache to force a fresh fetch (macOS / Linux)
 rm *.cache
 ```
 
+> Cache files do not expire automatically. Delete them manually to refresh data.
+
+---
+
 ## Logging
 
-The script will generate a log file called ```lw_report_gen.log```If you encounter an issue or bug please include the relevant log entries when filing an issue on our github page. 
+The tool writes a log file to `lw_report_gen.log` in the working directory. If you encounter a bug or unexpected behaviour, include the relevant entries from this file when opening an issue on GitHub.
+
+---
+
+## Creating Custom Reports
+
+The tool uses a plugin architecture — each report type is a Python module that inherits from `modules.reportgen` and renders output via [Jinja2](https://jinja.palletsprojects.com/) templates.
+
+> Custom reports require running from source. The compiled binary does not support them.
+
+### Directory Structure
+
+```
+extensible-reporting/
+├── lw_report_gen.py              # Entry point
+├── modules/
+│   └── reports/
+│       ├── reportgen_csa.py      # Default CSA report — use as reference
+│       └── my_custom_report.py   # Your custom report module goes here
+└── templates/
+    └── my_custom_template.html.j2  # Optional custom Jinja2 template
+```
+
+### Minimum Required Class Structure
+
+```python
+from modules.reportgen import reportgen
+
+class MyCustomReport(reportgen):
+    report_short_name = "MY_REPORT"           # Used in --report flag
+    report_name = "My Custom Security Report"
+    report_description = "Description shown in GUI report picker"
+
+    def generate(self):
+        # Query FortiCNAPP API via self.client
+        # Render output via Jinja2 template
+        pass
+```
+
+Place the module in `modules/reports/`. The tool's dynamic module loader discovers it automatically based on the three required class variables.
+
+For a complete working example, review `modules/reports/reportgen_csa.py`.
+
+---
+
+## Troubleshooting
+
+### API Authentication Fails
+
+- Confirm the API key JSON file is for the correct FortiCNAPP instance.
+- If using `LW_ACCOUNT`, set the subdomain only — `mycompany`, not `https://mycompany.lacework.net`.
+- Test with the FortiCNAPP CLI: `lacework api get /api/v2/UserProfile`
+
+### Report Contains No Data
+
+- Verify at least one cloud account is onboarded: **Settings → Cloud Accounts**
+- For newly onboarded accounts, allow 30–60 minutes for initial data ingestion.
+- Extend the query time range with `--alerts-start-time` and `--vulns-start-time`.
+- Run with `--cache-data` — if the cache files populate but the report is empty, the issue is in report logic rather than API connectivity.
+
+### PDF Generation Fails
+
+PDF rendering requires system libraries. Install the appropriate package for your OS:
+
+```bash
+# macOS
+brew install pango cairo
+
+# Debian / Ubuntu
+sudo apt-get install libpango-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
+
+# Fallback: generate HTML and print to PDF from your browser
+```
+
+### Virtual Environment Won't Activate (Windows PowerShell)
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+.\venv\Scripts\Activate.ps1
+```
+
+---
 
 ## Contributing
 
-Open a pull request!
+Pull requests are welcome. Please include relevant log output and a clear description of the change when opening a PR or issue.
 
+---
 
-Have a look at the default CSA report in `modules/reports/reportgen_csa.py`  for an example.
-
-This tool uses the "jinja2" templating engine to generate the report HTML. Depending on how customized
-you want your report to be you may also need to create a custom jinja2 template and 
-put it in the `templates` folder. You can then reference this template in your custom report class.  
-
-## License and Copyright
-
-Copyright 2025, Fortinet Inc.
+## License
 
 ```
+Copyright 2025, Fortinet Inc.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
