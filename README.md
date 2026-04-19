@@ -187,22 +187,6 @@ The script will generate a log file called ```lw_report_gen.log```If you encount
 
 Open a pull request!
 
-## Creating Your Own Custom Report
-
-Since this tool outputs html by default the most approachable (but manual) way to create a custom report is to modify the
-html report it generates. If however you want to modify the tool itself to automatically create reports for you then read  on...
-
-First you must download the source code. There is not currently a way to automatically create custom reports using the executable binary version of this tool.
-You should have some familiarity with python object-oriented programming if you are going to attempt automating a custom report. 
-
-To create your own report you must create a custom python module containing a class that inherits from```modules.reportgen```. Place that module file in the
-```modules/reports```folder. Be sure to define the following class variables (strings) to ensure that the dynamic module loader can read the class metadata:
-
-```
-report_short_name
-report_name
-report_description
-```
 
 Have a look at the default CSA report in `modules/reports/reportgen_csa.py`  for an example.
 
