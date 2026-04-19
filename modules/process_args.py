@@ -53,7 +53,7 @@ def get_arguments():
 
     parser.add_argument("--report-path", type=str, help="Filename to save report")
     parser.add_argument("--author", help="Author of report", type=str, default="Fortinet")
-    parser.add_argument("--customer", help="Customer Name (Company)", type=str, default="customer")
+    parser.add_argument("--customer", help="Customer Name (Company)", type=str, default="Sam")
     parser.add_argument("--cache-data", help="Create/use locally cached copies of Lacework data. This is mainly used for dev testing.", action='store_true')
     parser.add_argument("--vulns-start-time", type=str,
                         help="The number of days and hours in the past relative to NOW to start the vulnerability report. In the format <D:H>",
