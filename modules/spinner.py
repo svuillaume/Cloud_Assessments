@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import threading
 import time
 import random
@@ -69,7 +70,11 @@ class Spinner:
         acronym = random.choice(_STATS)
         while not self._stop.is_set():
             frame = _FRAMES[i % len(_FRAMES)]
-            sys.__stdout__.write(f'\r  {frame}  {self.message}  ·  {acronym}   ')
+            cols = shutil.get_terminal_size((120, 20)).columns
+            line = f'  {frame}  {self.message}  ·  {acronym}   '
+            if len(line) > cols:
+                line = line[:cols - 3] + '   '
+            sys.__stdout__.write(f'\r{line}')
             sys.__stdout__.flush()
             time.sleep(0.08)
             i += 1
