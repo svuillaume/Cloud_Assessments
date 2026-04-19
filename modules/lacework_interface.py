@@ -1,13 +1,13 @@
 import json
 
 from laceworksdk import LaceworkClient
-from laceworksdk import exceptions
 from logzero import logger
 from modules.host_vulnerabilities import HostVulnerabilities
 from modules.container_vulnerabilities import ContainerVulnerabilities
 from modules.alerts import Alerts
 from modules.compliance import Compliance
 from modules.secrets import Secrets
+from modules.identity_entitlements import IdentityEntitlements
 from modules.utils import cache_results
 
 
@@ -70,13 +70,14 @@ class LaceworkInterface:
                                         })
             elif config_account['type'] == 'AzureCfg':
                 tenant_data = self.lacework.configs.azure_subscriptions.get(tenantId=config_account['data']['tenantId'])['data']
-                for subscription in tenant_data[0]['subscriptions']:
-                    #logger.info(f"Adding tenant:{config_account['data']['tenantId']} Subscription:{str(subscription).split(' ')[0]}")
-                    account_details.append({'name': config_account['name'],
-                                            'type': config_account['type'],
-                                            'primary_query_id': config_account['data']['tenantId'],
-                                            'secondary_query_id': str(subscription).split(' ')[0],
-                                            })
+                for tenant in tenant_data:
+                    for subscription in tenant['subscriptions']:
+                        #logger.info(f"Adding tenant:{config_account['data']['tenantId']} Subscription:{str(subscription).split(' ')[0]}")
+                        account_details.append({'name': config_account['name'],
+                                                'type': config_account['type'],
+                                                'primary_query_id': config_account['data']['tenantId'],
+                                                'secondary_query_id': str(subscription).split(' ')[0],
+                                                })
             elif config_account['type'] == 'AwsCfg':
                 arn_elements = config_account['data']['crossAccountCredentials']['roleArn'].split(':')
                 account_details.append({'name': config_account['name'],
@@ -85,6 +86,30 @@ class LaceworkInterface:
                                         'secondary_query_id': None,
                                         })
         return account_details
+
+    def get_alert_entity_map(self, alert_id):
+        """Fetch entityMap for a single alert (IP, DNS, GeoIP, VirusTotal).
+        Uses get_details(scope='Details') which returns the enriched entity map.
+        Not cached — called for the top 10 critical alerts only."""
+        try:
+            aid = int(alert_id)  # pandas int64 → plain int
+            # get_details returns a single dict under 'data', not a list
+            resp = self.lacework.alerts.get_details(alert_id=aid, scope='Details')
+            data = resp.get('data', {})
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            entity_map = data.get('entityMap', {})
+            if entity_map:
+                return entity_map
+            # Fallback: basic get() in case SDK version differs
+            resp2 = self.lacework.alerts.get(alert_id=aid)
+            data2 = resp2.get('data', [{}])
+            if isinstance(data2, list):
+                data2 = data2[0] if data2 else {}
+            return data2.get('entityMap', {})
+        except Exception as e:
+            logger.warning(f"Could not fetch entity data for alert {alert_id}: {e}")
+            return {}
 
     @cache_results
     def get_alerts(self, start_time, end_time, severities=('Critical', 'High')):
@@ -138,82 +163,136 @@ class LaceworkInterface:
         return Secrets(secrets)
 
     @cache_results
-    def get_host_vulns(self, start_time, end_time, severities=("Critical", "High", "Medium")):
-        results = []
-        for severity in severities:
-            filters = {
-                "timeFilter": {
-                    "startTime": start_time,
-                    "endTime": end_time
-                },
-                "filters":
-                    [
-                        {
-                            "field": "severity",
-                            "expression": "eq",
-                            "value": str(severity)
-                        }
-                    ]
-                }
-            logger.debug(f'Getting Host Vulns with following filters:{filters}')
+    def get_identity_entitlements(self, start_time, end_time):
+        """
+        Query LW_CE_IDENTITIES datasource for identity and entitlement data
+        Returns ALL identities from all cloud providers in one query
 
-            try:
-                host_vulns = self.lacework.vulnerabilities.hosts.search(json=filters)
-            except Exception as e:
-                logger.error(f"Failed to retrieve list of host vulnerabilities from Lacework API:{str(e)}")
-                raise e
+        Args:
+            start_time: ISO format timestamp
+            end_time: ISO format timestamp
 
-            i = 1
-            for page in host_vulns:
-                logger.info('Saving page ' + str(i) + f' with {len(page.get("data", []))} records')
-                i = i + 1
-                results.extend(page['data'])
-            logger.info(f'Total records for severity {severity}: {i-1} pages')
-            if i > 100:
-                logger.warning(
-                    "Lacework API returned maximum pages of host vuln results (100 pages). Processed dataset is likely incomplete.")
+        Returns:
+            IdentityEntitlements object
+        """
+        logger.debug(f'Getting identity entitlements from {start_time} to {end_time}:')
 
-        logger.info(f'Total host vulnerability records retrieved: {len(results)}')
-        host_vulns = HostVulnerabilities(results)
-        return host_vulns
+        lql_query = """
+        {
+          source {
+            LW_CE_IDENTITIES
+          }
+          return distinct {
+            RECORD_CREATED_TIME,
+            PRINCIPAL_ID,
+            PROVIDER_TYPE,
+            DOMAIN_ID,
+            NAME,
+            LAST_USED_TIME,
+            CREATED_TIME,
+            METRICS,
+            TAGS,
+            ACCESS_KEYS,
+            ACCESS_KEYS_LIST,
+            ENTITLEMENT_COUNTS
+          }
+        }
+        """
+
+        lql_query_args = {
+            "StartTimeRange": start_time,
+            "EndTimeRange": end_time
+        }
+
+        try:
+            logger.debug(f"Executing LQL query for all identities...")
+            identity_data = self.lacework.queries.execute(
+                query_text=lql_query,
+                arguments=lql_query_args
+            )
+        except Exception as e:
+            logger.error(f"Failed to retrieve identity entitlements: {str(e)}")
+            logger.debug(f"Query was: {lql_query}")
+            logger.debug(f"Arguments were: {lql_query_args}")
+            raise e
+
+        identity_count = len(identity_data.get("data", []))
+        logger.info(f'{identity_count} total identities returned.')
+
+        if identity_count == 0:
+            logger.warning(f"No identity data found. CIEM may not be enabled for this account.")
+
+        return IdentityEntitlements(identity_data)
 
     @cache_results
-    def get_container_vulns(self, start_time, end_time, severities=("Critical", "High", "Medium")):
-        results = []
-        for severity in severities:
-            filters = {
-                "timeFilter": {
-                    "startTime": start_time,
-                    "endTime": end_time
-                },
-            "filters":
-            [
+    def get_host_vulns(self, start_time, end_time):
+        filters = {
+            "timeFilter": {
+                "startTime": start_time,
+                "endTime": end_time
+            },
+            "filters": [
                 {
                     "field": "severity",
                     "expression": "eq",
-                    "value": severity
+                    "value": "Critical"
                 }
             ]
         }
-            logger.debug(f'Getting Container Vulnerabilities with following filters:{filters}')
-            try:
-                container_vulns = self.lacework.vulnerabilities.containers.search(json=filters)
-            except Exception as e:
-                logger.error(f"Failed to retrieve list of container vulnerabilities from Lacework API:{str(e)}")
-                raise e
+        logger.debug(f'Getting Host Vulns with following filters:{filters}')
 
-            # logger.info('Found ' + len(container_vulns) + ' pages of data')
-            i = 1
-            for page in container_vulns:
-                logger.info('Saving page ' + str(i))
-                i = i + 1
-                results.extend(page['data'])
-            if i > 100:
-                logger.warning(
-                    "Lacework API returned maximum pages of container vuln results (100 pages). Processed dataset is likely incomplete.")
+        try:
+            host_vulns = self.lacework.vulnerabilities.hosts.search(json=filters)
+        except Exception as e:
+            logger.error(f"Failed to retrieve list of host vulnerabilities from Lacework API:{str(e)}")
+            raise e
 
-        container_vulns = ContainerVulnerabilities(results)
-        return container_vulns
+        results = []
+        i = 1
+        for page in host_vulns:
+            logger.info('Saving page ' + str(i) + f' with {len(page.get("data", []))} records')
+            i += 1
+            results.extend(page['data'])
+        if i > 100:
+            logger.warning(
+                "Lacework API returned maximum pages of host vuln results (100 pages). Processed dataset is likely incomplete.")
+
+        logger.info(f'Total host vulnerability records retrieved: {len(results)}')
+        return HostVulnerabilities(results)
+
+    @cache_results
+    def get_container_vulns(self, start_time, end_time):
+        filters = {
+            "timeFilter": {
+                "startTime": start_time,
+                "endTime": end_time
+            },
+            "filters": [
+                {
+                    "field": "severity",
+                    "expression": "eq",
+                    "value": "Critical"
+                }
+            ]
+        }
+        logger.debug(f'Getting Container Vulnerabilities with following filters:{filters}')
+        try:
+            container_vulns = self.lacework.vulnerabilities.containers.search(json=filters)
+        except Exception as e:
+            logger.error(f"Failed to retrieve list of container vulnerabilities from Lacework API:{str(e)}")
+            raise e
+
+        results = []
+        i = 1
+        for page in container_vulns:
+            logger.info('Saving page ' + str(i))
+            i += 1
+            results.extend(page['data'])
+        if i > 100:
+            logger.warning(
+                "Lacework API returned maximum pages of container vuln results (100 pages). Processed dataset is likely incomplete.")
+
+        return ContainerVulnerabilities(results)
 
     @cache_results
     def get_compliance_reports(self, cloud_provider='AWS', report_type='CIS'):

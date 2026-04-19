@@ -1,0 +1,54 @@
+<h2>Recommendations</h2>
+<p>
+Based on the findings of this assessment, Fortinet recommends the following action plan and next steps:
+</p>
+
+<h3>Ottawa Community Housing Azure Security Remediation Playbook</h3>
+<p><strong>Goal:</strong> Fix all Critical vulnerabilities and achieve CIS compliance using FortiCNAPP Rapid Assessment Report.</p>
+
+<h4>CIS Top 3 Critical Items</h4>
+<ul>
+<li>Public Storage with 0.0.0.0/0 access → Implement auto-quarantine</li>
+<li>SQL Firewall rules allowing /0 ranges → Delete immediately</li>
+<li>Network Watcher disabled → Enable across all regions</li>
+</ul>
+
+<h4>Critical Vulnerabilities samples (CVSS 9.0+):</h4>
+<ul>
+<li>CVE-2021-44228 org.apache.logging.log4j:log4j-core</li>
+<li>CVE-2022-23305 org.apache.logging.log4j:log4j-core</li>
+
+</ul>
+
+<h4>Daily Tasks:</h4>
+<ol>
+<li>Using FortiCNAPP Report Assessment address High vulnerabilities (CVSS >= 9) during scheduled maintenance windows</li>
+<li>Validation: Re-scan environment for Critical/High findings</li>
+</ol>
+
+<h4>High-Priority Misconfigurations:</h4>
+<ul>
+<li>HTTPS Only enforcement → Apply to all App Services and Storage accounts</li>
+<li>Activity Log Alerts → Configure for Public IP and SQL Firewall deletions</li>
+<li>Client Certificates → Enable for key APIs</li>
+</ul>
+
+<h3>Recommended Fortinet Solutions</h3>
+<p><strong>Minimum Fortinet Protection Cloud Stack:</strong></p>
+
+<h5>Cloud-Native Protection</h4>
+<ul>
+<li><strong>FortiCNAPP</strong> unifies cloud-native application protection (CNAPP) across code-to-cloud, providing AI-driven anomaly detection, CSPM/CWPP/CIEM, and real-time compliance for AWS/Azure/GCP/Kubernetes. It prioritizes risks via attack path analysis, auto-remediates misconfigurations, detects zero-day threats (ransomware/credentials), and integrates with Fortinet Security Fabric for 95% faster MTTR, reducing alert noise and offloading logs sent to SIEM/SOAR platforms.</li>
+
+<li><strong>FortiWeb</strong> is Fortinet's Web Application Firewall (WAF) that protects web apps and APIs from OWASP Top 10, zero-day attacks, SQLi/XSS, DDoS, and bots using ML anomaly detection and signatures. Deployed as VM/Container in Azure App Service/AKS, it auto-discovers APIs, enforces schema validation, rate limits, and integrates with FortiAnalyzer for unified threat analytics.</li>
+
+<li><strong>FortiGate-VM</strong> delivers next-generation firewall (NGFW) capabilities as a virtual appliance in Azure, providing IPS, VPN gateway, web filtering, app control, and SSL inspection for VNet protection and hybrid connectivity. Key use cases include securing Azure Virtual WAN traffic, site-to-site VPNs, east-west segmentation, and replacing Azure Firewall limitations with advanced threat protection and Fortinet Security Fabric integration.</li>
+
+<li><strong>FortiAnalyzer</strong> provides centralized security analytics, aggregating logs from all Fortinet Solutions (FortiGate, FortiCNAPP, FortiWeb, FortiAppSec) for unified CIS compliance dashboards and real-time threat correlation. It automates SOC operations with AI-driven alerting, compliance reporting, and forensic timelines, reducing MTTR.</li>
+</ul>
+
+<h3>Next Steps</h3>
+<ol>
+<li>Engage with your Fortinet account team and partner to review services offerings to prioritize and remediate the findings</li>
+<li>Complete a recurring Cloud Security Assessment once a wider FortiCNAPP deployment has been completed to baseline and trend improvements to your cloud security posture</li>
+</ol>

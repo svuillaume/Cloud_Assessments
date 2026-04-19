@@ -2,6 +2,7 @@ import pandas as pd
 
 import plotly.graph_objects as go
 from logzero import logger
+from modules.chart_utils import render_bubbles
 
 
 def process_compliance_violations(violations):
@@ -21,8 +22,8 @@ class Compliance:
             self.account_id_string = 'ACCOUNT_ID'
             self.account_id_rename_string = 'Account ID'
         if self.cloud_provider == 'AZURE':
-            self.account_id_string = 'TENANT_ID'
-            self.account_id_rename_string = 'Tenant ID'
+            self.account_id_string = 'SUBSCRIPTION_ID'
+            self.account_id_rename_string = 'Subscription ID'
         if self.cloud_provider == 'GCP':
             self.account_id_string = 'PROJECT_ID'
             self.account_id_rename_string = 'Project ID'
@@ -40,7 +41,43 @@ class Compliance:
         unique_accounts = df[self.account_id_string].nunique()
         return unique_accounts
 
-    def get_compliance_details(self, severities=["Critical", "High"]):
+    def get_unique_critical_finding_count(self):
+        """
+        Count unique critical compliance findings across all accounts.
+        If the same control fails in multiple accounts, it's only counted once.
+
+        Returns:
+            Integer count of unique critical findings
+        """
+        df = pd.DataFrame(self.all_recommendations)
+        df = df[df['STATUS'].isin(["NonCompliant"])]
+        df = df[df['SEVERITY'] == 1]  # Critical severity
+
+        # Count unique TITLE values (unique compliance controls)
+        unique_critical_count = df['TITLE'].nunique()
+        return unique_critical_count
+
+    def get_unique_finding_count(self, severities=["Critical"]):
+        """
+        Count unique compliance findings across all accounts for specified severities.
+        If the same control fails in multiple accounts, it's only counted once.
+
+        Args:
+            severities: List of severity strings to include
+
+        Returns:
+            Integer count of unique findings
+        """
+        df = pd.DataFrame(self.all_recommendations)
+        df = df[df['STATUS'].isin(["NonCompliant"])]
+        df = df.replace({'SEVERITY': {1: "Critical", 2: "High", 3: "Medium", 4: "Low", 5: "Info"}})
+        df = df[df['SEVERITY'].isin(severities)]
+
+        # Count unique TITLE values (unique compliance controls)
+        unique_finding_count = df['TITLE'].nunique()
+        return unique_finding_count
+
+    def get_compliance_details(self, severities=["Critical"]):
         df = pd.DataFrame(self.all_recommendations)
         df = df[df['STATUS'].isin(["NonCompliant"])]
         df['RESOURCE_COUNT'] = (df['VIOLATIONS'].str.len())
@@ -74,7 +111,7 @@ class Compliance:
 
         return df
 
-    def get_compliance_summary(self, severities=["Critical", "High"]):
+    def get_compliance_summary(self, severities=["Critical"]):
         df = pd.DataFrame(self.all_recommendations)
         df = df[df['STATUS'].isin(["NonCompliant"])]
 
@@ -101,7 +138,7 @@ class Compliance:
 
         return df
 
-    def get_summary_by_account(self, severities=["Critical", "High", "Medium", "Low"]):
+    def get_summary_by_account(self, severities=["Critical"]):
         df = pd.DataFrame(self.all_recommendations)
         df = df[df['STATUS'].isin(["NonCompliant"])]
         df['RESOURCE_COUNT'] = (df['VIOLATIONS'].str.len())
@@ -134,7 +171,7 @@ class Compliance:
 
         return df
 
-    def get_summary_by_service(self, severities=["Critical", "High", "Medium", "Low"]):
+    def get_summary_by_service(self, severities=["Critical"]):
         df = pd.DataFrame(self.all_recommendations)
         df = df[df['STATUS'].isin(["NonCompliant"])]
         df = df.replace({'SEVERITY': {1: "Critical", 2: "High", 3: "Medium", 4: "Low", 5: "Info"}})
@@ -159,73 +196,25 @@ class Compliance:
         df = pd.pivot_table(df, values='count', index=self.account_id_string, columns='CATEGORY', sort=False)
         return df
 
-    def get_summary_by_account_bar_graph(self, width=600, height=350, format='svg'):
-        df = self.get_summary_by_account()
-        colors = [
-            'crimson',
-            'darkorange',
-            'gold',
-            'lightskyblue',
-            'powderblue'
-        ]
-        unique_accounts = len(df.index)
-        # acct_id, criticals, highs, mediums, lows, infos
+    def get_summary_by_account_bar_graph(self, width=600, height=450, format='svg'):
+        df = pd.DataFrame(self.all_recommendations)
+        df = df[(df['STATUS'] == 'NonCompliant') & (df['SEVERITY'] == 1)]
+        df['RESOURCE_COUNT'] = df['VIOLATIONS'].str.len()
+        df = df.groupby(self.account_id_string)['RESOURCE_COUNT'].sum().reset_index()
+        labels = df[self.account_id_string].tolist()
+        values = df['RESOURCE_COUNT'].tolist()
+        return render_bubbles(labels, values,
+                              title=f'Critical Non-Compliance by {self.account_id_rename_string}',
+                              width=width, height=height, fmt=format, unit='Failed Resources')
 
-        if unique_accounts == 1:
-            fig = go.Figure(go.Bar(name="asdf", x=df.columns, y=df.iloc[0], marker_color=colors))
-            fig.update_layout(
-                title='Compliance Severities Found',
-                yaxis=dict(
-                    title='Failed resources'
-                )
-            )
-        else:
-            severities = df.columns
-            graph_data = []
-
-            for idx, sev in enumerate(severities):
-                bar = go.Bar(name=sev, x=df.index, y=df[sev], marker_color=colors[idx])
-                graph_data.append(bar)
-
-            fig = go.Figure(
-                data=graph_data[::-1]
-            )
-
-            fig.update_layout(
-                title='Compliance Severities by Account',
-                yaxis=dict(
-                    title='Failed resources'
-                ),
-                barmode='stack'
-            )
-
-        img_bytes = fig.to_image(format=format, width=width, height=height)
-        return img_bytes
-
-    def get_summary_by_service_bar_graph(self, width=600, height=350, format='svg'):
-        df = self.get_summary_by_service()
-        # colors = [
-        # 	'crimson',
-        # 	'darkorange',
-        # 	'gold',
-        # 	'lightskyblue',
-        # 	'powderblue'
-        # ]
-        categories = df.columns
-        graph_data = []
-        for acct, data in df.iterrows():
-            bar = go.Bar(name=acct, x=categories, y=data)
-            graph_data.append(bar)
-
-        fig = go.Figure(
-            data=graph_data
-        )
-        fig.update_layout(
-            title='Compliance Severities by Service',
-            yaxis=dict(
-                title='Failed resources'
-            ),
-            barmode='group'
-        )
-        img_bytes = fig.to_image(format=format, width=width, height=height)
-        return img_bytes
+    def get_summary_by_service_bar_graph(self, width=600, height=500, format='svg'):
+        df = pd.DataFrame(self.all_recommendations)
+        df = df[(df['STATUS'] == 'NonCompliant') & (df['SEVERITY'] == 1)]
+        df['RESOURCE_COUNT'] = df['VIOLATIONS'].str.len()
+        df = df.groupby('TITLE')['RESOURCE_COUNT'].sum().reset_index()
+        df = df.sort_values('RESOURCE_COUNT', ascending=False).head(10)
+        labels = df['TITLE'].tolist()
+        values = df['RESOURCE_COUNT'].tolist()
+        return render_bubbles(labels, values,
+                              title='Top 10 Critical Non-Compliant Controls',
+                              width=width, height=height, fmt=format, unit='Failed Resources')

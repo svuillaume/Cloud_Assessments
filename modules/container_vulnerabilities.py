@@ -7,7 +7,27 @@ from logzero import logger
 class ContainerVulnerabilities:
 
     def __init__(self, raw_data):
-        self.data = raw_data
+        # Filter for riskScore >= 9.0
+        self.data = self._filter_by_risk_score(raw_data, min_score=9.0)
+
+    def _filter_by_risk_score(self, raw_data, min_score=9.0):
+        """Filter vulnerabilities by FortiCNAPP CVE Risk Score.
+
+        Args:
+            raw_data: List of vulnerability records
+            min_score: Minimum riskScore threshold (default 9.0)
+
+        Returns:
+            Filtered list of vulnerabilities with riskScore >= min_score
+        """
+        filtered_data = []
+        for vuln in raw_data:
+            cve_risk_score = vuln.get('riskScore')
+            if cve_risk_score is not None and float(cve_risk_score) >= min_score:
+                filtered_data.append(vuln)
+
+        logger.info(f'Filtered container vulnerabilities: {len(raw_data)} -> {len(filtered_data)} (riskScore >= {min_score})')
+        return filtered_data
 
     def total_evaluated(self):
         df = pd.DataFrame(self.data)
@@ -163,18 +183,54 @@ class ContainerVulnerabilities:
 
         return df
 
-    def top_packages_bar(self, width=600, height=350, format='svg', limit: int = 10):
-        df = self.summary_by_package().head(limit)
-        import plotly.graph_objects as go
+    def top_risk_vulns(self, limit=10):
+        """Return top container vulnerabilities sorted by riskScore descending.
 
-        # Use textposition='auto' for direct text
-        fig = go.Figure(data=[go.Bar(x=df['Package Info'], y=df['Count'])])
-        fig.update_layout(
-            title='High Priority Packages to Patch (by CVE Count)',
-            yaxis=dict(
-                title='Number of Affected Images'
-            ),
-            xaxis_tickangle=45
-        )
-        img_bytes = fig.to_image(format=format, width=width, height=height)
-        return img_bytes
+        Returns:
+            DataFrame with CVE, Risk Score, Severity, Repository, Package, Installed Version, Fix columns.
+        """
+        if not self.data:
+            return pd.DataFrame()
+        df = pd.json_normalize(self.data,
+                               meta=[['evalCtx', 'image_info', 'repo'],
+                                     ['featureKey', 'name'],
+                                     'vulnId',
+                                     'severity',
+                                     'riskScore',
+                                     ['fixInfo', 'fix_available'],
+                                     ['fixInfo', 'fixed_version'],
+                                     ['featureKey', 'version']])
+        if df.empty:
+            return df
+        df['riskScore'] = pd.to_numeric(df.get('riskScore', pd.Series(dtype=float)), errors='coerce').fillna(0)
+        df['severity'] = pd.Categorical(df.get('severity', pd.Series(dtype=str)), ["Critical", "High", "Medium", "Low", "Info"])
+        df = df.sort_values(by=['riskScore', 'severity'], ascending=[False, True])
+        df = df.drop_duplicates(subset=['vulnId', 'evalCtx.image_info.repo'])
+        df.rename(columns={
+            'evalCtx.image_info.repo': 'Repository',
+            'vulnId': 'CVE',
+            'severity': 'Severity',
+            'riskScore': 'Risk Score',
+            'featureKey.name': 'Package',
+            'featureKey.version': 'Installed Version',
+            'fixInfo.fix_available': 'Fix Available',
+            'fixInfo.fixed_version': 'Fixed Version'
+        }, inplace=True)
+        cols = ['CVE', 'Risk Score', 'Severity', 'Repository', 'Package', 'Installed Version']
+        for c in ['Fix Available', 'Fixed Version']:
+            if c in df.columns:
+                cols.append(c)
+        return df[[c for c in cols if c in df.columns]].head(limit)
+
+    def top_packages_bar(self, width=600, height=500, format='svg', limit: int = 15):
+        df = self.summary_by_package().head(limit)
+        if df.empty:
+            from modules.chart_utils import render_bubbles
+            return render_bubbles([], [], 'Package Blast Radius — Affected Container Images (Risk Score ≥ 9)',
+                                  width, height, fmt=format, unit='Affected Images')
+        from modules.chart_utils import render_bubbles
+        pkg_labels = df['Package Info'].str.split('<br>').str[0].tolist()
+        values = df['Count'].tolist()
+        return render_bubbles(pkg_labels, values,
+                              title='Package Blast Radius — Affected Container Images (Risk Score ≥ 9)',
+                              width=width, height=height, fmt=format, unit='Affected Images')

@@ -75,6 +75,7 @@ def get_arguments():
     parser.add_argument("--report-format", help="Specify output format, HTML or PDF. Default is HTML", default="HTML")
     parser.add_argument("--gui", help="Run this tool in GUI mode, which provides additional customization options.", action='store_true')
     parser.add_argument("--logo", type=str, help="Specify a custom logo (PNG file) to add to the report.")
+    parser.add_argument("--ciem-threshold", type=int, default=70, help="Unused entitlement count threshold for CIEM analysis (default: 70)")
     parser.add_argument("--list-reports", help="List the available reports to generate. Default is 'CSA'", action='store_true')
 
     return parser.parse_args()

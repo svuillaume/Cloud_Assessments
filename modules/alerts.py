@@ -1,6 +1,104 @@
+import re
 import pandas as pd
-from logzero import logger
 from datetime import *
+
+_IP_RE      = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b')
+_HOST_RE    = re.compile(r'bad\s+host\s+(\S+?)(?:\s+at\b|$)', re.IGNORECASE)
+_ON_HOST_RE = re.compile(r'(?:running\s+on\s+host|on\s+host|from\s+host)\s+(\S+?)(?:\s|$)', re.IGNORECASE)
+_PORT_RE    = re.compile(r'(?:at\s+port|on\s+port|port)\s+(\d{1,5})\b', re.IGNORECASE)
+
+def _extract_host_from_description(description):
+    """Return 'host:port' (or just host) extracted from alert description text."""
+    if not description:
+        return '—'
+
+    host = None
+    for pattern in (_HOST_RE, _ON_HOST_RE):
+        m = pattern.search(description)
+        if m:
+            host = m.group(1).rstrip('.,;:')
+            break
+    if not host:
+        m = _IP_RE.search(description)
+        if m:
+            host = m.group(1)
+
+    if not host:
+        return '—'
+
+    m = _PORT_RE.search(description)
+    if m:
+        return f'{host}:{m.group(1)}'
+    return host
+
+_BAD_IP_TYPES = {
+    'NewExternalClientBadIp', 'NewExternalClientBadIpConn',
+    'NewExternalClientBadIpConnToVuln', 'NewExternalServerBadIp',
+    'NewExternalServerBadIPConn', 'NewExternalServerBadIPConnFromVuln',
+    'NewExternalClientBadDns', 'NewExternalServerBadDns',
+    'NewExternalServerBadDNSConn', 'LoginFromBadSourceUsingCalltype',
+    'GcpUserLoggedInFromBadSource', 'NewAzureUserLoggedInFromBadSource',
+    'SuspiciousUserLoginMultiGEOs', 'SuspiciousUserFailedLogin',
+}
+
+# Risk category shown only when a bad host is present
+_RISK_MAP = {
+    # Malicious — active attacker / known-bad infrastructure
+    'NewExternalClientBadIp':              'Malicious',
+    'NewExternalClientBadIpConn':          'Malicious',
+    'NewExternalClientBadIpConnToVuln':    'Malicious',
+    'NewExternalServerBadIp':              'Malicious',
+    'NewExternalServerBadIPConn':          'Malicious',
+    'NewExternalServerBadIPConnFromVuln':  'Malicious',
+    'NewExternalClientBadDns':             'Malicious',
+    'NewExternalServerBadDns':             'Malicious',
+    'NewExternalServerBadDNSConn':         'Malicious',
+    'LoginFromBadSourceUsingCalltype':     'Malicious',
+    'GcpUserLoggedInFromBadSource':        'Malicious',
+    'NewAzureUserLoggedInFromBadSource':   'Malicious',
+    'SuspiciousUserLoginMultiGEOs':        'Malicious',
+    'SuspiciousUserFailedLogin':           'Malicious',
+    'MaliciousFile':                       'Malicious',
+    'SuspiciousApplicationLaunched':       'Malicious',
+    'SuspiciousFile':                      'Malicious',
+    'NewPrivilegeEscalation':              'Malicious',
+    'UnauthorizedAPICall':                 'Malicious',
+    # Negligent — misconfig or weak controls
+    'SuccessfulConsoleLoginWithoutMFA':    'Negligent',
+    'UsageOfRootAccount':                  'Negligent',
+    'CloudTrailChanged':                   'Negligent',
+    'CloudTrailDeleted':                   'Negligent',
+    'CloudTrailStopped':                   'Negligent',
+    'SecurityGroupChange':                 'Negligent',
+    'NACLChange':                          'Negligent',
+    'VPCChange':                           'Negligent',
+    'S3BucketACLChanged':                  'Negligent',
+    'S3BucketPolicyChanged':               'Negligent',
+    'IAMPolicyChanged':                    'Negligent',
+    'GCPIAMPolicyChanged':                 'Negligent',
+    'CustomerMasterKeyDisabled':           'Negligent',
+    'CustomerMasterKeyScheduledForDeletion': 'Negligent',
+    'GCPKMSKeyVersionDestroyed':           'Negligent',
+    'ProjectOwnershipAssignmentsChanged':  'Negligent',
+    # Unauthorized — shadow IT / unsanctioned activity
+    'NewService':                          'Unauthorized',
+    'NewRegion':                           'Unauthorized',
+    'NewAccount':                          'Unauthorized',
+    'NewAwsUser':                          'Unauthorized',
+    'NewGcpUser':                          'Unauthorized',
+    'NewUser':                             'Unauthorized',
+    'NewVPC':                              'Unauthorized',
+    'NewS3Bucket':                         'Unauthorized',
+    'NewExternalClientConn':               'Unauthorized',
+    'NewExternalServerDns':                'Unauthorized',
+    'NewExternalServerIp':                 'Unauthorized',
+    'NewExternalClientIp':                 'Unauthorized',
+    'NewAzureService':                     'Unauthorized',
+    'NewAzureSubscription':                'Unauthorized',
+    'GCPGCSBucketCreated':                 'Unauthorized',
+    'NewGcpRegion':                        'Unauthorized',
+    'NewGcpService':                       'Unauthorized',
+}
 
 event_short_to_long = {
     'AccessKeyDeleted': 'Access Key Deleted',
@@ -185,36 +283,53 @@ class Alerts:
         return len(self.data)
 
     def processed_alerts(self,
-                         severities=("Critical", "High"),
+                         severities=("Critical",),
                          excluded_alert_types=("CloudTrailDefaultAlert", "CloudActivityLogIngestionFailed", "NewViolations", "ComplianceChanged"),
                          limit=False, detailed=True):
 
         processed_data = []
         for item in self.data:
-            processed_data.append({'alertId': item['alertId'],
-                                   'alertName': item['alertName'],
-                                   'startTime': item['startTime'],
-                                   'severity': item['severity'],
-                                   'description': item['alertInfo']['description'],
-                                   'alertType': item['alertType']})
+            alert_info = item.get('alertInfo', {})
+            alert_type = item.get('alertType', '')
+            description = alert_info.get('description', '')
+
+            # Extract bad host + port: subject field first, then parse description
+            bad_host = alert_info.get('subject') or _extract_host_from_description(description) or '—'
+            reputation = 'Bad IP' if alert_type in _BAD_IP_TYPES else '—'
+            risk = _RISK_MAP.get(alert_type, '—') if bad_host != '—' else '—'
+
+            processed_data.append({
+                'alertId':    item['alertId'],
+                'alertName':  item['alertName'],
+                'startTime':  item['startTime'],
+                'severity':   item['severity'],
+                'description': description,
+                'alertType':  alert_type,
+                'badHost':    bad_host or '—',
+                'reputation': reputation,
+                'risk':       risk,
+            })
+
         df = pd.DataFrame(processed_data)
         if 'alertType' in df:
-            # filter out excluded alerts
             df = df[~df['alertType'].isin(excluded_alert_types)]
-            # sort & filter by sev
             df['severity'] = pd.Categorical(df['severity'], ["Critical", "High", "Medium", "Low", "Info"])
             df = df.sort_values(by=['severity', 'startTime'], ascending=[True, False])
             df = df[df['severity'].isin(severities)]
-            # format time
             df['startTime'] = df['startTime'].apply(
                 lambda x: datetime.fromisoformat(x.replace("Z", "+00:00")).strftime("%B %d, %Y %I:%M%p"))
-            # rename columns
-            df.rename(columns={'alertId': 'Alert ID', 'severity': 'Severity', 'startTime': 'Alert Time', 'alertName': 'Alert Name', 'description': 'Description'}, inplace=True)
+            df.rename(columns={
+                'alertId': 'Alert ID', 'severity': 'Severity', 'startTime': 'Alert Time',
+                'alertName': 'Alert Name', 'description': 'Description',
+                'risk': 'IP or Domain Reputation',
+            }, inplace=True)
             if detailed:
-                # delete extra columns
-                df = df[['Alert ID', 'Severity', 'Alert Time', 'Alert Name', 'Description']]
+                df = df[['Alert ID', 'Severity', 'Alert Time', 'Alert Name', 'alertType',
+                          'IP or Domain Reputation', 'Description']]
+                df.rename(columns={'alertType': 'Alert Type'}, inplace=True)
             else:
-                df = df[['Alert ID', 'Severity', 'Alert Time', 'Alert Name']]
+                df = df[['Alert ID', 'Severity', 'Alert Time', 'Alert Name',
+                          'IP or Domain Reputation']]
             if limit:
                 df = df.head(limit)
         return df

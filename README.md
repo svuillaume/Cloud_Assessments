@@ -1,77 +1,87 @@
-# Extensible Report Generator
+# Extensible Report Generator v.2
 
 ## Description
 
-A project to abstract the gathering, transformations, and rendering of datasets from Lacework FortiCNAPP into auto-generated reports.
+A project to abstract the gathering, transformations, and rendering of datasets from FortiCNAPP into auto-generated reports.
 
-A sample report can be found [here](https://github.com/lacework/extensible-reporting/blob/main/Example-Report.pdf)
 ## Quickstart
 
-1. Download the binary for your platform from the [releases section](https://github.com/lacework/extensible-reporting/releases/latest)
-
-2. Ensure you have some method of authenticating against your FortiCNAPP API. The easiest
+1. Ensure you have some method of authenticating against your FortiCNAPP API. The easiest
     way is to download an API key file from your FortiCNAPP UI under Settings ->  API Keys. 
 
-3. Run the binary <i> from the command line </i> using the following flags: 
+2. Run the python script using the following flags: 
 
 `--gui --api-key-file <keyfile>`
+
+--gui is optional
 
 Where \<keyfile> is the name of the api key file you downloaded. 
 
 For example on an ARM based Mac download the ARM binary file from the "Releases" section of this page (lw_report_gen_mac_arm
 ) and execute it:
 
-`./lw_report_gen_mac_arm --gui --api-key-file example.json`
+`lw_report_gen.py --gui --api-key-file example.json`
 
-On Mac you may get an error regarding it being an unsigned application. If so you can read the following article on how to run the binary:
-
-https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac
 
 ## Usage for CSA Reports
 
-This tool leverages the Lacework FortiCNAPP API to create HTML and PDF reports. 
+This tool leverages the FortiCNAPP API to create HTML and PDF reports. 
 
 ## Downloading and Setting up the Tool
 
-### Option 1:
 
-Use the compiled binary on the [releases page](https://github.com/lacework/extensible-reporting/releases/latest). This is the easiest option as you do not need to install python3 or any python libraries. To execute this binary:
-- Download the corresponding binary for your computer's OS from the [releases page](https://github.com/lacework/extensible-reporting/releases/latest)
-  - If running on MacOS or Linux you will need to:
-      1. Launch a terminal and execute `chmod +x lw_report_gen_mac` (replace "lw_report_gen_mac" with the name of the binary you downloaded)
-      2. Execute the binary FROM THE TERMINAL with the -h flag to review the command line options. You will need to provide API credentials. Read the section below on how to specify credentials, or use download a FortiCNAPP JSON credentials file and specify it:
-        `./lw_report_gen_mac --gui --api-key-file <instancename>.json`
-      3. On Mac, If prompted to trust this code to execute in your terminal, navigate to `System Preferences -> Security & Privacy -> Privacy (tab)` and scroll to `Developer Tools` and ensure that `Terminal` is checked. You will then need to relaunch your Terminal session
+### Option 1: Run from source using a virtual environment (recommended)
 
- 
-- If running on Windows you will need to:
-    1. Execute the binary FROM THE TERMINAL with the -h flag to review the command line options. You will need to provide API credentials. Read the section below on how to specify credentials, or use download a FortiCNAPP JSON credentials file and specify it:
-        `lw_report_gen.exe  --gui --api-key-file <instancename>.json`
- 
- The report will be generated in the same directory you execute the binary with a name of `CSA_Report_customer_date.html`
+This option runs `lw_report_gen.py` directly from the cloned repo inside an isolated Python virtual environment so dependencies don't pollute your system Python.
 
-### Option 2:
+**Prerequisites:** `python3` (3.9+) available on your PATH.
 
-This option involves running the `lw_report_gen.py` command directly in this repo but has a few prerequisites.
+#### 1 — Create and activate the virtual environment
 
-To run the python directly you will need
+```bash
+# Create the venv (only needed once)
+python3 -m venv venv
 
-- `python3`
-- `pip3` (latest version is required, run `pip3 install --upgrade pip`)
+# Activate — macOS / Linux
+source venv/bin/activate
 
-To install dependencies run:
-```
-$ pip3 install -r requirements.txt
+# Activate — Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
 ```
 
-On Windows or Linux run the script using the python interpreter:
+You should see `(venv)` in your shell prompt once active.
+
+#### 2 — Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
+
+#### 3 — Run the tool
+
+GUI mode (recommended for first use):
+```bash
 python lw_report_gen.py --gui --api-key-file <instancename>.json
 ```
-On a Mac you may need to specify "python3" instead of "python" ("python" references python 2, which won't work). so...
+
+CLI mode (headless / automation):
+```bash
+python lw_report_gen.py \
+  --author "Your Name" \
+  --customer "Acme Corp" \
+  --report CSA_Detailed \
+  --report-format HTML \
+  --api-key-file <instancename>.json
 ```
-python3 lw_report_gen.py --gui --api-key-file <instancename>.json
+
+#### 4 — Deactivate when done
+
+```bash
+deactivate
 ```
+
+> **Tip:** use `--cache-data` on subsequent runs to skip live API calls and reuse cached responses during development.
 
 ## Command Line Mode
 
@@ -134,12 +144,12 @@ To use these flags you must specify a number of days and hours prior to executio
 
 For example to specify a 14 day window for alerts you would specify:
 ```
-./lw_report_gen_mac --author your_name --customer your_customer --alerts-start-time 14:0
+lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0
 ```
 
 Whereas to specify a 7 day window for alerts that starts 2 weeks in the past you would specify:
 ```
-./lw_report_gen_mac --author your_name --customer your_customer --alerts-start-time 14:0 --alerts-end-time 7:0
+lw_report_gen.py --author your_name --customer your_customer --alerts-start-time 14:0 --alerts-end-time 7:0
 ```
 ## Cached Data
 
