@@ -1,15 +1,79 @@
 import sys
 import os
+import shutil
+import subprocess
+import tempfile
 import logzero
 import datetime
 import traceback
-import platform
 from logzero import logger
 from modules.process_args import get_validated_arguments, pre_process_args
 from modules.utils import get_available_reports
 from modules.utils import alert_new_release
 from modules.reportgen import ReportGen  # do not remove, needed by pyinstaller
 from modules.spinner import Spinner
+
+
+def _find_chrome():
+    """Return path to Chrome/Chromium executable, or None if not found."""
+    candidates = [
+        # macOS
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+        # Linux
+        'google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium',
+        # Windows
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+        found = shutil.which(c)
+        if found:
+            return found
+    return None
+
+
+def _html_to_pdf_chrome(html_string, output_path):
+    """Write PDF via Chrome headless. Returns True on success."""
+    chrome = _find_chrome()
+    if not chrome:
+        return False
+    with tempfile.NamedTemporaryFile(suffix='.html', mode='w', encoding='utf-8', delete=False) as f:
+        f.write(html_string)
+        tmp_html = f.name
+    try:
+        result = subprocess.run(
+            [
+                chrome,
+                '--headless=new',
+                '--no-sandbox',
+                '--disable-gpu',
+                '--disable-extensions',
+                '--run-all-compositor-stages-before-draw',
+                f'--print-to-pdf={os.path.abspath(output_path)}',
+                '--no-pdf-header-footer',
+                '--paper-width=16.54',   # A3 landscape (inches)
+                '--paper-height=11.69',
+                f'file://{tmp_html}',
+            ],
+            capture_output=True, timeout=120
+        )
+        return result.returncode == 0
+    finally:
+        os.unlink(tmp_html)
+
+
+def _html_to_pdf_weasyprint(html_string, output_path, basedir):
+    """Write PDF via WeasyPrint. Returns True on success."""
+    from weasyprint import HTML
+    from weasyprint.text.fonts import FontConfiguration
+    import logging as log
+    log.getLogger('weasyprint').addHandler(log.FileHandler('weasyprint.log'))
+    fc = FontConfiguration()
+    HTML(string=html_string, base_url=basedir).write_pdf(output_path, font_config=fc)
+    return True
 
 
 def main():
@@ -103,14 +167,14 @@ def main():
             report_file_name += ".pdf"
             logger.info(f'Writing report to {report_file_name}')
             try:
-                from weasyprint import HTML, CSS
-                from weasyprint.text.fonts import FontConfiguration
-                import logging as log
-                weasyprint_log = log.getLogger('weasyprint')
-                weasyprint_log.addHandler(log.FileHandler('weasyprint.log'))
-                font_config = FontConfiguration()
-                html = HTML(string=report, base_url=basedir)
-                html.write_pdf(report_file_name, font_config=font_config)
+                if _find_chrome():
+                    logger.info('PDF backend: Chrome headless')
+                    ok = _html_to_pdf_chrome(report, report_file_name)
+                    if not ok:
+                        raise RuntimeError('Chrome headless exited with non-zero status')
+                else:
+                    logger.warning('Chrome not found — falling back to WeasyPrint')
+                    _html_to_pdf_weasyprint(report, report_file_name, basedir)
             except Exception as e:
                 logger.error(f'Failed writing report file {report_file_name}: {str(e)}')
                 sys.exit()    
