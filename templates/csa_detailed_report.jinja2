@@ -511,6 +511,47 @@
         .intro-card h4 { margin: 0 0 0.6rem; font-size: 0.95rem; color: var(--color-primary-dark); }
         .intro-card p { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.6; margin: 0; }
 
+        /* ── Findings Driver Summary ── */
+        .findings-driver {
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 2rem 0 3rem;
+        }
+        .findings-driver-header {
+            background: var(--color-primary-dark);
+            padding: 0.75rem 1.25rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #fff;
+        }
+        .findings-driver table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .findings-driver table tr:not(:last-child) td {
+            border-bottom: 1px solid var(--color-border);
+        }
+        .findings-driver table td {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+        .findings-driver table td:first-child {
+            width: 38%;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+        .findings-driver table td:nth-child(2) {
+            color: var(--color-text-muted);
+        }
+        .findings-driver table tr.finding-row-active td:first-child {
+            color: var(--color-critical);
+        }
+        .finding-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
         /* ── Product Recommendation Cards ── */
         .product-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2.5rem 0; }
         .product-card {
@@ -806,14 +847,26 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     <h1>Rapid Cloud Assessment Report</h1>
     <div class="subtitle">Cloud Security Risk Findings</div>
 
-    <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; justify-content:center; gap:3rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
 
-        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem;">
+        {# ── Overall score circle ── #}
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem; flex-shrink:0;">
             <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.12); border:3px solid rgba(255,255,255,0.55); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px rgba(255,255,255,0.18), inset 0 1px 0 rgba(255,255,255,0.2);">
                 <span style="font-size:3.6rem; font-weight:800; color:white; letter-spacing:-2px; line-height:1;">{{ _avg_csp_score | round(1) }}</span>
                 <span style="font-size:0.65rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase;">out of 10</span>
             </div>
-            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center;">MultiCloud<br>Cloud Security Posture Score</div>
+            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center;">Multi‑Cloud<br>Security Posture Score</div>
+        </div>
+
+        {# ── Divider ── #}
+        <div style="width:1px; height:140px; background:rgba(255,255,255,0.2); flex-shrink:0; align-self:center;"></div>
+
+        {# ── Per-CSP semicircle gauges ── #}
+        <div style="display:flex; gap:1.2rem; align-items:flex-start; flex-wrap:wrap; justify-content:center;">
+            {# Invert gauge colours for dark cover background #}
+            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('AWS',   _score_aws)   }}</div>
+            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
+            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('GCP',   _score_gcp)   }}</div>
         </div>
 
     </div>
@@ -871,13 +924,6 @@ Host workload — assess network exposure; check if publicly routable or in a DM
             <div class="tc-sub">Active detections requiring rapid triage or containment.</div>
         </a>
     </div>
-</div>
-
-{# ─── Per-CSP gauges ─── #}
-<div style="display:flex; gap:1rem; justify-content:center; align-items:flex-start; flex-wrap:wrap; margin:0.5rem 0 1.5rem;">
-  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AWS', _score_aws) }}</div>
-  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
-  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('GCP', _score_gcp) }}</div>
 </div>
 
 {# ═══════════════════════════════════════════════════════
@@ -1453,103 +1499,244 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 <section id="conclusion" class="pagebreak">
 <h2>Fortinet Product and Solution Recommendations</h2>
+<p style="margin: -0.5rem 0 2rem; font-size: 0.82rem; color: var(--color-text-muted);">
+  Recommendations generated based on <strong>{{customer}}</strong>'s cloud security risk findings identified during this assessment.
+</p>
 
-<div class="narrative">
-<p>
-    The FortiCNAPP non-intrusive assessment of <strong>{{customer}}</strong> reveals a multi-layered risk exposure spanning cloud configuration, workload security, identity governance, and behavioral threat signals.
-    {% if total_compliance_critical > 0 %}<strong>{{total_compliance_critical}} critical compliance finding(s)</strong> confirm foundational control gaps — including access management, network exposure, and audit logging — that represent exploitable attack surface without any specialized tooling.{% endif %}
-    {% if total_vuln_critical > 0 %}<strong>{{total_vuln_critical}} host(s) and/or container(s) carry unpatched CVEs</strong> with a Risk Score of 9 or higher, where known exploit code is publicly available and active exploitation in the wild has been documented.{% endif %}
-    {% if total_admin.val > 0 %}<strong>{{total_admin.val}} admin identity(ies) lack MFA</strong>, presenting a direct path to full environment compromise through a single credential phishing event.{% endif %}
-    {% if critical_alert_count > 0 %}<strong>{{critical_alert_count}} critical behavioral alert(s)</strong> indicate active or attempted anomalous activity requiring immediate investigation.{% endif %}
-    {% if _sc > 0 %}<strong>{{_sc}} secret(s)</strong> found in world-accessible locations represent directly usable credentials exposing downstream systems.{% endif %}
-</p>
-<p>
-    The following Fortinet products are recommended to address the specific risk vectors identified above. FortiCNAPP provides the continuous agentless detection layer; the complementary products below add prevention, enforcement, and response capabilities to convert visibility into active protection.
-</p>
+{# ── Findings-to-Product mapping table ── #}
+<div class="findings-driver">
+  <div class="findings-driver-header">Risk Findings Driving These Recommendations</div>
+  <table>
+    <tr class="{% if total_compliance_critical > 0 %}finding-row-active{% endif %}">
+      <td>
+        {% if total_compliance_critical > 0 %}
+          ⚠ {{total_compliance_critical}} Critical Compliance Finding(s)
+        {% else %}
+          ✓ No Critical Compliance Findings
+        {% endif %}
+      </td>
+      <td>
+        {% if total_compliance_critical > 0 %}
+          Foundational control gaps in access management, network exposure, and audit logging represent directly exploitable attack surface.
+        {% else %}
+          Compliance posture is within acceptable thresholds. Continue monitoring for configuration drift.
+        {% endif %}
+      </td>
+      <td>
+        <div class="finding-chips">
+          {% if total_compliance_critical > 0 %}
+            <span class="badge badge-critical">FortiCNAPP CSPM</span>
+            <span class="badge badge-high">FortiGate</span>
+            <span class="badge badge-high">FortiCASB-SSPM</span>
+          {% else %}
+            <span class="badge badge-info">FortiCNAPP CSPM</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    <tr class="{% if total_vuln_critical > 0 %}finding-row-active{% endif %}">
+      <td>
+        {% if total_vuln_critical > 0 %}
+          ⚠ {{total_vuln_critical}} Unpatched CVE(s) — Risk Score ≥ 9
+        {% else %}
+          ✓ No Critical Unpatched CVEs
+        {% endif %}
+      </td>
+      <td>
+        {% if total_vuln_critical > 0 %}
+          Public exploit code available. Active exploitation documented for {{total_vuln_critical}} host(s)/container(s) — immediate virtual patching required.
+        {% else %}
+          No high-risk unpatched vulnerabilities detected across scanned workloads.
+        {% endif %}
+      </td>
+      <td>
+        <div class="finding-chips">
+          {% if total_vuln_critical > 0 %}
+            <span class="badge badge-critical">FortiCNAPP CWPP</span>
+            <span class="badge badge-high">FortiGate IPS</span>
+            <span class="badge badge-high">FortiWeb WAF</span>
+          {% else %}
+            <span class="badge badge-info">FortiCNAPP CWPP</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    <tr class="{% if total_admin.val > 0 or total_identity_high.val > 0 %}finding-row-active{% endif %}">
+      <td>
+        {% if total_admin.val > 0 or total_identity_high.val > 0 %}
+          ⚠ {{total_admin.val}} Admin(s) Without MFA · {{total_identity_high.val}} Over-Privileged Identity(ies)
+        {% else %}
+          ✓ No Critical Identity Risks
+        {% endif %}
+      </td>
+      <td>
+        {% if total_admin.val > 0 %}
+          {{total_admin.val}} admin account(s) present a direct path to full environment compromise via a single credential phishing event.
+        {% elif total_identity_high.val > 0 %}
+          {{total_identity_high.val}} identity(ies) hold unused permissions exceeding 90 days — excess privilege amplifies the blast radius of any compromise.
+        {% else %}
+          Identity and entitlement posture is within acceptable thresholds.
+        {% endif %}
+      </td>
+      <td>
+        <div class="finding-chips">
+          {% if total_admin.val > 0 or total_identity_high.val > 0 %}
+            <span class="badge badge-critical">FortiCNAPP CIEM</span>
+            <span class="badge badge-high">FortiGate ZTNA</span>
+            <span class="badge badge-high">FortiCASB-SSPM</span>
+          {% else %}
+            <span class="badge badge-info">FortiCNAPP CIEM</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    <tr class="{% if critical_alert_count > 0 %}finding-row-active{% endif %}">
+      <td>
+        {% if critical_alert_count > 0 %}
+          ⚠ {{critical_alert_count}} Critical Behavioral Alert(s)
+        {% else %}
+          ✓ No Critical Behavioral Alerts
+        {% endif %}
+      </td>
+      <td>
+        {% if critical_alert_count > 0 %}
+          Correlated signals of anomalous activity — suspicious logins, privilege escalation, audit log tampering — indicate active or attempted compromise.
+        {% else %}
+          No critical behavioral anomalies detected during the assessment window.
+        {% endif %}
+      </td>
+      <td>
+        <div class="finding-chips">
+          {% if critical_alert_count > 0 %}
+            <span class="badge badge-critical">FortiCNAPP Threat Detection</span>
+          {% else %}
+            <span class="badge badge-info">FortiCNAPP Threat Detection</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    <tr class="{% if _sc > 0 %}finding-row-active{% endif %}">
+      <td>
+        {% if _sc > 0 %}
+          ⚠ {{_sc}} Exposed Secret(s)
+        {% else %}
+          ✓ No Exposed Secrets
+        {% endif %}
+      </td>
+      <td>
+        {% if _sc > 0 %}
+          {{_sc}} credential(s), API key(s), or private key material found in world-accessible or insufficiently protected locations. Each is a directly usable credential — rotate immediately.
+        {% else %}
+          No secrets or credentials found in exposed locations.
+        {% endif %}
+      </td>
+      <td>
+        <div class="finding-chips">
+          {% if _sc > 0 %}
+            <span class="badge badge-critical">FortiCNAPP Secrets</span>
+          {% else %}
+            <span class="badge badge-info">FortiCNAPP Secrets</span>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+  </table>
 </div>
 
+{# ── Product cards — only rendered when findings are relevant ── #}
 <div class="product-grid">
 
+  {# FortiCNAPP — always shown as it is the detection layer #}
   <div class="product-card">
     <div class="product-name">FortiCNAPP</div>
-    <div class="product-subtitle">Cloud Visibility</div>
+    <div class="product-subtitle">Cloud Visibility &amp; Detection</div>
     <div class="product-addresses">
-      {% if total_compliance_critical > 0 %}<span class="badge badge-critical">CSPM</span>{% endif %}
-      {% if total_vuln_critical > 0 %}<span class="badge badge-critical">CWPP</span>{% endif %}
-      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-critical">CIEM</span>{% endif %}
-      {% if _sc > 0 %}<span class="badge badge-critical">Secrets</span>{% endif %}
-      {% if critical_alert_count > 0 %}<span class="badge badge-critical">Threat Detection</span>{% endif %}
+      {% if total_compliance_critical > 0 %}<span class="badge badge-critical">{{total_compliance_critical}} compliance finding(s)</span>{% endif %}
+      {% if total_vuln_critical > 0 %}<span class="badge badge-critical">{{total_vuln_critical}} CVE(s) Risk ≥ 9</span>{% endif %}
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-critical">{{total_admin.val + total_identity_high.val}} identity risk(s)</span>{% endif %}
+      {% if _sc > 0 %}<span class="badge badge-critical">{{_sc}} secret(s)</span>{% endif %}
+      {% if critical_alert_count > 0 %}<span class="badge badge-critical">{{critical_alert_count}} alert(s)</span>{% endif %}
     </div>
     <ul class="product-caps">
-      <li><strong>CSPM</strong> — Continuous misconfiguration detection across AWS, Azure, and GCP against CIS, PCI-DSS, and SOC2 benchmarks with automated drift alerting.</li>
-      <li><strong>CWPP</strong> — Agentless vulnerability and runtime threat detection for hosts, containers, and serverless workloads with FortiCNAPP Risk Scoring.</li>
-      <li><strong>CIEM</strong> — Cloud Identity &amp; Entitlement Management: right-size permissions, eliminate standing privilege, and enforce MFA across all cloud identities.</li>
+      {% if total_compliance_critical > 0 %}<li><strong>CSPM</strong> — Eliminate the {{total_compliance_critical}} critical compliance gap(s) with continuous misconfiguration detection across AWS, Azure, and GCP and automated drift alerting.</li>{% endif %}
+      {% if total_vuln_critical > 0 %}<li><strong>CWPP</strong> — Address the {{total_vuln_critical}} workload(s) carrying CVEs with Risk Score ≥ 9 through agentless vulnerability detection and runtime threat monitoring.</li>{% endif %}
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<li><strong>CIEM</strong> — Right-size the {{total_identity_high.val}} over-privileged identity(ies) and enforce MFA on the {{total_admin.val}} unprotected admin account(s).</li>{% endif %}
+      {% if _sc == 0 and total_compliance_critical == 0 and total_vuln_critical == 0 and total_admin.val == 0 %}<li><strong>Continuous Posture Monitoring</strong> — Maintain the current clean posture with automated baseline drift detection across all cloud environments.</li>{% endif %}
     </ul>
   </div>
 
+  {# FortiGate — shown when vulns, compliance gaps, or identity risks exist #}
+  {% if total_vuln_critical > 0 or total_compliance_critical > 0 or total_admin.val > 0 %}
   <div class="product-card">
     <div class="product-name">FortiGate</div>
     <div class="product-subtitle">Cloud Edge Security</div>
     <div class="product-addresses">
-      {% if total_vuln_critical > 0 %}<span class="badge badge-high">Virtual Patching</span>{% endif %}
+      {% if total_vuln_critical > 0 %}<span class="badge badge-high">Virtual Patching — {{total_vuln_critical}} CVE(s)</span>{% endif %}
       {% if total_compliance_critical > 0 %}<span class="badge badge-high">Network Controls</span>{% endif %}
-      {% if total_admin.val > 0 %}<span class="badge badge-high">ZTNA</span>{% endif %}
+      {% if total_admin.val > 0 %}<span class="badge badge-high">ZTNA — {{total_admin.val}} unprotected admin(s)</span>{% endif %}
     </div>
     <ul class="product-caps">
-      <li><strong>Cloud Edge Firewall</strong> — North-South traffic inspection and IPS-based virtual patching at cloud ingress/egress for immediate CVE coverage without maintenance windows.</li>
-      <li><strong>East-West Microsegmentation</strong> — enforce zero-trust workload connectivity to contain lateral movement and limit blast radius from compromised instances.</li>
-      <li><strong>ZTNA &amp; SD-WAN</strong> — replace legacy VPN with identity-aware, least-privilege access to cloud resources for admin, developer, and remote sessions.</li>
+      {% if total_vuln_critical > 0 %}<li><strong>IPS Virtual Patching</strong> — provide immediate exploit coverage for the {{total_vuln_critical}} high-risk CVE(s) at cloud ingress/egress without maintenance windows.</li>{% endif %}
+      {% if total_compliance_critical > 0 %}<li><strong>East-West Microsegmentation</strong> — enforce zero-trust workload connectivity to contain lateral movement stemming from the {{total_compliance_critical}} compliance control gap(s).</li>{% endif %}
+      {% if total_admin.val > 0 %}<li><strong>ZTNA</strong> — replace legacy VPN with identity-aware, least-privilege access to cloud resources, addressing the {{total_admin.val}} admin account(s) currently accessible without strong authentication.</li>{% endif %}
     </ul>
   </div>
+  {% endif %}
 
+  {# FortiAppSec Cloud — shown when vulns or compliance gaps exist #}
+  {% if total_vuln_critical > 0 or total_compliance_critical > 0 %}
   <div class="product-card">
     <div class="product-name">FortiAppSec Cloud</div>
-    <div class="product-subtitle">Cloud Application Web &amp; API Security · SaaS · DDoS CDN WAAP · ALB</div>
+    <div class="product-subtitle">WAAP · DDoS · API Protection · CDN</div>
     <div class="product-addresses">
-      {% if total_vuln_critical > 0 %}<span class="badge badge-medium">WAAP</span>{% endif %}
+      {% if total_vuln_critical > 0 %}<span class="badge badge-medium">WAAP — {{total_vuln_critical}} exposed workload(s)</span>{% endif %}
       <span class="badge badge-medium">DDoS</span>
       <span class="badge badge-medium">API Protection</span>
-      <span class="badge badge-medium">CDN</span>
     </div>
     <ul class="product-caps">
-      <li><strong>WAAP at the CDN Edge</strong> — globally distributed Web Application &amp; API Protection with volumetric and application-layer DDoS scrubbing before traffic reaches the origin.</li>
-      <li><strong>API Discovery &amp; Protection</strong> — auto-discover shadow and undocumented APIs, enforce schema-based policies, and block abuse and bot-driven attacks.</li>
-      <li><strong>ALB-Native Deployment</strong> — inline security for traffic flowing through Application Load Balancers with no agent overhead and full SSL/TLS visibility.</li>
+      {% if total_vuln_critical > 0 %}<li><strong>WAAP at the CDN Edge</strong> — globally distributed web and API protection that reduces exposure of the {{total_vuln_critical}} vulnerable workload(s) before traffic reaches the origin.</li>{% endif %}
+      <li><strong>API Discovery &amp; Protection</strong> — auto-discover shadow and undocumented APIs that may surface from the compliance gaps detected, enforce schema-based policies, and block abuse.</li>
+      <li><strong>DDoS Scrubbing</strong> — volumetric and application-layer DDoS protection at the CDN edge with no origin overhead.</li>
     </ul>
   </div>
+  {% endif %}
 
+  {# FortiWeb — shown when vulns exist #}
+  {% if total_vuln_critical > 0 %}
   <div class="product-card">
     <div class="product-name">FortiWeb</div>
-    <div class="product-subtitle">Cloud Application Web &amp; API · Gen AI (MCP) · ALB</div>
+    <div class="product-subtitle">WAF · Gen AI (MCP) · ALB</div>
     <div class="product-addresses">
-      {% if total_vuln_critical > 0 %}<span class="badge badge-medium">Virtual Patching</span>{% endif %}
+      <span class="badge badge-medium">Virtual Patching — {{total_vuln_critical}} CVE(s)</span>
       <span class="badge badge-medium">WAF</span>
       <span class="badge badge-medium">Gen AI Security</span>
-      <span class="badge badge-medium">ALB</span>
     </div>
     <ul class="product-caps">
-      <li><strong>WAF + Virtual Patching</strong> — ML-driven web attack prevention with immediate CVE exploit coverage for web-facing stacks before the underlying package is patched.</li>
-      <li><strong>Gen AI &amp; MCP Security</strong> — protect AI inference APIs and Model Context Protocol (MCP) endpoints from prompt injection, data exfiltration, and API abuse.</li>
-      <li><strong>ALB Integration</strong> — transparent inline inspection of HTTP/S traffic behind Application Load Balancers with API gateway schema validation and rate limiting.</li>
+      <li><strong>WAF + Virtual Patching</strong> — ML-driven exploit prevention providing immediate CVE coverage for the {{total_vuln_critical}} unpatched workload(s) before the underlying package can be patched.</li>
+      <li><strong>Gen AI &amp; MCP Security</strong> — protect AI inference APIs and Model Context Protocol endpoints from prompt injection and data exfiltration.</li>
+      <li><strong>ALB Integration</strong> — transparent inline inspection behind Application Load Balancers with API gateway schema validation and rate limiting.</li>
     </ul>
   </div>
+  {% endif %}
 
-  <div class="product-card" style="flex: 1 1 100%;">
+  {# FortiCASB-SSPM — shown when identity or compliance findings exist #}
+  {% if total_admin.val > 0 or total_identity_high.val > 0 or total_compliance_critical > 0 %}
+  <div class="product-card" {% if not (total_vuln_critical > 0) %}style="flex: 1 1 100%;"{% endif %}>
     <div class="product-name">FortiCASB-SSPM</div>
-    <div class="product-subtitle">Data Governance &amp; Shadow IT · SaaS Supply Chain · SaaS Compliance</div>
+    <div class="product-subtitle">Data Governance · Shadow IT · SaaS Compliance</div>
     <div class="product-addresses">
-      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-high">Identity Risk</span>{% endif %}
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-high">{{total_admin.val + total_identity_high.val}} identity risk(s)</span>{% endif %}
       {% if total_compliance_critical > 0 %}<span class="badge badge-high">SaaS Compliance</span>{% endif %}
       <span class="badge badge-high">Shadow IT</span>
       <span class="badge badge-high">Data Governance</span>
-      <span class="badge badge-high">Supply Chain</span>
     </div>
     <ul class="product-caps">
-      <li><strong>SaaS Security Posture Management</strong> — continuous misconfiguration detection and auto-remediation across M365, Google Workspace, Salesforce, and other sanctioned SaaS platforms.</li>
-      <li><strong>Shadow IT &amp; SaaS Supply Chain Risk</strong> — discover unsanctioned applications, assess OAuth and third-party integration risk, and enforce SaaS access governance policies.</li>
-      <li><strong>Data Governance &amp; DLP</strong> — classify and protect sensitive data in motion across SaaS platforms with policy-driven enforcement and audit-ready compliance reporting.</li>
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<li><strong>SaaS Identity Governance</strong> — extend MFA enforcement and least-privilege policies to SaaS platforms for the {{total_admin.val + total_identity_high.val}} at-risk identity(ies) that span cloud and SaaS boundaries.</li>{% endif %}
+      {% if total_compliance_critical > 0 %}<li><strong>SaaS Security Posture Management</strong> — continuously detect and auto-remediate misconfigurations across M365, Google Workspace, and Salesforce that mirror the {{total_compliance_critical}} cloud compliance gap(s) found.</li>{% endif %}
+      <li><strong>Shadow IT &amp; Supply Chain Risk</strong> — discover unsanctioned OAuth-connected applications and third-party integrations that bypass the controls evaluated in this assessment.</li>
     </ul>
   </div>
+  {% endif %}
 
 </div>
 

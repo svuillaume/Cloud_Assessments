@@ -28,11 +28,12 @@ class ReportGenCSADetailed(ReportGen):
                     vulns_end_time: LaceworkTime,
                     alerts_start_time: LaceworkTime,
                     alerts_end_time: LaceworkTime,
-                    ciem_threshold: int = 70):
+                    ciem_threshold: int = 70,
+                    compliance_framework: str = 'CIS'):
 
-        self.aws_compliance_data=self.gather_compliance_data(cloud_provider='AWS')
-        self.azure_compliance_data=self.gather_compliance_data(cloud_provider='AZURE')
-        self.gcp_compliance_data=self.gather_compliance_data(cloud_provider='GCP')
+        self.aws_compliance_data=self.gather_compliance_data(cloud_provider='AWS', report_type=compliance_framework)
+        self.azure_compliance_data=self.gather_compliance_data(cloud_provider='AZURE', report_type=compliance_framework)
+        self.gcp_compliance_data=self.gather_compliance_data(cloud_provider='GCP', report_type=compliance_framework)
         self.host_vulns_data=self.gather_host_vulnerability_data(vulns_start_time.generate_time_string(), vulns_end_time.generate_time_string())
         self.container_vulns_data=self.gather_container_vulnerability_data(vulns_start_time.generate_time_string(), vulns_end_time.generate_time_string())
         self.alerts_data=self.gather_alert_data(alerts_start_time.generate_time_string(), alerts_end_time.generate_time_string())
@@ -80,6 +81,7 @@ class ReportGenCSADetailed(ReportGen):
                  alerts_start_time: LaceworkTime = LaceworkTime('7:0'),
                  alerts_end_time: LaceworkTime = LaceworkTime('0:0'),
                  ciem_threshold: int = 70,
+                 compliance_framework: str = 'CIS',
                  custom_logo=None,
                  pagesize="a3",
                  pdf=False):
@@ -87,7 +89,8 @@ class ReportGenCSADetailed(ReportGen):
                          vulns_end_time,
                          alerts_start_time,
                          alerts_end_time,
-                         ciem_threshold=ciem_threshold)
+                         ciem_threshold=ciem_threshold,
+                         compliance_framework=compliance_framework)
         return self.render(customer, author, custom_logo=custom_logo, pagesize=pagesize, pdf=pdf)
 
 

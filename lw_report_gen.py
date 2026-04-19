@@ -58,6 +58,7 @@ def main():
                                                 alerts_start_time=pre_processed_args['alerts_start_time'],
                                                 alerts_end_time=pre_processed_args['alerts_end_time'],
                                                 ciem_threshold=args.ciem_threshold,
+                                                compliance_framework=args.compliance_framework,
                                                 custom_logo=custom_logo
                                                 )
             elif args.report_format == "PDF":
@@ -69,6 +70,7 @@ def main():
                                                 alerts_start_time=pre_processed_args['alerts_start_time'],
                                                 alerts_end_time=pre_processed_args['alerts_end_time'],
                                                 ciem_threshold=args.ciem_threshold,
+                                                compliance_framework=args.compliance_framework,
                                                 custom_logo=custom_logo,
                                                 pagesize='a2',
                                                 pdf=True,

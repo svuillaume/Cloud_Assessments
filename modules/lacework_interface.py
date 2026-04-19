@@ -32,19 +32,36 @@ class LaceworkInterface:
         self.compliance_provider_lookup = {'AWS': 'AwsCfg',
                                            'GCP': 'GcpCfg',
                                            'AZURE': 'AzureCfg'}
-        self.compliance_report_lookup = {'AwsCfg':
-                                             {'CIS': 'AWS_CIS_14',
-                                              'PCI': 'AWS_PCI_DSS_3.2.1',
-                                              },
-                                         'AzureCfg':
-                                             {'CIS': 'AZURE_CIS_1_5',
-                                              'PCI': 'AZURE_PCI_DSS_3_2_1_CIS_1_5',
-                                              },
-                                         'GcpCfg':
-                                             {'CIS': 'GCP_CIS13',
-                                              'PCI': 'GCP_PCI_Rev2',
-                                              }
-                                         }
+        self.compliance_report_lookup = {
+            'AwsCfg': {
+                'CIS':         'AWS_CIS_14',
+                'PCI':         'AWS_PCI_DSS_3.2.1',
+                'NIST_CSF':    'AWS_NIST_CSF',
+                'NIST_800_53': 'AWS_NIST_800-53_rev5',
+                'SOC2':        'AWS_SOC_2',
+                'HIPAA':       'AWS_HIPAA',
+                'ISO_27001':   'AWS_ISO_27001:2013',
+                'CSA_CCM':     'AWS_CSA_CCM_4_0_5',
+            },
+            'AzureCfg': {
+                'CIS':         'AZURE_CIS_1_5',
+                'PCI':         'AZURE_PCI_DSS_3_2_1_CIS_1_5',
+                'NIST_CSF':    'AZURE_NIST_CSF',
+                'NIST_800_53': 'AZURE_NIST_800-53_rev5',
+                'HIPAA':       'AZURE_HIPAA',
+                'ISO_27001':   'AZURE_ISO_27001:2013',
+                'CSA_CCM':     'AZURE_CSA_CCM_4_0_5',
+            },
+            'GcpCfg': {
+                'CIS':         'GCP_CIS13',
+                'PCI':         'GCP_PCI_Rev2',
+                'NIST_CSF':    'GCP_NIST_CSF',
+                'NIST_800_53': 'GCP_NIST_800-53_rev5',
+                'HIPAA':       'GCP_HIPAA',
+                'ISO_27001':   'GCP_ISO_27001:2013',
+                'CSA_CCM':     'GCP_CSA_CCM_4_0_5',
+            },
+        }
 
     def write_json_file(self, obj, name):
         with open(name, 'w') as f:
