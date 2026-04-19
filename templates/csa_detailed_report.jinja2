@@ -36,11 +36,18 @@
             }
             {% endif %}
             .pagebreak { page-break-after: always; clear: both; }
+            .page-break-before { page-break-before: always; clear: both; }
             .no-print { display: none !important; }
             tbody tr:hover { background: transparent !important; }
             .section-card, .finding-row, .kpi-card, .decision-card, table {
                 page-break-inside: avoid;
                 break-inside: avoid;
+            }
+            section.pagebreak {
+                page-break-before: always;
+            }
+            section.pagebreak:first-of-type {
+                page-break-before: auto;
             }
         }
 
@@ -51,10 +58,10 @@
             width: 100%;
             max-width: 100%;
             margin: 0 auto;
-            padding: 0 2.5rem;
+            padding: 0 4rem;
             color: var(--color-text);
             background: #FFFFFF;
-            line-height: 1.75;
+            line-height: 1.8;
             font-size: 14px;
         }
 
@@ -120,7 +127,7 @@
             color: var(--color-primary-dark);
             border-left: 5px solid var(--color-primary);
             padding-left: 1rem;
-            margin: 5rem 0 2rem;
+            margin: 5.5rem 0 2.5rem;
             clear: both;
         }
         h2:first-of-type { margin-top: 3rem; }
@@ -128,17 +135,19 @@
             font-size: 1.15rem;
             font-weight: 600;
             color: var(--color-text);
-            margin: 3rem 0 1.1rem;
+            margin: 3.5rem 0 1.25rem;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid var(--color-border);
             clear: both;
         }
         h4 {
             font-size: 1rem;
             font-weight: 600;
             color: var(--color-text);
-            margin: 2rem 0 0.75rem;
+            margin: 2.5rem 0 0.85rem;
             clear: both;
         }
-        p { margin-bottom: 1.1rem; color: var(--color-text); line-height: 1.8; }
+        p { margin-bottom: 1.2rem; color: var(--color-text); line-height: 1.85; }
 
         /* ── TOC ── */
         .toc {
@@ -185,7 +194,7 @@
         }
 
         /* ── KPI Cards ── */
-        .kpi-grid { width: 100%; margin: 2.5rem 0; overflow: hidden; }
+        .kpi-grid { width: 100%; margin: 3rem 0; overflow: hidden; }
         .kpi-grid::after { content: ""; display: table; clear: both; }
         .kpi-card {
             float: left;
@@ -193,7 +202,7 @@
             margin-right: 4%;
             background: white;
             border-radius: 10px;
-            padding: 1.25rem 1rem;
+            padding: 1.75rem 1.25rem;
             box-shadow: 0 2px 6px rgba(0,0,0,0.08);
             border: 1px solid var(--color-border);
             text-align: center;
@@ -238,28 +247,28 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            margin: 2rem 0;
+            margin: 2.5rem 0;
             background: white;
-            font-size: 0.8rem;
+            font-size: 0.83rem;
         }
         thead th {
             background: var(--color-primary-dark);
             color: white;
             font-weight: 600;
-            font-size: 0.72rem;
+            font-size: 0.74rem;
             text-transform: uppercase;
             letter-spacing: 0.4px;
-            padding: 0.6rem 0.7rem;
+            padding: 0.85rem 1rem;
             text-align: left;
             white-space: nowrap;
         }
         tbody tr { border-bottom: 1px solid var(--color-border); }
         tbody tr:nth-child(even) { background: var(--color-bg-section); }
-        td { padding: 0.55rem 0.7rem; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+        td { padding: 0.9rem 1rem; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
 
         /* Executive finding table — wider cells, no hard max-width */
         .exec-table { table-layout: auto; }
-        .exec-table td, .exec-table th { font-size: 0.75rem; padding: 0.5rem 0.6rem; max-width: 220px; }
+        .exec-table td, .exec-table th { font-size: 0.78rem; padding: 0.85rem 0.9rem; max-width: 220px; }
         .exec-table td.narrow { width: 28px; text-align: center; }
         .exec-table td.med { max-width: 140px; }
         .exec-table td.wide { max-width: 260px; }
@@ -270,9 +279,9 @@
 
         /* ── Info Boxes ── */
         .info-box {
-            padding: 1.25rem 1.5rem;
+            padding: 1.5rem 2rem;
             border-radius: 8px;
-            margin: 2rem 0;
+            margin: 2.5rem 0;
             display: flex;
             gap: 0.85rem;
             border: 1px solid;
@@ -320,7 +329,7 @@
 
         /* ── Action Plan Table ── */
         .plan-table thead th { background: var(--color-primary-dark); }
-        .plan-table td { padding: 0.75rem 0.8rem; font-size: 0.82rem; vertical-align: top; }
+        .plan-table td { padding: 1rem 1.1rem; font-size: 0.83rem; vertical-align: top; }
         .plan-table td:first-child { font-weight: 600; white-space: nowrap; color: var(--color-primary-dark); width: 110px; }
         .plan-table td:last-child { color: var(--color-text-muted); }
 
@@ -330,13 +339,13 @@
             border: 1px solid #C8C8C8;
             border-left: 4px solid var(--color-primary);
             border-radius: 0 8px 8px 0;
-            padding: 1.75rem 2rem;
-            margin: 2.5rem 0;
+            padding: 2rem 2.5rem;
+            margin: 3rem 0;
         }
         .commentary-box h4 { margin-top: 0; color: var(--color-primary-dark); }
 
         /* ── Narrative ── */
-        .narrative { background: var(--color-bg-section); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; padding: 1.75rem 2rem; margin: 2rem 0; }
+        .narrative { background: var(--color-bg-section); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; padding: 2rem 2.5rem; margin: 2.5rem 0; }
         .narrative p:last-child { margin-bottom: 0; }
 
         /* ── Promo ── */
@@ -538,8 +547,8 @@
             background: #111111;
             border-left: 5px solid var(--color-primary);
             border-radius: 0 8px 8px 0;
-            padding: 1.75rem 2rem;
-            margin: 3rem 0 1.5rem;
+            padding: 2rem 2.5rem;
+            margin: 3.5rem 0 2rem;
         }
         .section-summary .ss-title {
             font-size: 0.68rem;
@@ -565,10 +574,11 @@
         }
         section.pagebreak {
             padding-top: 1rem;
+            padding-bottom: 4rem;
         }
         section.pagebreak + section.pagebreak {
-            border-top: 1px solid var(--color-border);
-            padding-top: 0;
+            border-top: 2px solid var(--color-border);
+            padding-top: 1rem;
         }
         footer { margin-top: 5rem; padding: 2rem 2.5rem; background: var(--color-primary-dark); color: rgba(255,255,255,0.92); font-size: 0.78rem; text-align: center; }
         footer p { color: inherit; }
@@ -818,16 +828,13 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {# ═══════════════════════════════════════════════════════
    ASSESSMENT INTRODUCTION
    ═══════════════════════════════════════════════════════ #}
-<p style="max-width:820px; margin: 2rem 0 2.5rem; font-size:0.97rem; line-height:1.85; color:var(--color-text);">
-  This Rapid Cloud Assessment provides <strong>{{customer}}</strong> with an independent, non-intrusive
-  evaluation of their cloud security posture across
+<p style="max-width:820px; margin: 2rem auto 2.5rem; font-size:0.97rem; line-height:1.85; color:var(--color-text); text-align:center;">
+  This Rapid Cloud Assessment provides an independent, non-intrusive evaluation of
+  <strong>{{customer}}</strong>'s cloud security posture across
   {% if aws_compliance_data %}AWS{% endif %}{% if aws_compliance_data and (azure_compliance_data or gcp_compliance_data) %}, {% endif %}{% if azure_compliance_data %}Azure{% endif %}{% if azure_compliance_data and gcp_compliance_data %}, {% endif %}{% if gcp_compliance_data %}GCP{% endif %}.
-  FortiCNAPP connects using <strong>read-only API access</strong> — no agents, no software to deploy,
-  no disruption to running workloads — and analyzes data entirely within the organization's own
-  cloud environment. The findings in this report cover five prioritized risk domains:
-  {% if _sc > 0 %}exposed secrets, {% endif %}critical compliance failures, high-risk vulnerabilities,
-  identity and entitlement gaps, and active behavioral alerts. Each finding is accompanied by
-  business context and a recommended remediation action.
+  FortiCNAPP connects using <strong>read-only API access</strong> — no agents, no software to install,
+  no disruption to running workloads. All data is collected and analyzed entirely within
+  the organization's own cloud environment, ensuring full data privacy by design.
 </p>
 
 {# ═══════════════════════════════════════════════════════
@@ -979,12 +986,12 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     {% if _sc > 0 %}
     <p><strong style="color:#DA291C;">{{_sc}} exposed secret(s)</strong> were found in world-accessible or insufficiently protected locations (chmod &gt; 600). Each represents a directly usable credential — an attacker with read access bypasses all authentication and authorization controls entirely. The average attacker dwell time after credential theft is <strong style="color:white;">194 days</strong> before detection. Immediate rotation is non-negotiable.</p>
     {% if _legacy > 0 %}
-    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Generate replacements using <code>ssh-keygen -t rsa -b 4096 -o -a 100</code> with SHA-256 signing (<code>rsa-sha2-256</code>) or preferably migrate to <code>ssh-ed25519</code> (<code>ssh-keygen -t ed25519</code>) for stronger security and faster authentication.</p>
+    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Migrate to <code>ssh-ed25519</code> — run <code>ssh-keygen -t ed25519</code> to generate a replacement, then rotate and revoke the legacy keys.</p>
     {% endif %}
     {% elif secrets_data and secrets_data.secrets_count > 0 %}
     <p><strong style="color:#1E7A3E;">&#10003; No risk exposure.</strong> All {{secrets_data.secrets_count}} detected secret(s) reside in chmod-600 protected locations (owner read-only). These files are accessible only by the owning process or root — they do not constitute an active risk finding. Continue enforcing strict file permissions and rotate keys on a scheduled basis as part of standard security hygiene.</p>
     {% if _legacy > 0 %}
-    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Even though the files are properly protected, generate replacements using <code>ssh-keygen -t rsa -b 4096 -o -a 100</code> (<code>rsa-sha2-256</code>) or migrate to <code>ssh-ed25519</code> (<code>ssh-keygen -t ed25519</code>) — RSA is susceptible to timing attacks regardless of file permissions.</p>
+    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Even though the files are properly protected, migrate to <code>ssh-ed25519</code> — run <code>ssh-keygen -t ed25519</code> to generate a replacement, then rotate and revoke the legacy keys. RSA is susceptible to timing attacks regardless of file permissions.</p>
     {% endif %}
     {% else %}
     <p>No secrets were detected during this assessment period. Maintain continuous secret scanning as part of the CI/CD pipeline and enforce pre-commit hooks to prevent hardcoded credentials from being introduced in future deployments.</p>
@@ -1063,6 +1070,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     </tbody>
 </table>
 
+<div class="page-break-before"></div>
 <div class="section-summary">
     <div class="ss-title">&#9650; Risk Summary — Why Immediate Action Matters</div>
     {% if total_compliance_critical > 0 %}
@@ -1207,6 +1215,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {% endif %}
 
 {% if container_vulns_data and container_vulns_data.fixable_vulns is defined and not container_vulns_data.fixable_vulns.empty %}
+<div class="page-break-before"></div>
 <h3>Container Vulnerabilities — Fixable Critical CVEs</h3>
 {{ container_vulns_data.fixable_vulns.to_html(index=False) | safe }}
 {% endif %}
@@ -1236,6 +1245,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {% for provider in ['AWS', 'AZURE', 'GCP'] %}
 {% if ciem_data[provider] %}
 {% set pd = ciem_data[provider] %}
+{% if not loop.first %}<div class="page-break-before"></div>{% endif %}
 
 <h3>
     {% if provider == 'AWS' %}<span class="badge badge-aws">AWS</span>
