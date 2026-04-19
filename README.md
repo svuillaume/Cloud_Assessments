@@ -1,20 +1,19 @@
-# Extensible Report Generator
+# Extensible Report Generator v.2
 
 ## Description
 
-A project to abstract the gathering, transformations, and rendering of datasets from Lacework FortiCNAPP into auto-generated reports.
+A project to abstract the gathering, transformations, and rendering of datasets from FortiCNAPP into auto-generated reports.
 
-A sample report can be found [here](https://github.com/lacework/extensible-reporting/blob/main/Example-Report.pdf)
 ## Quickstart
 
-1. Download the binary for your platform from the [releases section](https://github.com/lacework/extensible-reporting/releases/latest)
-
-2. Ensure you have some method of authenticating against your FortiCNAPP API. The easiest
+1. Ensure you have some method of authenticating against your FortiCNAPP API. The easiest
     way is to download an API key file from your FortiCNAPP UI under Settings ->  API Keys. 
 
-3. Run the binary <i> from the command line </i> using the following flags: 
+2. Run the python script using the following flags: 
 
 `--gui --api-key-file <keyfile>`
+
+--gui is optional
 
 Where \<keyfile> is the name of the api key file you downloaded. 
 
@@ -23,13 +22,10 @@ For example on an ARM based Mac download the ARM binary file from the "Releases"
 
 `lw_report_gen.py --gui --api-key-file example.json`
 
-On Mac you may get an error regarding it being an unsigned application. If so you can read the following article on how to run the binary:
-
-https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac
 
 ## Usage for CSA Reports
 
-This tool leverages the Lacework FortiCNAPP API to create HTML and PDF reports. 
+This tool leverages the FortiCNAPP API to create HTML and PDF reports. 
 
 ## Downloading and Setting up the Tool
 
