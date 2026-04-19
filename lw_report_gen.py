@@ -151,7 +151,7 @@ def main():
 
         # Generate a filename if one was not specified
         if not args.report_path:
-            report_file_name = f'{args.customer}_{args.report}_{datetime.datetime.now().strftime("%Y%m%d")}'
+            report_file_name = f'{args.customer}_RCA_{datetime.datetime.now().strftime("%Y%m%d")}'
         else:
             report_file_name = args.report_path
 
