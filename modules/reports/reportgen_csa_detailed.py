@@ -28,18 +28,33 @@ class ReportGenCSADetailed(ReportGen):
                     vulns_end_time: LaceworkTime,
                     alerts_start_time: LaceworkTime,
                     alerts_end_time: LaceworkTime,
-                    ciem_threshold: int = 70):
+                    ciem_threshold: int = 70,
+                    compliance_framework: str = 'CIS',
+                    progress_cb=None):
 
-        self.aws_compliance_data=self.gather_compliance_data(cloud_provider='AWS')
-        self.azure_compliance_data=self.gather_compliance_data(cloud_provider='AZURE')
-        self.gcp_compliance_data=self.gather_compliance_data(cloud_provider='GCP')
+        def _step(pct, label):
+            if progress_cb:
+                progress_cb(pct, label)
+
+        _step(5,  'Fetching AWS compliance data...')
+        self.aws_compliance_data=self.gather_compliance_data(cloud_provider='AWS', report_type=compliance_framework)
+        _step(15, 'Fetching Azure compliance data...')
+        self.azure_compliance_data=self.gather_compliance_data(cloud_provider='AZURE', report_type=compliance_framework)
+        _step(25, 'Fetching GCP compliance data...')
+        self.gcp_compliance_data=self.gather_compliance_data(cloud_provider='GCP', report_type=compliance_framework)
+        _step(38, 'Fetching host vulnerability data...')
         self.host_vulns_data=self.gather_host_vulnerability_data(vulns_start_time.generate_time_string(), vulns_end_time.generate_time_string())
+        _step(50, 'Fetching container vulnerability data...')
         self.container_vulns_data=self.gather_container_vulnerability_data(vulns_start_time.generate_time_string(), vulns_end_time.generate_time_string())
+        _step(62, 'Fetching alerts...')
         self.alerts_data=self.gather_alert_data(alerts_start_time.generate_time_string(), alerts_end_time.generate_time_string())
+        _step(74, 'Scanning for exposed secrets...')
         self.secrets_data=self.gather_secrets(alerts_start_time.generate_time_string(), alerts_end_time.generate_time_string())
+        _step(86, 'Analysing identity & entitlements...')
         self.ciem_data=self.gather_identity_entitlement_data(alerts_start_time.generate_time_string(), alerts_end_time.generate_time_string(), threshold=ciem_threshold)
+        _step(95, 'Rendering report...')
 
-    def render(self, customer, author, pagesize="a3", custom_logo=None, pdf=False):
+    def render(self, customer, author, pagesize="a3", custom_logo=None, pdf=False, include_annex=True):
         if custom_logo and os.path.isfile(custom_logo):
             self.custom_logo_html = self.file_to_image_tag(custom_logo, 'png', align='right')
         else:
@@ -69,7 +84,8 @@ class ReportGenCSADetailed(ReportGen):
             recommendations=self.recommendations,
             fortinet_resources_qr_html=self.fortinet_resources_qr_html,
             pagesize=pagesize,
-            pdf=pdf
+            pdf=pdf,
+            include_annex=include_annex,
         )
 
     def generate(self,
@@ -80,14 +96,18 @@ class ReportGenCSADetailed(ReportGen):
                  alerts_start_time: LaceworkTime = LaceworkTime('7:0'),
                  alerts_end_time: LaceworkTime = LaceworkTime('0:0'),
                  ciem_threshold: int = 70,
+                 compliance_framework: str = 'CIS',
                  custom_logo=None,
                  pagesize="a3",
-                 pdf=False):
+                 pdf=False,
+                 progress_cb=None):
         self.gather_data(vulns_start_time,
                          vulns_end_time,
                          alerts_start_time,
                          alerts_end_time,
-                         ciem_threshold=ciem_threshold)
+                         ciem_threshold=ciem_threshold,
+                         compliance_framework=compliance_framework,
+                         progress_cb=progress_cb)
         return self.render(customer, author, custom_logo=custom_logo, pagesize=pagesize, pdf=pdf)
 
 

@@ -53,7 +53,7 @@ def get_arguments():
 
     parser.add_argument("--report-path", type=str, help="Filename to save report")
     parser.add_argument("--author", help="Author of report", type=str, default="Fortinet")
-    parser.add_argument("--customer", help="Customer Name (Company)", type=str, default="customer")
+    parser.add_argument("--customer", help="Customer Name (Company)", type=str, default="Sam")
     parser.add_argument("--cache-data", help="Create/use locally cached copies of Lacework data. This is mainly used for dev testing.", action='store_true')
     parser.add_argument("--vulns-start-time", type=str,
                         help="The number of days and hours in the past relative to NOW to start the vulnerability report. In the format <D:H>",
@@ -77,6 +77,10 @@ def get_arguments():
     parser.add_argument("--logo", type=str, help="Specify a custom logo (PNG file) to add to the report.")
     parser.add_argument("--ciem-threshold", type=int, default=70, help="Unused entitlement count threshold for CIEM analysis (default: 70)")
     parser.add_argument("--list-reports", help="List the available reports to generate. Default is 'CSA'", action='store_true')
+    parser.add_argument("--compliance-framework",
+                        help="Compliance framework to use in the report. Default is CIS.",
+                        choices=['CIS', 'PCI', 'NIST_CSF', 'NIST_800_53', 'SOC2', 'HIPAA', 'ISO_27001', 'CSA_CCM'],
+                        default='CIS')
 
     return parser.parse_args()
 
