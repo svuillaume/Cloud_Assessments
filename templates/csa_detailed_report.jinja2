@@ -49,6 +49,22 @@
             section.pagebreak:first-of-type {
                 page-break-before: auto;
             }
+
+            /* ── Tighten spacing for print — prevent large whitespace gaps ── */
+            body { padding: 0 2rem; }
+            h2 { margin: 1.5rem 0 1.2rem !important; }
+            h3 { margin: 1.5rem 0 0.75rem !important; padding-bottom: 0.4rem !important; }
+            h4 { margin: 1rem 0 0.5rem !important; }
+            .narrative p { margin-bottom: 0.6rem !important; }
+            .section-summary { margin: 1.5rem 0 1rem !important; }
+            .narrative { margin-bottom: 1rem !important; }
+            section { padding-bottom: 0 !important; }
+            .product-grid { margin: 1rem 0 !important; gap: 0.8rem !important; }
+            .findings-driver { margin: 1rem 0 1.5rem !important; }
+            .toc { margin: 1rem 0 !important; }
+            /* Keep banner + findings table together — no orphaned banner pages */
+            .rec-context-banner { break-after: avoid; break-inside: avoid; }
+            .findings-driver { break-inside: avoid; }
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1501,7 +1517,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 <section id="conclusion" class="pagebreak">
 <h2>Fortinet Product and Solution Recommendations</h2>
 
-<div style="
+<div class="rec-context-banner" style="
     display: flex;
     align-items: stretch;
     border-radius: 10px;
