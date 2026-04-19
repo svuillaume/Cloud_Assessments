@@ -1500,10 +1500,75 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 <section id="conclusion" class="pagebreak">
 <h2>Fortinet Product and Solution Recommendations</h2>
-<div style="display:inline-block; margin: -0.25rem 0 2.5rem; padding: 0.55rem 1.25rem; background: var(--color-primary-dark); border-radius: 6px;">
-  <span style="font-size: 0.8rem; font-weight: 700; color: #fff; letter-spacing: 0.03em;">
-    &#9679; Recommendations generated based on <strong style="color:#ffb3a7;">{{customer}}</strong>'s cloud security risk findings identified during this assessment
-  </span>
+
+<div style="
+    display: flex;
+    align-items: stretch;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 1rem 0 3rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+    border: 1px solid rgba(218,41,28,0.18);
+">
+  {# Left accent bar #}
+  <div style="width: 7px; flex-shrink: 0; background: linear-gradient(180deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);"></div>
+
+  {# Main content #}
+  <div style="flex: 1; background: #111; padding: 1.4rem 1.8rem; display: flex; align-items: center; gap: 1.6rem;">
+
+    {# Icon #}
+    <div style="
+        flex-shrink: 0;
+        width: 52px; height: 52px;
+        border-radius: 50%;
+        background: rgba(218,41,28,0.15);
+        border: 2px solid rgba(218,41,28,0.45);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.5rem; line-height: 1;
+    ">&#127919;</div>
+
+    {# Text block #}
+    <div style="flex: 1;">
+      <div style="
+          font-size: 0.62rem;
+          font-weight: 800;
+          letter-spacing: 3px;
+          text-transform: uppercase;
+          color: var(--color-primary);
+          margin-bottom: 0.35rem;
+      ">Personalized Assessment — {{ customer }}</div>
+      <div style="
+          font-size: 1rem;
+          font-weight: 600;
+          color: #fff;
+          line-height: 1.45;
+      ">
+        These product recommendations were <em>generated exclusively from the risk findings
+        identified in <strong style="color:#FF9900;">{{ customer }}</strong>'s cloud environment</em>
+        during this assessment — not from a generic template.
+      </div>
+      <div style="
+          font-size: 0.78rem;
+          color: rgba(255,255,255,0.55);
+          margin-top: 0.4rem;
+      ">Only products that directly address a detected finding appear below. Findings with no risk exposure are excluded.</div>
+    </div>
+
+    {# Finding count pill #}
+    <div style="
+        flex-shrink: 0;
+        text-align: center;
+        padding: 0.6rem 1.1rem;
+        border-radius: 8px;
+        background: rgba(218,41,28,0.12);
+        border: 1px solid rgba(218,41,28,0.3);
+    ">
+      {% set _total_findings = total_compliance_critical + total_vuln_critical + total_admin.val + critical_alert_count + _sc %}
+      <div style="font-size: 1.8rem; font-weight: 800; color: var(--color-primary); line-height: 1;">{{ _total_findings }}</div>
+      <div style="font-size: 0.6rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-top: 0.2rem;">Active<br>Findings</div>
+    </div>
+
+  </div>
 </div>
 
 {# ── Findings-to-Product mapping table ── #}
