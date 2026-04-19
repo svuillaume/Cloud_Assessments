@@ -847,26 +847,14 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     <h1>Rapid Cloud Assessment Report</h1>
     <div class="subtitle">Cloud Security Risk Findings</div>
 
-    <div style="display:flex; align-items:center; justify-content:center; gap:3rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
 
-        {# ── Overall score circle ── #}
-        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem; flex-shrink:0;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem;">
             <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.12); border:3px solid rgba(255,255,255,0.55); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px rgba(255,255,255,0.18), inset 0 1px 0 rgba(255,255,255,0.2);">
                 <span style="font-size:3.6rem; font-weight:800; color:white; letter-spacing:-2px; line-height:1;">{{ _avg_csp_score | round(1) }}</span>
                 <span style="font-size:0.65rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase;">out of 10</span>
             </div>
-            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center;">Multi‑Cloud<br>Security Posture Score</div>
-        </div>
-
-        {# ── Divider ── #}
-        <div style="width:1px; height:140px; background:rgba(255,255,255,0.2); flex-shrink:0; align-self:center;"></div>
-
-        {# ── Per-CSP semicircle gauges ── #}
-        <div style="display:flex; gap:1.2rem; align-items:flex-start; flex-wrap:wrap; justify-content:center;">
-            {# Invert gauge colours for dark cover background #}
-            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('AWS',   _score_aws)   }}</div>
-            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
-            <div style="width:140px; filter:invert(1) hue-rotate(180deg) brightness(0.92);">{{ csp_mini_gauge('GCP',   _score_gcp)   }}</div>
+            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center;">MultiCloud<br>Cloud Security Posture Score</div>
         </div>
 
     </div>
@@ -924,6 +912,13 @@ Host workload — assess network exposure; check if publicly routable or in a DM
             <div class="tc-sub">Active detections requiring rapid triage or containment.</div>
         </a>
     </div>
+</div>
+
+{# ─── Per-CSP gauges ─── #}
+<div style="display:flex; gap:1rem; justify-content:center; align-items:flex-start; flex-wrap:wrap; margin:0.5rem 0 1.5rem;">
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AWS', _score_aws) }}</div>
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('GCP', _score_gcp) }}</div>
 </div>
 
 {# ═══════════════════════════════════════════════════════
