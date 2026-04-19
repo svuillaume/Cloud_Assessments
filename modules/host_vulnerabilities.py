@@ -2,76 +2,32 @@ import pandas as pd
 import plotly.graph_objects as go
 from logzero import logger
 import json
+from modules.chart_utils import render_bubbles, render_host_priority
 
 
 class HostVulnerabilities:
 
     def __init__(self, raw_data):
-        # Filter Critical to CVSS score 10.0 only, keep all High/Medium/Low
-        self.data = self._filter_by_severity_and_cvss(raw_data)
+        # Filter all vulnerabilities to riskScore >= 9.0
+        self.data = self._filter_by_risk_score(raw_data)
 
-    def _filter_by_severity_and_cvss(self, raw_data):
-        """Filter vulnerabilities: Critical must have CVSS 10.0, keep all High/Medium/Low.
+    def _filter_by_risk_score(self, raw_data, min_score=9.0):
+        """Filter vulnerabilities: keep only those with riskScore >= min_score.
 
         Args:
             raw_data: List of vulnerability records
+            min_score: Minimum FortiCNAPP CVE Risk Score threshold (default 9.0)
 
         Returns:
             Filtered list of vulnerabilities
         """
         filtered_data = []
-        critical_before = 0
-        critical_after = 0
-
         for vuln in raw_data:
-            severity = vuln.get('severity', '')
-
-            # Keep all High, Medium, Low vulnerabilities
-            if severity in ['High', 'Medium', 'Low']:
+            cve_risk_score = vuln.get('riskScore')
+            if cve_risk_score is not None and float(cve_risk_score) >= min_score:
                 filtered_data.append(vuln)
-                continue
 
-            # For Critical, only keep if CVSS score is 10.0
-            if severity == 'Critical':
-                critical_before += 1
-                cvss_score = None
-
-                # Try to extract CVSS score from various possible locations
-                if 'cveProps' in vuln and vuln['cveProps']:
-                    cve_props = vuln['cveProps']
-                    if 'metadata' in cve_props and cve_props['metadata']:
-                        metadata = cve_props['metadata']
-                        if 'NVD' in metadata and metadata['NVD']:
-                            nvd = metadata['NVD']
-                            if 'CVSSv3' in nvd and nvd['CVSSv3']:
-                                cvss_v3 = nvd['CVSSv3']
-                                if 'Score' in cvss_v3:
-                                    cvss_score = float(cvss_v3['Score'])
-
-                    # Also check for cvssV3Score directly in cveProps
-                    if cvss_score is None and 'cvssV3Score' in cve_props:
-                        cvss_score = float(cve_props['cvssV3Score'])
-
-                    # Check for cvss_v3_score
-                    if cvss_score is None and 'cvss_v3_score' in cve_props:
-                        cvss_score = float(cve_props['cvss_v3_score'])
-
-                # Check top-level fields
-                if cvss_score is None and 'cvssScore' in vuln:
-                    cvss_score = float(vuln['cvssScore'])
-
-                if cvss_score is None and 'cvss_score' in vuln:
-                    cvss_score = float(vuln['cvss_score'])
-
-                # Only include Critical if CVSS score is 10.0
-                if cvss_score is not None and cvss_score >= 10.0:
-                    filtered_data.append(vuln)
-                    critical_after += 1
-
-        logger.info(f'Filtered vulnerabilities: {len(raw_data)} total')
-        logger.info(f'  Critical: {critical_before} -> {critical_after} (CVSS >= 10.0)')
-        logger.info(f'  High/Medium/Low: kept all')
-        logger.info(f'  Final count: {len(filtered_data)}')
+        logger.info(f'Filtered host vulnerabilities: {len(raw_data)} -> {len(filtered_data)} (riskScore >= {min_score})')
         return filtered_data
 
     def total_evaluated(self):
@@ -234,65 +190,65 @@ class HostVulnerabilities:
 
         return df
 
-    def host_vulns_by_severity_bar(self, severities=["Critical", "High", "Medium", "Low"], width=600, height=350, format='svg'):
-        df = self.summary(severities=severities)
+    def top_risk_vulns(self, limit=10):
+        """Return top vulnerabilities sorted by riskScore descending, with score included.
 
-        # Modern gradient-inspired color palette with better contrast
-        colors = [
-            '#DC2626',  # Modern red for Critical
-            '#F97316',  # Vibrant orange for High
-            '#FBBF24',  # Warm yellow for Medium
-            '#3B82F6'   # Clean blue for Low
-        ]
+        Returns:
+            DataFrame with CVE, Risk Score, Severity, Hostname, Package, Installed Version, Fix columns.
+        """
+        if not self.data:
+            return pd.DataFrame()
+        df = pd.json_normalize(self.data,
+                               meta=[['evalCtx', 'hostname'],
+                                     ['featureKey', 'name'],
+                                     'vulnId',
+                                     'severity',
+                                     'riskScore',
+                                     ['fixInfo', 'fix_available'],
+                                     ['fixInfo', 'fixed_version'],
+                                     ['featureKey', 'version_installed']])
+        if df.empty:
+            return df
+        df['riskScore'] = pd.to_numeric(df.get('riskScore', pd.Series(dtype=float)), errors='coerce').fillna(0)
+        df['severity'] = pd.Categorical(df.get('severity', pd.Series(dtype=str)), ["Critical", "High", "Medium", "Low", "Info"])
+        df = df.sort_values(by=['riskScore', 'severity'], ascending=[False, True])
+        df = df.drop_duplicates(subset=['vulnId', 'evalCtx.hostname'])
+        df.rename(columns={
+            'evalCtx.hostname': 'Hostname',
+            'vulnId': 'CVE',
+            'severity': 'Severity',
+            'riskScore': 'Risk Score',
+            'featureKey.name': 'Package',
+            'featureKey.version_installed': 'Installed Version',
+            'fixInfo.fix_available': 'Fix Available',
+            'fixInfo.fixed_version': 'Fixed Version'
+        }, inplace=True)
+        cols = ['CVE', 'Risk Score', 'Severity', 'Hostname', 'Package', 'Installed Version']
+        for c in ['Fix Available', 'Fixed Version']:
+            if c in df.columns:
+                cols.append(c)
+        return df[[c for c in cols if c in df.columns]].head(limit)
 
-        # Create bar chart with modern styling
-        fig = go.Figure(data=[go.Bar(
-            x=df['Severity'],
-            y=df['Total CVEs'],
-            marker=dict(
-                color=colors,
-                line=dict(color='rgba(255, 255, 255, 0.8)', width=1.5),
-                opacity=0.9
-            ),
-            text=df['Total CVEs'],
-            textposition='outside',
-            textfont=dict(size=12, color='#1F2937', family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
-            hovertemplate='<b>%{x}</b><br>CVE Count: %{y}<extra></extra>'
-        )])
+    def host_patch_priority(self, limit=15):
+        """Return list of {hostname, count} dicts sorted by total CVE count descending."""
+        if not self.data:
+            return []
+        df = pd.json_normalize(self.data)
+        hostname_col = 'evalCtx.hostname' if 'evalCtx.hostname' in df.columns else 'machineTags.Hostname'
+        df = df.groupby(hostname_col).agg(vuln_count=('vulnId', 'count')).reset_index()
+        df = df.sort_values('vuln_count', ascending=False).head(limit)
+        return [{'hostname': row[hostname_col], 'count': int(row['vuln_count'])} for _, row in df.iterrows()]
 
-        fig.update_layout(
-            title=dict(
-                text='Host Vulnerabilities by Severity',
-                font=dict(size=18, color='#111827', family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', weight=600),
-                x=0.5,
-                xanchor='center'
-            ),
-            yaxis=dict(
-                title='Number of CVEs',
-                titlefont=dict(size=14, color='#4B5563', family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
-                tickfont=dict(size=12, color='#6B7280'),
-                gridcolor='#E5E7EB',
-                gridwidth=1,
-                showgrid=True,
-                zeroline=False
-            ),
-            xaxis=dict(
-                titlefont=dict(size=14, color='#4B5563', family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
-                tickfont=dict(size=12, color='#6B7280'),
-                showgrid=False
-            ),
-            plot_bgcolor='rgba(249, 250, 251, 0.5)',
-            paper_bgcolor='white',
-            margin=dict(l=60, r=40, t=100, b=60),
-            font=dict(family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'),
-            hoverlabel=dict(
-                bgcolor='white',
-                font_size=13,
-                font_family='Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-                bordercolor='#E5E7EB'
-            ),
-            uniformtext=dict(mode='hide', minsize=8)
-        )
-
-        img_bytes = fig.to_image(format=format, width=width, height=height)
-        return img_bytes
+    def host_vulns_by_severity_bar(self, severities=["Critical", "High", "Medium", "Low"], width=600, height=500, format='svg'):
+        if not self.data:
+            return render_host_priority([], [], 'Top Hosts — Patch Priority (Risk Score ≥ 9)',
+                                        width, height, fmt=format)
+        df = pd.json_normalize(self.data)
+        hostname_col = 'evalCtx.hostname' if 'evalCtx.hostname' in df.columns else 'machineTags.Hostname'
+        df = df.groupby(hostname_col).agg(vuln_count=('vulnId', 'count')).reset_index()
+        df = df.sort_values('vuln_count', ascending=False).head(15)
+        labels = df[hostname_col].tolist()
+        values = df['vuln_count'].tolist()
+        return render_host_priority(labels, values,
+                                    title='Top Hosts — Patch Priority (Risk Score ≥ 9)',
+                                    width=width, height=height, fmt=format)

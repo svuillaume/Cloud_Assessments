@@ -44,6 +44,16 @@ class ReportGen:
         b64content = base64.b64encode(font_bytes).decode('utf-8')
         return f"src: url('data:font/{file_format};charset=utf-8;base64,{b64content}') format('{file_format}');"
 
+    def generate_qr_code(self, url: str, box_size: int = 4, border: int = 2) -> str:
+        import qrcode, io
+        qr = qrcode.QRCode(version=1, box_size=box_size, border=border)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color='black', back_color='white')
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return self.bytes_to_image_tag(buf.getvalue(), 'png')
+
     def load_binary_file(self, path: str) -> bytes:
         full_path = os.path.join(self.basedir, path)
         with open(full_path, "rb") as in_file:
@@ -87,6 +97,7 @@ class ReportGen:
         summary_bar_graphic_encoded = self.bytes_to_image_tag(summary_bar_graphic, "svg+xml", align='middle')
         fixable_vulns = host_vulnerabilities.fixable_vulns(severities=["Critical"])
         all_cves_detail = host_vulnerabilities.all_cves_detail(severities=("High", "Medium", "Low"), limit=100)
+        top_risk_vulns = host_vulnerabilities.top_risk_vulns(limit=10)
         return {
             'hosts_scanned_count': total_evaluated,
             'host_vulns_summary': summary,
@@ -95,7 +106,9 @@ class ReportGen:
             'critical_vuln_count': critical_vulnerability_count,
             'host_vulns_summary_by_host_limit': host_limit,
             'fixable_vulns': fixable_vulns,
-            'all_cves_detail': all_cves_detail
+            'all_cves_detail': all_cves_detail,
+            'top_risk_vulns': top_risk_vulns,
+            'host_patch_priority': host_vulnerabilities.host_patch_priority(limit=15)
         }
 
     def gather_container_vulnerability_data(self, begin_time: str, end_time: str, container_limit: int = 25):
@@ -122,6 +135,7 @@ class ReportGen:
         summary_by_package_bar = container_vulnerabilities.top_packages_bar(width=1200 * self.graph_scale, height=350 * self.graph_scale)
         summary_by_package_bar_encoded = self.bytes_to_image_tag(summary_by_package_bar, 'svg+xml', align='middle')
         fixable_vulns = container_vulnerabilities.fixable_vulns(severities=['Critical'])
+        top_risk_vulns = container_vulnerabilities.top_risk_vulns(limit=10)
         return {
             'containers_scanned_count': total_evaluated,
             'container_vulns_summary': summary,
@@ -129,7 +143,8 @@ class ReportGen:
             'container_vulns_summary_by_image': summary_by_image,
             'critical_vuln_count': critical_vulnerability_count,
             'container_vulns_summary_by_image_limit': container_limit,
-            'fixable_vulns': fixable_vulns
+            'fixable_vulns': fixable_vulns,
+            'top_risk_vulns': top_risk_vulns
         }
 
     def gather_compliance_data(self, cloud_provider='AWS', report_type='CIS'):
@@ -164,7 +179,7 @@ class ReportGen:
 
         # Count unique compliance findings (not resources) across all accounts
         # If the same control fails in multiple accounts, it's only counted once
-        summary_count = compliance_reports.get_unique_finding_count(severities=["Critical", "High"])
+        summary_count = compliance_reports.get_unique_finding_count(severities=["Critical"])
         critical_finding_count = compliance_reports.get_unique_critical_finding_count()
 
         return {
@@ -189,11 +204,16 @@ class ReportGen:
             logger.error(f"Exception: {str(e)}")
             logger.error(traceback.format_exc())
             return False
-        print(f'Found {secrets.count_secrets()} total secrets')
-        processed_secrets = secrets.processed_secrets()
+        total = secrets.count_secrets()
+        risky = secrets.risky_secrets_count()
+        legacy = secrets.legacy_rsa_count()
+        print(f'Found {total} total secrets ({risky} in risky locations, {legacy} legacy ssh-rsa)')
         return {
-            "secrets_raw": processed_secrets,
-            "secrets_count": secrets.count_secrets()
+            "secrets_raw": secrets.processed_secrets(),
+            "secrets_html": secrets.styled_secrets_html(),
+            "secrets_count": total,
+            "risky_secrets_count": risky,
+            "legacy_rsa_count": legacy,
         }
 
     def gather_alert_data(self, begin_time: str, end_time: str):
@@ -210,8 +230,9 @@ class ReportGen:
         print(f'Found {alerts.count_alerts()} total alerts.')
         if alerts.count_alerts() > 0:
             processed_alerts = alerts.processed_alerts(limit=25)
-            high_critical_finding_count = len(processed_alerts[processed_alerts['Severity'].isin(['Critical', 'High'])])
+            high_critical_finding_count = len(processed_alerts[processed_alerts['Severity'].isin(['Critical'])])
             print(f'Found {high_critical_finding_count} high and critical alerts.')
+
             return {
                 'alerts_raw': processed_alerts,
                 'high_critical_finding_count': high_critical_finding_count

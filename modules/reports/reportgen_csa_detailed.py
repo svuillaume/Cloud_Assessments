@@ -5,28 +5,23 @@ import os
 class ReportGenCSADetailed(ReportGen):
 
     report_short_name = 'CSA_Detailed'
-    report_name = 'Detailed Cloud Security Assessment (CIS)'
-    report_description = "This is the detailed version of the FortiCNAPP Cloud Security Assessment with CIS compliance reporting."
-    default_recommendations = """<h2>Recommendations</h2>
-            <p>
-              Based on the findings of this assessment, Fortinet recommends the following action plan and next steps:
-            </p>
-            <ol>
-              <li>Engage with your Fortinet account team and partner to review services offerings to prioritize and remediate the findings</li>
-              <li>Complete a recurring Cloud Security Assessment once a wider FortiCNAPP deployment has been completed to baseline and trend improvements to your cloud security posture.</li>
-            </ol>"""
+    report_name = 'Rapid Cloud Assessment Report – FortiCNAPP'
+    report_description = "Executive-ready Rapid Cloud Assessment covering FortiCNAPP compliance findings, vulnerabilities (Risk Score ≥ 9), identity & entitlement risk, and critical alerts with leadership decision support and a 30–60–90 day action plan."
+    default_recommendations = ""
 
     def __init__(self, basedir, use_cache=False, api_key_file=None, graph_scale=1):
         super().__init__(basedir, use_cache=use_cache, api_key_file=api_key_file, graph_scale=graph_scale)
         self.recommendations = self.default_recommendations
         self.template = self.get_jinja2_template('csa_detailed_report.jinja2')
         self.company_logo_html = self.file_to_image_tag('assets/Fortinet_logo.png', 'png')
+        self.rca_logo_html = self.file_to_image_tag('assets/rca_logo.png', 'png')
         self.polygraph_graphic_html = self.file_to_image_tag('assets/FortiCNAPP-Unified-Approach.png', 'png')
         self.sec_outcomes_html = self.file_to_image_tag('assets/sec_outcomes.png', 'png')
         self.cloud_status_quo_html = self.file_to_image_tag('assets/CloudStatusQuo.png', 'png')
         self.fortinet_sec_fabric_html = self.file_to_image_tag('assets/FortinetSecFabric.png', 'png')
         self.forticnapp_platform_html = self.file_to_image_tag('assets/FortiCNAPP.png', 'png')
         self.state_of_cloud_html = self.file_to_image_tag('assets/StateofCloud_SecReport.png', 'png')
+        self.fortinet_resources_qr_html = self.generate_qr_code('https://www.fortinet.com/resources/reports/cloud-security')
 
     def gather_data(self,
                     vulns_start_time: LaceworkTime,
@@ -55,6 +50,7 @@ class ReportGenCSADetailed(ReportGen):
             date=self.get_current_date(),
             author=str(author),
             company_logo_html=self.company_logo_html,
+            rca_logo_html=self.rca_logo_html,
             custom_logo_html=self.custom_logo_html,
             polygraph_graphic_html=self.polygraph_graphic_html,
             sec_outcomes_html=self.sec_outcomes_html,
@@ -71,6 +67,7 @@ class ReportGenCSADetailed(ReportGen):
             secrets_data=self.secrets_data,
             ciem_data=self.ciem_data,
             recommendations=self.recommendations,
+            fortinet_resources_qr_html=self.fortinet_resources_qr_html,
             pagesize=pagesize,
             pdf=pdf
         )

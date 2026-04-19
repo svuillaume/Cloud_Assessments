@@ -4,6 +4,7 @@ notes
 *.pickle
 *.cache
 *.log
+*.webp
 /ps/
 __pycache__/
 /dist/
@@ -11,4 +12,9 @@ __pycache__/
 /.idea/
 och.json
 lw_report_gen.log
+weasyprint.log
 samv.json
+*_key.json
+*apikey*.json
+venv/
+debug_alert_entities.py

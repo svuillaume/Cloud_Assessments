@@ -3,1644 +3,1572 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FortiCNAPP Rapid Cloud Assessment - {{customer}}</title>
-    <link rel="stylesheet" href="https://fonts.xz.style/serve/inter.css">
+    <title>Rapid Cloud Assessment Report – FortiCNAPP – {{customer}}</title>
     <style type="text/css">
         :root {
-            --color-critical: #DC2626;
-            --color-critical-bg: #FEE2E2;
-            --color-high: #EA580C;
-            --color-high-bg: #FFEDD5;
-            --color-medium: #CA8A04;
-            --color-medium-bg: #FEF3C7;
-            --color-low: #2563EB;
-            --color-low-bg: #DBEAFE;
-            --color-success: #16A34A;
-            --color-success-bg: #DCFCE7;
-            --color-primary: #307FE2;
-            --color-primary-dark: #1E5BB8;
-            --color-text: #1F2937;
-            --color-text-light: #6B7280;
-            --color-border: #E5E7EB;
-            --color-bg-light: #F9FAFB;
+            /* ── Fortinet Brand: Red #DA291C · Black #000000 ── */
+            --color-critical: #DA291C;          /* Fortinet Red */
+            --color-critical-bg: #FDECEA;
+            --color-critical-border: #DA291C;
+            --color-high: #CC4A1A;              /* Dark orange-red — distinct from Critical */
+            --color-high-bg: #FDF0E8;
+            --color-medium: #B7770D;            /* Amber */
+            --color-medium-bg: #FEF9E7;
+            --color-low: #2C5280;               /* Muted blue — informational/low risk */
+            --color-low-bg: #EDF2F9;
+            --color-success: #1E7A3E;
+            --color-success-bg: #E8F5ED;
+            --color-primary: #DA291C;           /* Fortinet Red — all primary accents */
+            --color-primary-light: #F04030;
+            --color-primary-dark: #000000;      /* Fortinet Black — all dark backgrounds */
+            --color-text: #1A1A1A;
+            --color-text-muted: #5A5A5A;
+            --color-border: #D5D5D5;
+            --color-bg-light: #F5F5F5;
+            --color-bg-section: #FAFAFA;
         }
 
         @media print {
             {% if pagesize %}
             @page {
                 size: {{pagesize}} landscape;
-                margin: 1cm 1.5cm;
+                margin: 1.2cm 1.5cm;
             }
             {% endif %}
-
-            /* Minimal print rules - keep exact HTML layout */
-            .pagebreak {
-                page-break-after: always;
-                clear: both;
-            }
-
-            .no-print {
-                display: none !important;
-            }
-
-            /* Remove hover effects for print */
-            tbody tr:hover {
-                background: transparent !important;
-            }
-
-            /* Prevent awkward page breaks */
-            .action-card,
-            .finding-card,
-            .info-box,
-            .summary-card,
-            header,
-            .report-title,
-            table {
+            .pagebreak { page-break-after: always; clear: both; }
+            .no-print { display: none !important; }
+            tbody tr:hover { background: transparent !important; }
+            .section-card, .finding-row, .kpi-card, .decision-card, table {
                 page-break-inside: avoid;
                 break-inside: avoid;
             }
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             width: 100%;
             max-width: 100%;
             margin: 0 auto;
-            padding: 0 1.5rem;
+            padding: 0 2.5rem;
             color: var(--color-text);
             background: #FFFFFF;
-            line-height: 1.6;
+            line-height: 1.75;
             font-size: 14px;
         }
 
-        /* Header Styles */
+        /* ── Header ── */
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 1.5rem 2rem;
-            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-            border-bottom: 3px solid var(--color-primary);
-            margin-bottom: 2rem;
+            padding: 1.2rem 2rem;
+            background: var(--color-primary-dark);
+            margin-bottom: 0;
         }
+        header img { height: 42px; }
 
-        header img {
-            height: 45px;
-        }
-
-        /* Title Section */
-        .report-title {
-            background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+        /* ── Cover / Title ── */
+        .report-cover {
+            background: linear-gradient(160deg, var(--color-primary-dark) 0%, var(--color-primary) 60%, var(--color-primary-light) 100%);
             color: white;
-            padding: 2rem;
-            border-radius: 12px;
-            margin-bottom: 1.5rem;
+            padding: 3.5rem 2.5rem 2.5rem;
+            margin-bottom: 2rem;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            min-height: 62vh;
         }
-
-        .report-title h1 {
-            font-size: 2.5rem;
+        .report-cover .report-type {
+            font-size: 0.8rem;
             font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            opacity: 0.75;
+            margin-bottom: 1rem;
+        }
+        .report-cover h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            line-height: 1.2;
             margin-bottom: 0.5rem;
             border: none;
         }
-
-        .report-title .subtitle {
-            font-size: 1.25rem;
-            opacity: 0.9;
-        }
-
-        .report-title .meta {
-            margin-top: 1.5rem;
-            display: flex;
-            gap: 2rem;
-            flex-wrap: wrap;
-            font-size: 0.9rem;
+        .report-cover .subtitle {
+            font-size: 1.15rem;
             opacity: 0.85;
+            margin-bottom: 2rem;
         }
-
-        .report-title .meta span {
+        .report-cover .meta-row {
             display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        /* Section Headers */
-        h2 {
-            font-size: 1.75rem;
-            color: var(--color-text);
-            border-bottom: 2px solid var(--color-primary);
-            padding-bottom: 0.75rem;
-            margin: 2.5rem 0 1.5rem 0;
-            clear: both;
-        }
-
-        h3 {
-            font-size: 1.35rem;
-            color: var(--color-text);
-            margin: 2rem 0 1rem 0;
-            clear: both;
-        }
-
-        h4 {
-            font-size: 1.1rem;
-            color: var(--color-text);
-            margin: 1.5rem 0 1rem 0;
-            clear: both;
-        }
-
-        p {
-            margin-bottom: 1rem;
-            color: var(--color-text);
-        }
-
-        /* Executive Summary Cards */
-        .summary-grid {
-            width: 100%;
-            margin: 2rem 0;
-            overflow: hidden;
-        }
-
-        .summary-grid::after {
-            content: "";
-            display: table;
-            clear: both;
-        }
-
-        .summary-card {
-            float: left;
-            width: 23%;
-            margin-right: 2.666%;
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            border: 1px solid var(--color-border);
-            text-align: center;
-            transition: transform 0.2s, box-shadow 0.2s;
-            box-sizing: border-box;
-        }
-
-        .summary-card:nth-child(4n) {
-            margin-right: 0;
-        }
-
-        .summary-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }
-
-        .summary-card.critical {
-            border-top: 4px solid var(--color-critical);
-        }
-
-        .summary-card.high {
-            border-top: 4px solid var(--color-high);
-        }
-
-        .summary-card.warning {
-            border-top: 4px solid var(--color-medium);
-        }
-
-        .summary-card.info {
-            border-top: 4px solid var(--color-primary);
-        }
-
-        .summary-card .number {
-            font-size: 2.5rem;
-            font-weight: 700;
-            line-height: 1;
-            margin-bottom: 0.5rem;
-        }
-
-        .summary-card.critical .number { color: var(--color-critical); }
-        .summary-card.high .number { color: var(--color-high); }
-        .summary-card.warning .number { color: var(--color-medium); }
-        .summary-card.info .number { color: var(--color-primary); }
-
-        .summary-card .label {
+            gap: 2.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
             font-size: 0.85rem;
-            color: var(--color-text-light);
+            opacity: 0.8;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 1.25rem;
+            margin-top: auto;
+        }
+        .report-cover .meta-item strong { display: block; font-size: 0.7rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.6; }
+
+        /* ── Section Headers ── */
+        h2 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            border-left: 5px solid var(--color-primary);
+            padding-left: 1rem;
+            margin: 5rem 0 2rem;
+            clear: both;
+        }
+        h2:first-of-type { margin-top: 3rem; }
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 3rem 0 1.1rem;
+            clear: both;
+        }
+        h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 2rem 0 0.75rem;
+            clear: both;
+        }
+        p { margin-bottom: 1.1rem; color: var(--color-text); line-height: 1.8; }
+
+        /* ── TOC ── */
+        .toc {
+            background: var(--color-bg-light);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 1.5rem 2rem;
+            margin: 1.5rem auto 2rem;
+        }
+        .toc h3 { margin-top: 0; font-size: 1rem; color: var(--color-primary-dark); text-align: center; margin-bottom: 1.1rem; }
+        .toc-cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .toc-card {
+            flex: 1 1 calc(20% - 0.75rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 0.9rem 1rem;
+            background: white;
+            text-decoration: none;
+            display: block;
+            transition: box-shadow 0.15s;
+        }
+        .toc-card:hover { box-shadow: 0 4px 12px rgba(218,41,28,0.15); }
+        .toc-card .tc-num {
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.35rem;
+        }
+        .toc-card .tc-title {
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.35rem;
             line-height: 1.3;
         }
-
-        /* Action Cards */
-        .action-section {
-            background: var(--color-bg-light);
-            border-radius: 12px;
-            padding: 2rem;
-            margin: 2rem 0;
+        .toc-card .tc-sub {
+            font-size: 0.72rem;
+            color: var(--color-text-muted);
+            line-height: 1.45;
         }
 
-        .action-section h3 {
-            color: var(--color-primary-dark);
-            margin-top: 0;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .action-section h3::before {
-            content: "!";
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 24px;
-            height: 24px;
-            background: var(--color-primary);
-            color: white;
-            border-radius: 50%;
-            font-size: 0.9rem;
-            font-weight: bold;
-        }
-
-        .action-list {
-            list-style: none;
-            padding: 0;
-            margin: 1rem 0 0 0;
-        }
-
-        .action-list li {
-            display: flex;
-            align-items: flex-start;
-            gap: 1rem;
-            padding: 1rem;
+        /* ── KPI Cards ── */
+        .kpi-grid { width: 100%; margin: 2.5rem 0; overflow: hidden; }
+        .kpi-grid::after { content: ""; display: table; clear: both; }
+        .kpi-card {
+            float: left;
+            width: 22%;
+            margin-right: 4%;
             background: white;
-            border-radius: 8px;
-            margin-bottom: 0.75rem;
-            border-left: 4px solid var(--color-primary);
+            border-radius: 10px;
+            padding: 1.25rem 1rem;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            border: 1px solid var(--color-border);
+            text-align: center;
+            box-sizing: border-box;
         }
+        .kpi-card:nth-child(4n) { margin-right: 0; }
+        .kpi-card .kpi-number { font-size: 2.25rem; font-weight: 700; line-height: 1; margin-bottom: 0.35rem; }
+        .kpi-card .kpi-label { font-size: 0.78rem; color: var(--color-text-muted); line-height: 1.35; }
+        .kpi-card.critical { border-top: 4px solid var(--color-critical); }
+        .kpi-card.high { border-top: 4px solid var(--color-high); }
+        .kpi-card.medium { border-top: 4px solid var(--color-medium); }
+        .kpi-card.info { border-top: 4px solid var(--color-primary); }
+        .kpi-card.critical .kpi-number { color: var(--color-critical); }
+        .kpi-card.high .kpi-number { color: var(--color-high); }
+        .kpi-card.medium .kpi-number { color: var(--color-medium); }
+        .kpi-card.info .kpi-number { color: var(--color-primary); }
 
-        .action-list li.priority-critical {
-            border-left-color: var(--color-critical);
-            background: var(--color-critical-bg);
-        }
-
-        .action-list li.priority-high {
-            border-left-color: var(--color-high);
-            background: var(--color-high-bg);
-        }
-
-        .action-list li.priority-medium {
-            border-left-color: var(--color-medium);
-            background: var(--color-medium-bg);
-        }
-
-        .action-list .action-number {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 28px;
-            height: 28px;
-            background: var(--color-primary);
-            color: white;
-            border-radius: 50%;
-            font-weight: 600;
-            font-size: 0.85rem;
-        }
-
-        .action-list li.priority-critical .action-number { background: var(--color-critical); }
-        .action-list li.priority-high .action-number { background: var(--color-high); }
-        .action-list li.priority-medium .action-number { background: var(--color-medium); }
-
-        .action-content {
-            flex: 1;
-        }
-
-        .action-content strong {
-            display: block;
-            margin-bottom: 0.25rem;
-        }
-
-        .action-content p {
-            margin: 0;
-            font-size: 0.9rem;
-            color: var(--color-text-light);
-        }
-
-        /* Severity Badges */
+        /* ── Badges ── */
         .badge {
             display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-
-        .badge-critical {
-            background: var(--color-critical-bg);
-            color: var(--color-critical);
-        }
-
-        .badge-high {
-            background: var(--color-high-bg);
-            color: var(--color-high);
-        }
-
-        .badge-medium {
-            background: var(--color-medium-bg);
-            color: var(--color-medium);
-        }
-
-        .badge-low {
-            background: var(--color-low-bg);
-            color: var(--color-low);
-        }
-
-        /* NIST CSF Function Badges */
-        .nist-badge {
-            display: inline-block;
-            padding: 0.2rem 0.6rem;
-            margin-left: 0.5rem;
+            padding: 0.18rem 0.6rem;
             border-radius: 4px;
             font-size: 0.7rem;
-            font-weight: 600;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
         }
+        .badge-critical { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-high { background: var(--color-high-bg); color: var(--color-high); }
+        .badge-medium { background: var(--color-medium-bg); color: var(--color-medium); }
+        .badge-low { background: var(--color-low-bg); color: var(--color-low); }
+        .badge-success { background: var(--color-success-bg); color: var(--color-success); }
+        .badge-info { background: #EDEDED; color: #1A1A1A; }
+        .badge-aws { background: #FF9900; color: white; }
+        .badge-azure { background: #0078D4; color: white; }
+        .badge-gcp { background: #4285F4; color: white; }
+        .badge-mfa-off { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-mfa-on { background: var(--color-success-bg); color: var(--color-success); }
 
-        .nist-identify {
-            background: #E0E7FF;
-            color: #3730A3;
-            border: 1px solid #A5B4FC;
-        }
-
-        .nist-protect {
-            background: #DBEAFE;
-            color: #1E40AF;
-            border: 1px solid #93C5FD;
-        }
-
-        .nist-detect {
-            background: #FEF3C7;
-            color: #92400E;
-            border: 1px solid #FCD34D;
-        }
-
-        .nist-respond {
-            background: #FED7AA;
-            color: #9A3412;
-            border: 1px solid #FDBA74;
-        }
-
-        .nist-recover {
-            background: #D1FAE5;
-            color: #065F46;
-            border: 1px solid #6EE7B7;
-        }
-
-        /* Risk Score Meter */
-        .risk-meter {
-            margin: 1.5rem 0;
-            padding: 1.5rem;
-            background: white;
-            border-radius: 12px;
-            border: 1px solid var(--color-border);
-        }
-
-        .risk-meter-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-        }
-
-        .risk-meter-bar {
-            height: 12px;
-            background: #E5E7EB;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-
-        .risk-meter-fill {
-            height: 100%;
-            border-radius: 6px;
-            transition: width 0.5s ease;
-        }
-
-        .risk-meter-fill.critical { background: linear-gradient(90deg, var(--color-high) 0%, var(--color-critical) 100%); }
-        .risk-meter-fill.high { background: linear-gradient(90deg, var(--color-medium) 0%, var(--color-high) 100%); }
-        .risk-meter-fill.medium { background: linear-gradient(90deg, var(--color-low) 0%, var(--color-medium) 100%); }
-        .risk-meter-fill.low { background: var(--color-success); }
-
-        /* Tables */
+        /* ── Tables ── */
         table {
             width: 100%;
             border-collapse: collapse;
-            margin: 1.5rem 0;
+            margin: 2rem 0;
             background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            font-size: 0.8rem;
         }
-
         thead th {
-            background: var(--color-primary);
+            background: var(--color-primary-dark);
             color: white;
             font-weight: 600;
-            font-size: 0.85rem;
+            font-size: 0.72rem;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 1rem;
+            letter-spacing: 0.4px;
+            padding: 0.6rem 0.7rem;
             text-align: left;
-        }
-
-        tbody tr {
-            border-bottom: 1px solid var(--color-border);
-        }
-
-        tbody tr:nth-child(even) {
-            background: var(--color-bg-light);
-        }
-
-        tbody tr:hover {
-            background: #EBF5FF;
-        }
-
-        td, th {
-            padding: 0.875rem 1rem;
-            font-size: 0.875rem;
-            max-width: 200px;
-            word-wrap: break-word;
-        }
-
-        td {
-            color: var(--color-text);
-        }
-
-        /* Info Boxes */
-        .info-box {
-            padding: 1.25rem;
-            border-radius: 8px;
-            margin: 1.5rem 0;
-            display: flex;
-            gap: 1rem;
-        }
-
-        .info-box.tip {
-            background: #EBF5FF;
-            border: 1px solid #93C5FD;
-        }
-
-        .info-box.warning {
-            background: var(--color-medium-bg);
-            border: 1px solid #FCD34D;
-        }
-
-        .info-box.alert {
-            background: var(--color-critical-bg);
-            border: 1px solid #FCA5A5;
-        }
-
-        .info-box-icon {
-            font-size: 1.25rem;
-        }
-
-        .info-box-content {
-            flex: 1;
-        }
-
-        .info-box-content strong {
-            display: block;
-            margin-bottom: 0.25rem;
-        }
-
-        /* Finding Cards */
-        .finding-card {
-            background: white;
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-            padding: 1.5rem;
-            margin: 1rem 0;
-        }
-
-        .finding-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 1rem;
-        }
-
-        .finding-card-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-        }
-
-        .finding-card-body {
-            color: var(--color-text-light);
-            font-size: 0.9rem;
-        }
-
-        /* TOC / Navigation */
-        .toc {
-            background: var(--color-bg-light);
-            border-radius: 12px;
-            padding: 1.5rem 2rem;
-            margin: 2rem auto;
-            max-width: 900px;
-        }
-
-        .toc h3 {
-            margin-top: 0;
-            font-size: 1.1rem;
-            text-align: center;
-        }
-
-        .toc-list {
-            list-style: none;
-            padding: 0;
-            margin: 1rem 0 0 0;
-            columns: 2;
-            column-gap: 2rem;
-        }
-
-        .toc-list li {
-            padding: 0.5rem 0;
-            border-bottom: 1px dotted var(--color-border);
-        }
-
-        .toc-list a {
-            color: var(--color-primary);
-            text-decoration: none;
-        }
-
-        .toc-list a:hover {
-            text-decoration: underline;
-        }
-
-        /* Promo Section */
-        .promo-section {
-            display: flex;
-            justify-content: center;
-            margin: 2rem 0;
-            width: 100%;
-            max-width: 100%;
-        }
-
-        .promo-section img {
-            max-width: 85%;
-            width: 85%;
-            height: auto;
-            display: block;
-            margin: 0 auto;
-        }
-
-        /* Cover page image - smaller to fit on first page */
-        .cover-image img {
-            max-width: 70%;
-            width: 70%;
-        }
-
-        /* Value Props */
-        .value-props {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1rem;
-            margin: 1.5rem 0;
-        }
-
-        .value-prop {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding: 1rem;
-            background: var(--color-bg-light);
-            border-radius: 8px;
-        }
-
-        .value-prop-icon {
-            width: 40px;
-            height: 40px;
-            background: var(--color-primary);
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-        }
-
-        .value-prop-text {
-            font-size: 0.9rem;
-        }
-
-        /* Recommendations Section */
-        .recommendations {
-            background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-            border-radius: 12px;
-            padding: 2rem;
-            margin: 2rem 0;
-            border: 1px solid #7dd3fc;
-        }
-
-        .recommendations h2 {
-            border-bottom: none;
-            margin-top: 0;
-        }
-
-        .recommendations ol {
-            margin: 1rem 0 0 1.5rem;
-        }
-
-        .recommendations li {
-            margin-bottom: 0.75rem;
-        }
-
-        /* Specific table styles */
-        table.host_vulns_summary_by_host td.col1 {
-            white-space: pre;
-            text-align: left;
-        }
-
-        table.container_vulns_summary_by_image td.col2 {
-            white-space: pre;
-            text-align: left;
-        }
-
-        table.compliance_detail td.col0 {
             white-space: nowrap;
         }
+        tbody tr { border-bottom: 1px solid var(--color-border); }
+        tbody tr:nth-child(even) { background: var(--color-bg-section); }
+        td { padding: 0.55rem 0.7rem; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
 
-        /* Footer */
-        footer {
-            margin-top: 3rem;
-            padding: 2rem;
-            background: var(--color-bg-light);
-            border-top: 1px solid var(--color-border);
-            text-align: center;
-            color: var(--color-text-light);
+        /* Executive finding table — wider cells, no hard max-width */
+        .exec-table { table-layout: auto; }
+        .exec-table td, .exec-table th { font-size: 0.75rem; padding: 0.5rem 0.6rem; max-width: 220px; }
+        .exec-table td.narrow { width: 28px; text-align: center; }
+        .exec-table td.med { max-width: 140px; }
+        .exec-table td.wide { max-width: 260px; }
+
+        /* Summary / leadership table */
+        .summary-table thead th { background: var(--color-primary); }
+        .summary-table td { font-size: 0.82rem; }
+
+        /* ── Info Boxes ── */
+        .info-box {
+            padding: 1.25rem 1.5rem;
+            border-radius: 8px;
+            margin: 2rem 0;
+            display: flex;
+            gap: 0.85rem;
+            border: 1px solid;
+        }
+        .info-box.alert { background: var(--color-critical-bg); border-color: var(--color-critical-border); }
+        .info-box.warning { background: var(--color-high-bg); border-color: var(--color-high); }
+        .info-box.note { background: #F5F5F5; border-color: #BEBEBE; }
+        .info-box.tip { background: var(--color-success-bg); border-color: #82E0AA; }
+        .info-box-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; }
+        .info-box-content { flex: 1; }
+        .info-box-content strong { display: block; margin-bottom: 0.2rem; font-size: 0.85rem; }
+        .info-box-content p { margin: 0; font-size: 0.82rem; }
+
+        /* ── Decision Cards ── */
+        .decision-row { width: 100%; margin: 2.5rem 0; overflow: hidden; }
+        .decision-row::after { content: ""; display: table; clear: both; }
+        .decision-card {
+            float: left;
+            width: 30%;
+            margin-right: 5%;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            box-sizing: border-box;
+        }
+        .decision-card:nth-child(3n) { margin-right: 0; }
+        .decision-card .decision-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px; height: 28px;
+            background: var(--color-primary-dark);
+            color: white;
+            border-radius: 50%;
+            font-weight: 700;
             font-size: 0.85rem;
+            margin-bottom: 0.6rem;
+        }
+        .decision-card h4 { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--color-primary-dark); }
+        .decision-card p { font-size: 0.8rem; color: var(--color-text-muted); margin: 0; }
+        .decision-card.urgent { border-top-color: var(--color-critical); }
+        .decision-card.urgent .decision-num { background: var(--color-critical); }
+
+        /* ── Action Plan Table ── */
+        .plan-table thead th { background: var(--color-primary-dark); }
+        .plan-table td { padding: 0.75rem 0.8rem; font-size: 0.82rem; vertical-align: top; }
+        .plan-table td:first-child { font-weight: 600; white-space: nowrap; color: var(--color-primary-dark); width: 110px; }
+        .plan-table td:last-child { color: var(--color-text-muted); }
+
+        /* ── Identity Risk Commentary ── */
+        .commentary-box {
+            background: linear-gradient(135deg, #F5F5F5 0%, #EBEBEB 100%);
+            border: 1px solid #C8C8C8;
+            border-left: 4px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 1.75rem 2rem;
+            margin: 2.5rem 0;
+        }
+        .commentary-box h4 { margin-top: 0; color: var(--color-primary-dark); }
+
+        /* ── Narrative ── */
+        .narrative { background: var(--color-bg-section); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; padding: 1.75rem 2rem; margin: 2rem 0; }
+        .narrative p:last-child { margin-bottom: 0; }
+
+        /* ── Promo ── */
+        .promo-section { display: flex; justify-content: center; margin: 2rem 0; width: 100%; }
+        .promo-section img { max-width: 85%; width: 85%; height: auto; display: block; margin: 0 auto; }
+        .cover-image img { max-width: 70%; width: 70%; }
+
+        /* ── Risk score chip ── */
+        .risk-chip {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: var(--color-critical-bg);
+            color: var(--color-critical);
+            border: 1px solid var(--color-critical-border);
+        }
+        .risk-chip.high { background: var(--color-high-bg); color: var(--color-high); border-color: var(--color-high); }
+
+        /* ── Apple-style Summary Chart ── */
+        .apple-chart {
+            background: #FFFFFF;
+            border-radius: 18px;
+            padding: 2rem 2.5rem 1.75rem;
+            box-shadow:
+                0 2px 4px rgba(0,0,0,0.06),
+                0 8px 24px rgba(0,0,0,0.08),
+                0 1px 0 rgba(255,255,255,0.9) inset;
+            margin: 2.5rem 0;
+            border: 1px solid rgba(0,0,0,0.06);
+        }
+        .apple-chart-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--color-text-muted);
+            margin-bottom: 1.1rem;
+        }
+        .chart-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin: 0.55rem 0;
+        }
+        .chart-row-label {
+            width: 230px;
+            flex-shrink: 0;
+            font-size: 0.78rem;
+            color: var(--color-text);
+            font-weight: 500;
+        }
+        .chart-track {
+            flex: 1;
+            height: 22px;
+            border-radius: 11px;
+            background: #F0EFEF;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.13), inset 0 -1px 2px rgba(255,255,255,0.6);
+            position: relative;
+            overflow: hidden;
+        }
+        .chart-bar {
+            height: 100%;
+            border-radius: 11px;
+            min-width: 4px;
+            background: linear-gradient(180deg,
+                #F05040 0%,
+                #DA291C 45%,
+                #B82015 100%
+            );
+            box-shadow:
+                0 3px 8px rgba(218,41,28,0.45),
+                inset 0 1px 0 rgba(255,255,255,0.35),
+                inset 0 -1px 0 rgba(0,0,0,0.12);
+            position: relative;
+        }
+        .chart-bar::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 6px; right: 6px;
+            height: 5px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.28);
+        }
+        .chart-row-value {
+            width: 44px;
+            flex-shrink: 0;
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: var(--color-critical);
+            text-align: right;
+            letter-spacing: -0.02em;
         }
 
-        /* Utilities */
-        .text-center { text-align: center; }
-        .text-muted { color: var(--color-text-light); }
-        .mt-2 { margin-top: 1rem; }
-        .mb-2 { margin-bottom: 1rem; }
+        /* ── Host Priority Cards ── */
+        .host-card-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
+        .host-card {
+            flex: 0 1 calc(20% - 0.6rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-critical);
+            border-radius: 6px;
+            padding: 0.6rem 0.8rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .host-card .host-name {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--color-text);
+            word-break: break-all;
+            margin-bottom: 0.3rem;
+        }
+        .host-card .host-sevs {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            white-space: pre-line;
+            line-height: 1.5;
+        }
+
+        /* ── Security Gauge ── */
+        .gauge-wrap { margin: 0.6rem 0; }
+        .gauge-track {
+            height: 10px;
+            border-radius: 5px;
+            background: #E8E8E8;
+            overflow: hidden;
+            position: relative;
+        }
+        .gauge-fill {
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        .gauge-fill.critical { background: var(--color-critical); }
+        .gauge-fill.high     { background: var(--color-high); }
+        .gauge-fill.medium   { background: var(--color-medium); }
+        .gauge-fill.low      { background: var(--color-success); }
+        .gauge-label { font-size: 0.72rem; color: var(--color-text-muted); margin-bottom: 0.2rem; display: flex; justify-content: space-between; }
+        .gauge-label strong { color: var(--color-text); }
+
+        /* ── Assessment Intro Panels ── */
+        .intro-grid { display: flex; gap: 1.5rem; margin: 2.5rem 0; flex-wrap: wrap; }
+        .intro-card {
+            flex: 1 1 calc(33% - 1rem);
+            min-width: 220px;
+            border-radius: 10px;
+            padding: 1.75rem 1.75rem;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .intro-card .intro-eyebrow {
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.5rem;
+        }
+        .intro-card h4 { margin: 0 0 0.6rem; font-size: 0.95rem; color: var(--color-primary-dark); }
+        .intro-card p { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.6; margin: 0; }
+
+        /* ── Product Recommendation Cards ── */
+        .product-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2.5rem 0; }
+        .product-card {
+            flex: 1 1 calc(50% - 0.5rem);
+            min-width: 260px;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .product-card .product-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.15rem;
+        }
+        .product-card .product-subtitle {
+            font-size: 0.72rem;
+            color: var(--color-primary);
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            margin-bottom: 0.55rem;
+        }
+        .product-card .product-addresses { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
+        .product-card .product-desc { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.55; margin-bottom: 0.5rem; }
+        .product-card ul.product-caps { margin: 0.4rem 0 0 1.1rem; padding: 0; }
+        .product-card ul.product-caps li { font-size: 0.78rem; color: var(--color-text); margin-bottom: 0.22rem; }
+
+        /* ── Section Risk Summary Callout ── */
+        .section-summary {
+            background: #111111;
+            border-left: 5px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 1.75rem 2rem;
+            margin: 3rem 0 1.5rem;
+        }
+        .section-summary .ss-title {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.55rem;
+        }
+        .section-summary p {
+            color: rgba(255,255,255,0.88);
+            font-size: 0.82rem;
+            margin-bottom: 0;
+            line-height: 1.65;
+        }
+
+        /* ── Misc ── */
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--color-border);
+            margin: 4rem 0 0;
+            opacity: 0.5;
+        }
+        section.pagebreak {
+            padding-top: 1rem;
+        }
+        section.pagebreak + section.pagebreak {
+            border-top: 1px solid var(--color-border);
+            padding-top: 0;
+        }
+        footer { margin-top: 5rem; padding: 2rem 2.5rem; background: var(--color-primary-dark); color: rgba(255,255,255,0.92); font-size: 0.78rem; text-align: center; }
+        footer p { color: inherit; }
         .pagebreak { page-break-after: always; clear: both; }
+        .text-muted { color: var(--color-text-muted); }
+        .text-critical { color: var(--color-critical); font-weight: 600; }
+        ul.findings-list { margin: 0.5rem 0 0.5rem 1.25rem; }
+        ul.findings-list li { margin-bottom: 0.2rem; font-size: 0.8rem; }
+        .section-label {
+            display: inline-block;
+            background: var(--color-primary);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
 
+{# ═══════════════════════════════════════════════════════
+   MACROS — contextual risk, impact, fix, alert commentary
+   ═══════════════════════════════════════════════════════ #}
+
+{% macro compliance_context(category) -%}
+{% set cat = category | upper %}
+{% if 'IAM' in cat or 'IDENTITY' in cat or 'ACCESS' in cat or 'ROLE' in cat %}Overprivileged or misconfigured access expands the blast radius of any compromised credential, enabling lateral movement across cloud accounts.
+{% elif 'LOG' in cat or 'MONITOR' in cat or 'AUDIT' in cat or 'TRAIL' in cat %}Gaps in audit logging create blind spots that allow attackers to operate undetected and prevent post-incident forensic analysis.
+{% elif 'NETWORK' in cat or 'FIREWALL' in cat or 'SECURITY GROUP' in cat or 'NSG' in cat or 'VPC' in cat %}Overly permissive network rules expose internal workloads directly to the internet, enabling unauthenticated probing and exploitation.
+{% elif 'ENCRYPT' in cat or 'KMS' in cat or 'KEY' in cat %}Unprotected encryption keys or missing encryption leave data-at-rest readable without any authentication.
+{% elif 'STORAGE' in cat or 'S3' in cat or 'BLOB' in cat or 'BUCKET' in cat %}Publicly accessible or unencrypted storage allows unauthorized parties to read or exfiltrate sensitive business data.
+{% elif 'DATABASE' in cat or 'SQL' in cat or 'RDS' in cat %}Exposed databases give attackers direct access to the most sensitive data assets — customer records, financial data, or credentials.
+{% elif 'CONTAINER' in cat or 'K8S' in cat or 'KUBERNETES' in cat %}Misconfigured containers can allow privilege escalation or lateral movement to compromise adjacent workloads.
+{% elif 'MFA' in cat or 'MULTI-FACTOR' in cat %}Accounts without MFA are trivially compromised via phishing or credential stuffing, with no second barrier to account takeover.
+{% else %}This misconfiguration increases the organization's attack surface and deviates from established cloud security benchmarks.
+{% endif %}
+{%- endmacro %}
+
+{% macro compliance_impact(category) -%}
+{% set cat = category | upper %}
+{% if 'IAM' in cat or 'IDENTITY' in cat or 'ACCESS' in cat or 'ROLE' in cat %}Account takeover, unauthorized privilege escalation, and potential full environment compromise.
+{% elif 'LOG' in cat or 'MONITOR' in cat or 'AUDIT' in cat %}Inability to detect active breaches; failed compliance audits; extended attacker dwell time.
+{% elif 'NETWORK' in cat or 'FIREWALL' in cat or 'SECURITY GROUP' in cat %}Unauthorized access to internal workloads; ransomware entry; data exfiltration path.
+{% elif 'ENCRYPT' in cat or 'KMS' in cat or 'KEY' in cat %}Regulatory penalties (GDPR, PCI-DSS); data breach disclosure obligations; loss of customer trust.
+{% elif 'STORAGE' in cat or 'S3' in cat or 'BLOB' in cat or 'BUCKET' in cat %}Regulatory fines and mandatory breach notification; reputational and financial damage.
+{% elif 'DATABASE' in cat or 'SQL' in cat %}Breach of customer PII, financial records, or credentials; PCI-DSS / HIPAA / GDPR violations.
+{% elif 'MFA' in cat %}Credential-based account takeover leading to unauthorized access to cloud resources and data.
+{% else %}Increased risk of security breach, regulatory non-compliance, and financial or reputational damage.
+{% endif %}
+{%- endmacro %}
+
+{% macro compliance_fix(category) -%}
+{% set cat = category | upper %}
+{% if 'IAM' in cat or 'IDENTITY' in cat or 'ACCESS' in cat or 'ROLE' in cat %}Apply least-privilege IAM policies; remove wildcard permissions; require MFA; disable unused accounts.
+{% elif 'LOG' in cat or 'MONITOR' in cat or 'AUDIT' in cat %}Enable CloudTrail / Activity Logs / Cloud Audit Logs in all regions; centralize in a SIEM.
+{% elif 'NETWORK' in cat or 'FIREWALL' in cat or 'SECURITY GROUP' in cat %}Remove 0.0.0.0/0 ingress rules; restrict to known CIDRs; enable VPC Flow Logs.
+{% elif 'ENCRYPT' in cat or 'KMS' in cat %}Enable customer-managed KMS encryption; rotate keys annually; restrict key access via IAM.
+{% elif 'STORAGE' in cat or 'S3' in cat or 'BLOB' in cat %}Set bucket/blob to private; enable versioning and MFA delete; enforce encryption at rest.
+{% elif 'DATABASE' in cat or 'SQL' in cat %}Restrict DB access to private subnets; enable TLS; enable automated backups and encryption.
+{% elif 'MFA' in cat %}Enforce MFA policy at the identity provider level; use hardware tokens for privileged accounts.
+{% else %}Review FortiCNAPP remediation guidance for this control; apply CIS Benchmark recommendations.
+{% endif %}
+{%- endmacro %}
+
+{% macro alert_why(alert_name, alert_type) -%}
+{% set name = alert_name | upper %}
+{% set atype = alert_type | upper %}
+{% if 'ROOT' in name %}Use of root or super-admin credentials bypasses standard access controls and creates an unaudited attack surface.
+{% elif 'MFA' in name %}Console access without MFA dramatically increases the risk of credential compromise going undetected.
+{% elif 'LOGIN' in name or 'BAD SOURCE' in name or 'NEW LOCATION' in name %}Anomalous login patterns are a leading indicator of credential theft, session hijacking, or account compromise.
+{% elif 'PRIVILEGE' in name or 'ESCALATION' in name %}Privilege escalation attempts indicate an active attacker seeking to gain broader access within your environment.
+{% elif 'MALICIOUS' in name or 'SUSPICIOUS' in name %}Malicious file or process activity strongly suggests active compromise or insider threat behavior.
+{% elif 'CLOUDTRAIL' in name or 'LOGGING' in name or 'AUDIT' in name %}Disabling audit logging is a classic attacker tactic to hide evidence of unauthorized actions.
+{% elif 'CLOUDTRAIL' in atype %}Disabling audit logging is a classic attacker tactic to hide evidence of unauthorized actions.
+{% elif 'CVE' in name or 'VULN' in name %}A known vulnerability is being tracked or exploited, indicating direct attacker interest in your workloads.
+{% else %}This alert indicates anomalous behavior that may represent an active security incident or policy violation.
+{% endif %}
+{%- endmacro %}
+
+{% macro alert_next(alert_name, alert_type) -%}
+{% set name = alert_name | upper %}
+{% if 'ROOT' in name or 'LOGIN' in name or 'BAD SOURCE' in name %}Verify with the identity owner; if unauthorized, rotate credentials and review all recent activity logs.
+{% elif 'MALICIOUS' in name or 'SUSPICIOUS' in name %}Isolate the affected workload; run a malware scan; preserve forensic evidence before remediation.
+{% elif 'PRIVILEGE' in name or 'ESCALATION' in name %}Audit IAM/role assignments; validate whether the change was authorized; revert if not.
+{% elif 'MFA' in name %}Immediately enforce MFA on the affected account; review all recent console sessions for unauthorized actions.
+{% elif 'CLOUDTRAIL' in name or 'LOGGING' in name %}Re-enable audit logging immediately; investigate who disabled it and whether data was exfiltrated.
+{% elif 'CVE' in name or 'VULN' in name %}Prioritize patching the affected host or container; check for exploitation indicators in runtime logs.
+{% else %}Investigate the alert in FortiCNAPP; correlate with cloud activity logs; escalate if the activity is unauthorized.
+{% endif %}
+{%- endmacro %}
+
+{% macro vuln_exposure(hostname) -%}
+Host workload — assess network exposure; check if publicly routable or in a DMZ segment.
+{%- endmacro %}
+
+{% macro vuln_attacker_outcome(cve, severity) -%}
+{% set cve_upper = cve | upper %}
+{% if 'RCE' in cve_upper or severity == 'Critical' %}Remote code execution enabling full host compromise, data exfiltration, or ransomware deployment.
+{% elif severity == 'High' %}Potential privilege escalation, local code execution, or sensitive data disclosure.
+{% else %}Information disclosure or denial-of-service conditions impacting workload availability.
+{% endif %}
+{%- endmacro %}
+
+{# security_gauge(label, value, max_value, level)
+   level: 'critical' | 'high' | 'medium' | 'low'
+   Renders a labeled horizontal bar gauge. #}
+{% macro security_gauge(label, value, max_value, level='critical') -%}
+{% set pct = ((value / max_value * 100) | int) if max_value > 0 else 0 %}
+<div class="gauge-wrap">
+    <div class="gauge-label"><strong>{{ label }}</strong><span>{{ value }} / {{ max_value }}</span></div>
+    <div class="gauge-track"><div class="gauge-fill {{ level }}" style="width:{{ pct }}%"></div></div>
+</div>
+{%- endmacro %}
+
+{# ── Mini semicircle gauge for per-CSP posture ── #}
+{% macro csp_mini_gauge(label, score) -%}
+{%- if score <= 6 -%}
+  {%- set gc = '#DA291C' -%}
+  {%- if score <= 3 -%}{%- set gl = 'CRITICAL' -%}
+  {%- elif score <= 5 -%}{%- set gl = 'POOR' -%}
+  {%- else -%}{%- set gl = 'AT RISK' -%}{%- endif -%}
+{%- elif score < 9 -%}
+  {%- set gc = '#2563EB' -%}
+  {%- if score < 8 -%}{%- set gl = 'MODERATE' -%}
+  {%- else -%}{%- set gl = 'GOOD' -%}{%- endif -%}
+{%- else -%}
+  {%- set gc = '#1E7A3E' -%}{%- set gl = 'EXCELLENT' -%}
+{%- endif -%}
+{%- set _af = (score / 10.0) * 235.6 -%}
+<svg viewBox="0 0 220 148" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:220px;display:block;margin:0 auto;">
+  <text x="110" y="14" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="10" font-weight="700" letter-spacing="2.5" fill="#888888">{{ label }}</text>
+  <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="#EBEBEB" stroke-width="16" stroke-linecap="round"/>
+  <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="{{ gc }}" stroke-width="22" stroke-linecap="round" stroke-dasharray="{{ _af }} 1000" opacity="0.18"/>
+  <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="{{ gc }}" stroke-width="16" stroke-linecap="round" stroke-dasharray="{{ _af }} 1000"/>
+  <text x="110" y="99" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="36" font-weight="800" letter-spacing="-1" fill="{{ gc }}">{{ score | round(1) }}</text>
+  <text x="110" y="114" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="9" fill="#AAAAAA">out of 10</text>
+  <text x="110" y="133" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" font-weight="700" letter-spacing="1.5" fill="{{ gc }}">{{ gl }}</text>
+  <text x="27"  y="130" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" fill="#C0C0C0">0</text>
+  <text x="193" y="130" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" fill="#C0C0C0">10</text>
+</svg>
+{%- endmacro %}
+
+{# ═══════════════════════════════════════════════════════
+   COMPUTE ALL SUMMARY COUNTS — available to entire template
+   ═══════════════════════════════════════════════════════ #}
+{% set total_compliance_critical =
+    ((aws_compliance_data.critical_finding_count if aws_compliance_data else 0) +
+     (azure_compliance_data.critical_finding_count if azure_compliance_data else 0) +
+     (gcp_compliance_data.critical_finding_count if gcp_compliance_data else 0)) %}
+
+{% set total_vuln_critical =
+    ((host_vulns_data.critical_vuln_count if host_vulns_data else 0) +
+     (container_vulns_data.critical_vuln_count if container_vulns_data else 0)) %}
+
+{% set total_identity_high = namespace(val=0) %}
+{% if ciem_data %}
+  {% for prov in ['AWS', 'AZURE', 'GCP'] %}
+    {% if ciem_data[prov] %}{% set total_identity_high.val = total_identity_high.val + ciem_data[prov].high_privilege_count %}{% endif %}
+  {% endfor %}
+{% endif %}
+
+{% set total_admin = namespace(val=0) %}
+{% if ciem_data %}
+  {% for prov in ['AWS', 'AZURE', 'GCP'] %}
+    {% if ciem_data[prov] %}{% set total_admin.val = total_admin.val + ciem_data[prov].root_count %}{% endif %}
+  {% endfor %}
+{% endif %}
+
+{% set critical_alert_count = alerts_data.high_critical_finding_count if alerts_data else 0 %}
+
+{# Global posture score #}
+{# Only penalise secrets in risky locations (chmod < 600: /tmp/, Windows, /var/).
+   chmod-600 secure-default paths (home, etc, root, key files) are excluded.
+   Graceful fallback to 0 when key is absent (e.g. stale cache). #}
+{% set _sc = (secrets_data.risky_secrets_count if (secrets_data and secrets_data.risky_secrets_count is defined and secrets_data.risky_secrets_count != None) else 0) %}
+{% set _p_comp      = ([total_compliance_critical / 10.0,  1.0] | min) * 1.5 %}
+{% set _p_vuln      = ([total_vuln_critical       / 15.0,  1.0] | min) * 2.5 %}
+{% set _p_admin     = ([total_admin.val           / 30.0,  1.0] | min) * 2.5 %}
+{% set _p_alerts    = ([critical_alert_count      / 10.0,  1.0] | min) * 1.5 %}
+{% set _p_secrets   = ([_sc                       /  3.0,  1.0] | min) * 2.0 %}
+{% set posture_score = [10.0 - (_p_comp + _p_vuln + _p_admin + _p_alerts + _p_secrets), 0.0] | max %}
+
+{# Per-CSP scores (compliance + CIEM — the only signals available per-provider) #}
+{% set _aws_cc   = (aws_compliance_data.critical_finding_count   if aws_compliance_data   else 0) %}
+{% set _azure_cc = (azure_compliance_data.critical_finding_count if azure_compliance_data else 0) %}
+{% set _gcp_cc   = (gcp_compliance_data.critical_finding_count   if gcp_compliance_data   else 0) %}
+{% set _aws_ac   = (ciem_data['AWS'].root_count   if ciem_data and ciem_data['AWS']   else 0) %}
+{% set _azure_ac = (ciem_data['AZURE'].root_count if ciem_data and ciem_data['AZURE'] else 0) %}
+{% set _gcp_ac   = (ciem_data['GCP'].root_count   if ciem_data and ciem_data['GCP']   else 0) %}
+
+{% set _score_aws   = [10.0 - (([_aws_cc   / 10.0, 1.0] | min) * 6.0) - (([_aws_ac   / 30.0, 1.0] | min) * 4.0), 0.0] | max %}
+{% set _score_azure = [10.0 - (([_azure_cc / 10.0, 1.0] | min) * 6.0) - (([_azure_ac / 30.0, 1.0] | min) * 4.0), 0.0] | max %}
+{% set _score_gcp   = [10.0 - (([_gcp_cc   / 10.0, 1.0] | min) * 6.0) - (([_gcp_ac   / 30.0, 1.0] | min) * 4.0), 0.0] | max %}
+{% set _avg_csp_score = (_score_aws + _score_azure + _score_gcp) / 3.0 %}
+
+{# Global gauge colours #}
+{% if posture_score < 3 %}{% set _g_color = '#DA291C' %}{% set _g_label = 'VERY POOR' %}
+{% elif posture_score < 5 %}{% set _g_color = '#CC4A1A' %}{% set _g_label = 'POOR' %}
+{% elif posture_score < 7 %}{% set _g_color = '#B7770D' %}{% set _g_label = 'MODERATE' %}
+{% elif posture_score < 9 %}{% set _g_color = '#1E7A3E' %}{% set _g_label = 'GOOD' %}
+{% else %}{% set _g_color = '#156B32' %}{% set _g_label = 'EXCELLENT' %}{% endif %}
+
+{% set _pi = 3.14159 %}
+{% set _gr = 140 %}
+{% set _arc_total = _pi * _gr %}
+{% set _arc_fill  = (posture_score / 10.0) * _arc_total %}
+
+{# ═══════════════════════════════════════════════════════
+   HEADER
+   ═══════════════════════════════════════════════════════ #}
 <header>
-    {% if company_logo_html %}
-    {{ company_logo_html | safe }}
-    {% endif %}
-    {% if custom_logo_html %}
-    {{ custom_logo_html | safe}}
-    {% endif %}
+    {% if company_logo_html %}{{ company_logo_html | safe }}{% endif %}
+    {% if custom_logo_html %}{{ custom_logo_html | safe }}{% endif %}
 </header>
 
-<!-- Title Section -->
-<div class="report-title">
-    <h1>FortiCNAPP Rapid Cloud Assessment</h1>
-    <div class="subtitle">Comprehensive Security Posture Analysis for {{customer}}</div>
-    <div class="meta">
-        <span>Report Date: {{date}}</span>
-        <span>Prepared by: {{author}}</span>
+{# ═══════════════════════════════════════════════════════
+   COVER
+   ═══════════════════════════════════════════════════════ #}
+<div class="report-cover">
+    <h1>Rapid Cloud Assessment Report</h1>
+    <div class="subtitle">Cloud Security Risk Findings</div>
+
+    <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
+
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem;">
+            <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.12); border:3px solid rgba(255,255,255,0.55); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px rgba(255,255,255,0.18), inset 0 1px 0 rgba(255,255,255,0.2);">
+                <span style="font-size:3.6rem; font-weight:800; color:white; letter-spacing:-2px; line-height:1;">{{ _avg_csp_score | round(1) }}</span>
+                <span style="font-size:0.65rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase;">out of 10</span>
+            </div>
+            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center;">MultiCloud<br>Cloud Security Posture Score</div>
+        </div>
+
+    </div>
+    <div class="meta-row">
+        <div class="meta-item"><strong>Prepared for</strong>{{customer}}</div>
+        <div class="meta-item"><strong>Report date</strong>{{date}}</div>
+
+        <div class="meta-item"><strong>Classification</strong>Confidential</div>
     </div>
 </div>
 
-<!-- Cloud Status Quo -->
-<section class="pagebreak">
-    <div class="promo-section cover-image">
-        {% if cloud_status_quo_html %}{{ cloud_status_quo_html | safe }}{% endif %}
-    </div>
-</section>
+{# ═══════════════════════════════════════════════════════
+   ASSESSMENT INTRODUCTION
+   ═══════════════════════════════════════════════════════ #}
+<p style="max-width:820px; margin: 2rem 0 2.5rem; font-size:0.97rem; line-height:1.85; color:var(--color-text);">
+  This Rapid Cloud Assessment provides <strong>{{customer}}</strong> with an independent, non-intrusive
+  evaluation of their cloud security posture across
+  {% if aws_compliance_data %}AWS{% endif %}{% if aws_compliance_data and (azure_compliance_data or gcp_compliance_data) %}, {% endif %}{% if azure_compliance_data %}Azure{% endif %}{% if azure_compliance_data and gcp_compliance_data %}, {% endif %}{% if gcp_compliance_data %}GCP{% endif %}.
+  FortiCNAPP connects using <strong>read-only API access</strong> — no agents, no software to deploy,
+  no disruption to running workloads — and analyzes data entirely within the organization's own
+  cloud environment. The findings in this report cover five prioritized risk domains:
+  {% if _sc > 0 %}exposed secrets, {% endif %}critical compliance failures, high-risk vulnerabilities,
+  identity and entitlement gaps, and active behavioral alerts. Each finding is accompanied by
+  business context and a recommended remediation action.
+</p>
 
-<!-- Table of Contents -->
+{# ═══════════════════════════════════════════════════════
+   TABLE OF CONTENTS
+   ═══════════════════════════════════════════════════════ #}
 <div class="toc">
-    <h3>Quick Navigation</h3>
-    <ul class="toc-list">
-        <li><a href="#executive-summary">Executive Summary</a></li>
-        <li><a href="#immediate-actions">Immediate Actions Required</a></li>
-        {% if secrets_data and secrets_data.secrets_count > 0 %}<li><a href="#secrets">Exposed Secrets</a></li>{% endif %}
-        {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}<li><a href="#compliance">Compliance Findings</a></li>{% endif %}
-        {% if alerts_data %}<li><a href="#alerts">Security Alerts</a></li>{% endif %}
-        {% if ciem_data %}<li><a href="#ciem">Identity & Entitlement Management (CIEM)</a></li>{% endif %}
-        {% if host_vulns_data or container_vulns_data %}<li><a href="#vulnerabilities">Vulnerability Assessment</a></li>{% endif %}
-        <li><a href="#detailed-findings">Detailed Findings</a></li>
-        <li><a href="#recommendations">Recommendations</a></li>
-    </ul>
+    <h3>Discovered Risk Findings</h3>
+    <div class="toc-cards">
+        {% if _sc > 0 %}
+        <a href="#secrets" class="toc-card">
+            <div class="tc-num">01 &mdash; Secrets</div>
+            <div class="tc-title">Secrets</div>
+            <div class="tc-sub">Exposed credentials, tokens, and keys with immediate compromise potential.</div>
+        </a>
+        {% endif %}
+        <a href="#compliance" class="toc-card">
+            <div class="tc-num">02 &mdash; Compliance</div>
+            <div class="tc-title">Critical Non-Compliance</div>
+            <div class="tc-sub">High-risk control failures affecting governance and cloud exposure.</div>
+        </a>
+        <a href="#vulnerabilities" class="toc-card">
+            <div class="tc-num">03 &mdash; Vulnerabilities</div>
+            <div class="tc-title">Critical Vulnerabilities</div>
+            <div class="tc-sub">Internet-facing or exploitable issues with FortiCNAPP Risk Score ≥ 9.</div>
+        </a>
+        <a href="#identity" class="toc-card">
+            <div class="tc-num">04 &mdash; Identity</div>
+            <div class="tc-title">Admin Access &amp; Entitlements</div>
+            <div class="tc-sub">Overprivileged identities, dormant admins, and MFA gaps.</div>
+        </a>
+        <a href="#alerts" class="toc-card">
+            <div class="tc-num">05 &mdash; Alerts</div>
+            <div class="tc-title">Critical Alerts</div>
+            <div class="tc-sub">Active detections requiring rapid triage or containment.</div>
+        </a>
+    </div>
 </div>
 
-<!-- Executive Summary Section -->
-<section id="executive-summary">
-    <h2>Executive Summary</h2>
+{# ─── Per-CSP gauges ─── #}
+<div style="display:flex; gap:1rem; justify-content:center; align-items:flex-start; flex-wrap:wrap; margin:0.5rem 0 1.5rem;">
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AWS', _score_aws) }}</div>
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
+  <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('GCP', _score_gcp) }}</div>
+</div>
 
-    <p>
-        This Cloud Security Assessment provides a comprehensive analysis of {{customer}}'s security posture across cloud infrastructure, workloads, and compliance frameworks. The findings below represent actionable intelligence to strengthen your security position.
-    </p>
+{# ═══════════════════════════════════════════════════════
+   SECTION 1 — EXECUTIVE SUMMARY
+   ═══════════════════════════════════════════════════════ #}
+<section id="exec-summary" class="pagebreak">
+<h2 style="text-align:center;">Executive Summary</h2>
 
-    <!-- Key Metrics -->
-    <div class="summary-grid">
-        {% if host_vulns_data %}
-        <div class="summary-card critical">
-            <div class="number">{{host_vulns_data.critical_vuln_count}}</div>
-            <div class="label">Hosts with Critical Vulnerabilities</div>
+<div class="narrative">
+<p>
+    FortiCNAPP has completed a comprehensive cloud security assessment of <strong>{{customer}}</strong>'s environment spanning cloud misconfigurations, workload vulnerabilities, identity and entitlement risk, and behavioral alert signals. The findings presented in this report represent the highest-priority security issues observed during the assessment period and require leadership attention to prevent potential business disruption, data loss, or regulatory exposure.
+</p>
+{% if total_compliance_critical > 0 %}
+<p>
+    Across cloud environments, FortiCNAPP identified <strong>{{total_compliance_critical}} critical non-compliance finding(s)</strong> against industry benchmarks (CIS). These misconfigurations represent gaps in foundational controls — including access management, encryption, network exposure, and logging — that an attacker could exploit without any specialized tooling.
+</p>
+{% endif %}
+{% if total_vuln_critical > 0 %}
+<p>
+    Vulnerability analysis flagged <strong>{{total_vuln_critical}} host(s) and/or container image(s) with critical-severity CVEs</strong> and a FortiCNAPP Risk Score of 9 or higher. These represent the most dangerous unpatched conditions in the environment, where exploitation could result in full host compromise or lateral movement to adjacent workloads.
+</p>
+{% endif %}
+{% if total_identity_high.val > 0 or total_admin.val > 0 %}
+<p>
+    Identity and entitlement analysis identified <strong>{{total_admin.val}} admin identity(ies)</strong> with full administrative privileges and <strong>{{total_identity_high.val}} identity(ies)</strong> with excessive unused entitlements. Overprivileged accounts dramatically increase the blast radius of any credential compromise and represent a persistent insider threat risk.
+</p>
+{% endif %}
+{% if critical_alert_count > 0 %}
+<p>
+    FortiCNAPP generated <strong>{{critical_alert_count}} critical behavioral alert(s)</strong> during the assessment window. These alerts represent correlated signals of anomalous activity — including suspicious logins, privilege escalation, and audit log tampering — that may indicate active or attempted compromise requiring immediate investigation.
+</p>
+{% endif %}
+{% if _sc > 0 %}
+<p>
+    FortiCNAPP's secret scanning engine discovered <strong>{{_sc}} exposed secret(s)</strong> in world-accessible or insufficiently protected locations — including hardcoded credentials, API keys, and private key material embedded in workloads or configuration files. Each exposed secret represents a directly usable credential: an attacker who accesses these files gains immediate authenticated access to the systems they protect, bypassing all other security controls. All flagged credentials must be rotated immediately, before any other remediation activity.
+</p>
+{% endif %}
+</div>
+
+<!-- Apple-style Summary Chart -->
+{% set _chart_max = [total_compliance_critical, total_vuln_critical, total_admin.val, critical_alert_count, _sc] | max %}
+{% set _chart_max = _chart_max if _chart_max > 0 else 1 %}
+<div class="apple-chart">
+    <div class="apple-chart-title">Risk Summary — Critical Findings</div>
+
+    <div class="chart-row">
+        <div class="chart-row-label">Critical Non-Compliance Findings</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((total_compliance_critical / _chart_max) * 100) | int }}%"></div>
         </div>
-        {% endif %}
-
-        {% if container_vulns_data %}
-        <div class="summary-card critical">
-            <div class="number">{{container_vulns_data.critical_vuln_count}}</div>
-            <div class="label">Containers with Critical Vulnerabilities</div>
-        </div>
-        {% endif %}
-
-        {% if aws_compliance_data %}
-        <div class="summary-card high">
-            <div class="number">{{aws_compliance_data.critical_finding_count}}</div>
-            <div class="label">Critical AWS Compliance Findings</div>
-        </div>
-        {% endif %}
-
-        {% if azure_compliance_data %}
-        <div class="summary-card high">
-            <div class="number">{{azure_compliance_data.critical_finding_count}}</div>
-            <div class="label">Critical Azure Compliance Findings</div>
-        </div>
-        {% endif %}
-
-        {% if gcp_compliance_data %}
-        <div class="summary-card high">
-            <div class="number">{{gcp_compliance_data.critical_finding_count}}</div>
-            <div class="label">Critical GCP Compliance Findings</div>
-        </div>
-        {% endif %}
-
-        {% if alerts_data %}
-        <div class="summary-card warning">
-            <div class="number">{{ alerts_data.high_critical_finding_count }}</div>
-            <div class="label">High/Critical Behavioral Alerts</div>
-        </div>
-        {% endif %}
-
-        {% if secrets_data %}
-        <div class="summary-card {% if secrets_data.secrets_count > 0 %}critical{% else %}info{% endif %}">
-            <div class="number">{{ secrets_data.secrets_count }}</div>
-            <div class="label">Exposed Secrets Detected</div>
-        </div>
-        {% endif %}
-
-        {% if ciem_data and ciem_data.AZURE and ciem_data.AZURE.high_risk_count_80 is defined and ciem_data.AZURE.high_risk_count_80 > 0 %}
-        <div class="summary-card high">
-            <div class="number">{{ ciem_data.AZURE.high_risk_count_80 }}</div>
-            <div class="label">Azure High Privilege Identities<br><span style="font-size: 0.85em;">(≥80 unused entitlements)</span></div>
-        </div>
-        {% endif %}
+        <div class="chart-row-value">{{total_compliance_critical}}</div>
     </div>
 
-    <!-- Promo Graphic -->
-    {% if pdf %}
-    <div class="promo-section">
-        {% if polygraph_graphic_html %}{{ polygraph_graphic_html | safe }}{% endif %}
+    <div class="chart-row">
+        <div class="chart-row-label">Hosts / Containers — Critical CVEs (Risk Score ≥ 9)</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((total_vuln_critical / _chart_max) * 100) | int }}%"></div>
+        </div>
+        <div class="chart-row-value">{{total_vuln_critical}}</div>
     </div>
-    {% else %}
-    <div class="promo-section">
-        {% if polygraph_graphic_html %}{{ polygraph_graphic_html | safe }}{% endif %}
+
+    <div class="chart-row">
+        <div class="chart-row-label">Admin Identities with Full Privileges</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((total_admin.val / _chart_max) * 100) | int }}%"></div>
+        </div>
+        <div class="chart-row-value">{{total_admin.val}}</div>
+    </div>
+
+    <div class="chart-row">
+        <div class="chart-row-label">Critical Behavioral Alerts</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((critical_alert_count / _chart_max) * 100) | int }}%"></div>
+        </div>
+        <div class="chart-row-value">{{critical_alert_count}}</div>
+    </div>
+
+    {% if _sc > 0 %}
+    <div class="chart-row">
+        <div class="chart-row-label">Exposed Secrets Detected</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((_sc / _chart_max) * 100) | int }}%"></div>
+        </div>
+        <div class="chart-row-value">{{_sc}}</div>
     </div>
     {% endif %}
+</div>
+
+
 </section>
 
-<!-- Immediate Actions Section -->
-<section id="immediate-actions">
-    <div class="action-section">
-        <h3>Immediate Actions Required</h3>
-        <p>Based on the assessment findings, the following actions are prioritized by severity and impact:</p>
-
-        <ol class="action-list">
-            {% if secrets_data and secrets_data.secrets_count > 0 %}
-            <li class="priority-critical">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Rotate Exposed Secrets Immediately</strong>
-                    <p>{{secrets_data.secrets_count}} secret(s) have been detected in your workloads. Rotate these credentials and investigate potential unauthorized access.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            {% if host_vulns_data and host_vulns_data.critical_vuln_count > 0 %}
-            <li class="priority-critical">
-                <span class="action-number">{% if secrets_data and secrets_data.secrets_count > 0 %}2{% else %}1{% endif %}</span>
-                <div class="action-content">
-                    <strong>Patch Critical Host Vulnerabilities</strong>
-                    <p>{{host_vulns_data.critical_vuln_count}} host(s) have critical vulnerabilities with available patches. Prioritize patching systems with network exposure.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            {% if container_vulns_data and container_vulns_data.critical_vuln_count > 0 %}
-            <li class="priority-critical">
-                <span class="action-number">{% set n = 1 %}{% if secrets_data and secrets_data.secrets_count > 0 %}{% set n = n + 1 %}{% endif %}{% if host_vulns_data and host_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{{n}}</span>
-                <div class="action-content">
-                    <strong>Rebuild Vulnerable Container Images</strong>
-                    <p>{{container_vulns_data.critical_vuln_count}} container image(s) contain critical vulnerabilities. Update base images and redeploy affected workloads.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            {% if aws_compliance_data and aws_compliance_data.critical_finding_count > 0 %}
-            <li class="priority-high">
-                <span class="action-number">{% set n = 1 %}{% if secrets_data and secrets_data.secrets_count > 0 %}{% set n = n + 1 %}{% endif %}{% if host_vulns_data and host_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{% if container_vulns_data and container_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{{n}}</span>
-                <div class="action-content">
-                    <strong>Address AWS Compliance Gaps</strong>
-                    <p>{{aws_compliance_data.critical_finding_count}} critical compliance finding(s) detected. Review IAM policies, encryption settings, and network configurations.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            {% if azure_compliance_data and azure_compliance_data.critical_finding_count > 0 %}
-            <li class="priority-high">
-                <span class="action-number">{% set n = 1 %}{% if secrets_data and secrets_data.secrets_count > 0 %}{% set n = n + 1 %}{% endif %}{% if host_vulns_data and host_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{% if container_vulns_data and container_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{% if aws_compliance_data and aws_compliance_data.critical_finding_count > 0 %}{% set n = n + 1 %}{% endif %}{{n}}</span>
-                <div class="action-content">
-                    <strong>Address Azure Compliance Gaps</strong>
-                    <p>{{azure_compliance_data.critical_finding_count}} critical compliance finding(s) detected. Review Azure AD, storage security, and network security groups.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            {% if alerts_data and alerts_data.high_critical_finding_count > 0 %}
-            <li class="priority-high">
-                <span class="action-number">{% set n = 1 %}{% if secrets_data and secrets_data.secrets_count > 0 %}{% set n = n + 1 %}{% endif %}{% if host_vulns_data and host_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{% if container_vulns_data and container_vulns_data.critical_vuln_count > 0 %}{% set n = n + 1 %}{% endif %}{% if aws_compliance_data and aws_compliance_data.critical_finding_count > 0 %}{% set n = n + 1 %}{% endif %}{% if azure_compliance_data and azure_compliance_data.critical_finding_count > 0 %}{% set n = n + 1 %}{% endif %}{{n}}</span>
-                <div class="action-content">
-                    <strong>Investigate Behavioral Alerts</strong>
-                    <p>{{alerts_data.high_critical_finding_count}} high/critical behavioral alert(s) require investigation for potential security incidents or policy violations.</p>
-                </div>
-            </li>
-            {% endif %}
-
-            <li class="priority-medium">
-                <span class="action-number">+</span>
-                <div class="action-content">
-                    <strong>Schedule Regular Assessments</strong>
-                    <p>Implement continuous security monitoring and schedule recurring assessments to track remediation progress and detect new risks.</p>
-                </div>
-            </li>
-        </ol>
-    </div>
-</section>
-
-<!-- Secrets Section -->
-{% if secrets_data and secrets_data.secrets_count > 0 %}
+{# ═══════════════════════════════════════════════════════
+   SECTION 1 — SECRETS
+   ═══════════════════════════════════════════════════════ #}
 <section id="secrets" class="pagebreak">
-    <h2>Exposed Secrets <span class="badge badge-critical">CRITICAL</span></h2>
-
-    <div class="info-box alert">
-        <div class="info-box-icon">!</div>
-        <div class="info-box-content">
-            <strong>Immediate Action Required</strong>
-            The following SSH keys and secrets have been detected in your workloads. These should be rotated immediately and the source of exposure investigated.
-        </div>
-    </div>
-
-    {{ secrets_data.secrets_raw.to_html(index=False) | safe }}
-
-    <div class="action-section">
-        <h3>Remediation Steps</h3>
-        <ol class="action-list">
-            <li class="priority-critical">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Rotate all exposed credentials</strong>
-                    <p>Generate new SSH keys and update all systems using the compromised keys.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">2</span>
-                <div class="action-content">
-                    <strong>Audit access logs</strong>
-                    <p>Review authentication logs for any unauthorized access using the exposed credentials.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">3</span>
-                <div class="action-content">
-                    <strong>Implement secrets management</strong>
-                    <p>Use a secrets manager (HashiCorp Vault, AWS Secrets Manager) to prevent future exposure.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">4</span>
-                <div class="action-content">
-                    <strong>Review File Permissions (DAC – Discretionary Access Control)</strong>
-                    <p>Verify and restrict file permissions on all secret files to ensure only authorized users and processes can access them. Implement least-privilege access controls using appropriate file permissions (e.g., 600 for private keys).</p>
-                </div>
-            </li>
-        </ol>
-    </div>
-</section>
+<h2>1. Secrets</h2>
+{% if secrets_data and secrets_data.secrets_count > 0 %}
+{{ secrets_data.secrets_html | safe }}
+{% else %}
+<p class="text-muted">No secrets were detected during this assessment period.</p>
 {% endif %}
 
-<!-- Compliance Findings Section -->
+<div class="section-summary">
+    <div class="ss-title">&#9650; Risk Summary — Secrets Posture</div>
+    {% set _legacy = (secrets_data.legacy_rsa_count if (secrets_data and secrets_data.legacy_rsa_count is defined) else 0) %}
+    {% if _sc > 0 %}
+    <p><strong style="color:#DA291C;">{{_sc}} exposed secret(s)</strong> were found in world-accessible or insufficiently protected locations (chmod &gt; 600). Each represents a directly usable credential — an attacker with read access bypasses all authentication and authorization controls entirely. The average attacker dwell time after credential theft is <strong style="color:white;">194 days</strong> before detection. Immediate rotation is non-negotiable.</p>
+    {% if _legacy > 0 %}
+    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Generate replacements using <code>ssh-keygen -t rsa -b 4096 -o -a 100</code> with SHA-256 signing (<code>rsa-sha2-256</code>) or preferably migrate to <code>ssh-ed25519</code> (<code>ssh-keygen -t ed25519</code>) for stronger security and faster authentication.</p>
+    {% endif %}
+    {% elif secrets_data and secrets_data.secrets_count > 0 %}
+    <p><strong style="color:#1E7A3E;">&#10003; No risk exposure.</strong> All {{secrets_data.secrets_count}} detected secret(s) reside in chmod-600 protected locations (owner read-only). These files are accessible only by the owning process or root — they do not constitute an active risk finding. Continue enforcing strict file permissions and rotate keys on a scheduled basis as part of standard security hygiene.</p>
+    {% if _legacy > 0 %}
+    <p style="margin-top:0.6rem;"><strong style="color:#F5A623;">&#9888; Key Algorithm Advisory:</strong> {{_legacy}} key(s) use the legacy <code>ssh-rsa</code> algorithm. Even though the files are properly protected, generate replacements using <code>ssh-keygen -t rsa -b 4096 -o -a 100</code> (<code>rsa-sha2-256</code>) or migrate to <code>ssh-ed25519</code> (<code>ssh-keygen -t ed25519</code>) — RSA is susceptible to timing attacks regardless of file permissions.</p>
+    {% endif %}
+    {% else %}
+    <p>No secrets were detected during this assessment period. Maintain continuous secret scanning as part of the CI/CD pipeline and enforce pre-commit hooks to prevent hardcoded credentials from being introduced in future deployments.</p>
+    {% endif %}
+</div>
+</section>
+
+{# ═══════════════════════════════════════════════════════
+   SECTION 2 — TOP CRITICAL NON-COMPLIANCE FINDINGS
+   ═══════════════════════════════════════════════════════ #}
 {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
 <section id="compliance" class="pagebreak">
-    <h2>Compliance Findings</h2>
+<h2>2. Top Critical Non-Compliance Findings</h2>
+<p>
+    The following FortiCNAPP compliance findings are rated Critical against CIS benchmarks. Each finding represents a control failure affecting one or more cloud accounts. Findings are sourced from FortiCNAPP's continuous compliance engine across AWS, Azure, and GCP.
+</p>
 
-    <p>
-        FortiCNAPP has assessed your cloud security posture against CIS benchmarks and industry best practices. The following findings highlight areas requiring attention to maintain compliance and reduce risk.
-    </p>
+{% set ns = namespace(count=0) %}
+{% set provider_list = [
+    ('AWS',   aws_compliance_data,   'aws'),
+    ('Azure', azure_compliance_data, 'azure'),
+    ('GCP',   gcp_compliance_data,   'gcp')
+] %}
 
-    {% if aws_compliance_data and aws_compliance_data.summary_count > 0 %}
-    <div class="finding-card">
-        <div class="finding-card-header">
-            <div class="finding-card-title">AWS Compliance Assessment</div>
-        </div>
-        <div class="finding-card-body">
-            <p><strong>Total AWS Accounts Analyzed:</strong> {{aws_compliance_data.cloud_accounts_count}}</p>
-            {{ aws_compliance_data.compliance_summary.to_html(index=False) | safe }}
-            {{ aws_compliance_data.compliance_findings_by_service_bar_graphic | safe }}
-            {{ aws_compliance_data.compliance_findings_by_account_bar_graphic | safe }}
-        </div>
-    </div>
-    {% endif %}
+{# Determine account column per provider #}
+{% macro acct_col(provider) %}{% if provider == 'AWS' %}Account ID{% elif provider == 'Azure' %}Subscription ID{% else %}Project ID{% endif %}{% endmacro %}
 
-    {% if azure_compliance_data and azure_compliance_data.summary_count > 0 %}
-    <div class="finding-card pagebreak">
-        <div class="finding-card-header">
-            <div class="finding-card-title">Azure Compliance Assessment</div>
-        </div>
-        <div class="finding-card-body">
-            <p><strong>Total Azure Subscriptions Analyzed:</strong> {{azure_compliance_data.cloud_accounts_count}}</p>
-            {{ azure_compliance_data.compliance_summary.to_html(index=False) | safe }}
-            {{ azure_compliance_data.compliance_findings_by_service_bar_graphic | safe }}
-            {{ azure_compliance_data.compliance_findings_by_account_bar_graphic | safe }}
-        </div>
-    </div>
-    {% endif %}
-
-    {% if gcp_compliance_data and gcp_compliance_data.summary_count > 0 %}
-    <div class="finding-card pagebreak">
-        <div class="finding-card-header">
-            <div class="finding-card-title">GCP Compliance Assessment</div>
-        </div>
-        <div class="finding-card-body">
-            <p><strong>Total GCP Projects Analyzed:</strong> {{gcp_compliance_data.cloud_accounts_count}}</p>
-            {{ gcp_compliance_data.compliance_summary.to_html(index=False) | safe }}
-            {{ gcp_compliance_data.compliance_findings_by_service_bar_graphic | safe }}
-            {{ gcp_compliance_data.compliance_findings_by_account_bar_graphic | safe }}
-        </div>
-    </div>
-    {% endif %}
-</section>
-{% endif %}
-
-<!-- Alerts Section -->
-{% if alerts_data %}
-<section id="alerts" class="pagebreak">
-    <h2>Security Alerts & Anomalies</h2>
-
-    <div class="info-box {% if alerts_data.high_critical_finding_count > 0 %}warning{% else %}tip{% endif %}">
-        <div class="info-box-icon">i</div>
-        <div class="info-box-content">
-            <strong>Behavioral Analysis (Last 7 Days)</strong>
-            FortiCNAPP has identified {{alerts_data.high_critical_finding_count}} high/critical behavioral anomalies that may indicate security incidents, policy violations, or misconfigurations requiring investigation.
-        </div>
-    </div>
-
-    <h4>Top 25 Alerts by Severity</h4>
-    {{ alerts_data.alerts_raw.to_html(index=False) | safe }}
-
-    {% if alerts_data.high_critical_finding_count > 0 %}
-    <div class="action-section">
-        <h3>Investigation Guidance</h3>
-        <ol class="action-list">
-            <li class="priority-high">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Review Critical/High Alerts First</strong>
-                    <p>Focus on alerts indicating potential compromise, data exfiltration, or privilege escalation.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">2</span>
-                <div class="action-content">
-                    <strong>Correlate with Access Logs</strong>
-                    <p>Cross-reference alert timestamps with CloudTrail, Azure Activity Logs, or GCP Audit Logs.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">3</span>
-                <div class="action-content">
-                    <strong>Update Detection Rules</strong>
-                    <p>Tune FortiCNAPP policies to reduce false positives and enhance detection accuracy.</p>
-                </div>
-            </li>
-        </ol>
-    </div>
-    {% endif %}
-</section>
-{% endif %}
-
-<!-- CIEM Section -->
-{% if ciem_data %}
-<section id="ciem" class="pagebreak">
-    <h2>Cloud Identity & Entitlement Management (CIEM)</h2>
-
-    <p>
-        Analysis of cloud identities with excessive privileges and unused entitlements across AWS, Azure, and GCP environments. Identities with high unused permissions represent a significant security risk and should be reviewed for least privilege adherence.
-    </p>
-
-    <!-- Summary Cards -->
-    <div class="summary-grid">
-        {% if ciem_data.AWS and ciem_data.AWS.high_privilege_count is defined %}
-        <div class="summary-card {% if ciem_data.AWS.high_privilege_count > 0 %}critical{% else %}success{% endif %}">
-            <div class="number">{{ ciem_data.AWS.high_privilege_count }}</div>
-            <div class="label">AWS High Privilege Identities</div>
-            <div class="sublabel">≥{{ ciem_data.AWS.threshold }} unused entitlements</div>
-        </div>
-        <div class="summary-card info">
-            <div class="number">{{ ciem_data.AWS.total_identities }}</div>
-            <div class="label">Total AWS Identities Analyzed</div>
-            <div class="sublabel">{{ ciem_data.AWS.root_count }} with root access</div>
-        </div>
-        {% endif %}
-
-        {% if ciem_data.AZURE and ciem_data.AZURE.high_privilege_count is defined %}
-        <div class="summary-card {% if ciem_data.AZURE.high_privilege_count > 0 %}critical{% else %}success{% endif %}">
-            <div class="number">{{ ciem_data.AZURE.high_privilege_count }}</div>
-            <div class="label">Azure High Privilege Identities</div>
-            <div class="sublabel">≥{{ ciem_data.AZURE.threshold }} unused entitlements</div>
-        </div>
-        <div class="summary-card info">
-            <div class="number">{{ ciem_data.AZURE.total_identities }}</div>
-            <div class="label">Total Azure Identities Analyzed</div>
-            <div class="sublabel">{{ ciem_data.AZURE.root_count }} with root access</div>
-        </div>
-        {% endif %}
-
-        {% if ciem_data.GCP and ciem_data.GCP.high_privilege_count is defined %}
-        <div class="summary-card {% if ciem_data.GCP.high_privilege_count > 0 %}critical{% else %}success{% endif %}">
-            <div class="number">{{ ciem_data.GCP.high_privilege_count }}</div>
-            <div class="label">GCP High Privilege Identities</div>
-            <div class="sublabel">≥{{ ciem_data.GCP.threshold }} unused entitlements</div>
-        </div>
-        <div class="summary-card info">
-            <div class="number">{{ ciem_data.GCP.total_identities }}</div>
-            <div class="label">Total GCP Identities Analyzed</div>
-            <div class="sublabel">{{ ciem_data.GCP.root_count }} with root access</div>
-        </div>
-        {% endif %}
-    </div>
-
-    <!-- High Privilege Identities Tables by Provider -->
-    {% for provider in ['AWS', 'AZURE', 'GCP'] %}
-        {% if ciem_data[provider] and ciem_data[provider].high_privilege_count is defined %}
-
-        {% if ciem_data[provider].high_privilege_count > 0 %}
-        <h3>{{ provider }} High Privilege Identities (≥{{ ciem_data[provider].threshold }} Unused Entitlements)</h3>
-
-        <div class="info-box alert">
-            <div class="info-box-icon">!</div>
-            <div class="info-box-content">
-                <strong>High Privilege Identities Detected</strong>
-                {{ ciem_data[provider].high_privilege_count }} {{ provider }} identities have ≥{{ ciem_data[provider].threshold }} unused entitlements. These over-provisioned identities should be reviewed for least privilege compliance.
-            </div>
-        </div>
-
-        <table class="ciem-high-privilege-identities" style="width: 100%; border-collapse: collapse; margin: 1rem 0;">
-            <thead>
-                <tr style="background-color: #f5f5f5;">
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: left;">Principal ID</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: left;">Name</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Admin</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">MFA</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Unused Entitlements</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Risk</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in ciem_data[provider].high_privilege_identities.itertuples() %}
-                <tr style="{% if row.has_full_admin %}background-color: #ffebee;{% endif %}">
-                    <td style="padding: 0.4rem; border: 1px solid #ddd;"><code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.85em;">{{ row.PRINCIPAL_ID[:40] }}...</code></td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd;">{{ row.NAME }}</td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        {% if row.has_full_admin %}
-                        <span style="color: #d32f2f; font-weight: bold;">✓</span>
-                        {% else %}
-                        <span style="color: #999;">-</span>
-                        {% endif %}
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <span class="badge {% if row.mfa_status == 'Enabled' %}success{% elif row.mfa_status == 'Disabled' %}critical{% else %}medium{% endif %}" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">
-                            {{ row.mfa_status }}
-                        </span>
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <strong style="color: #d32f2f;">{{ row.unused_count }}</strong> / {{ row.total_count }}
-                        <br><span style="color: #666; font-size: 0.85em;">({{ row.unused_percentage }}%)</span>
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <span class="badge {% if row.risk_severity == 'CRITICAL' %}critical{% elif row.risk_severity == 'HIGH' %}high{% else %}medium{% endif %}" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">
-                            {{ row.risk_severity }}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        <p style="font-size: 0.85em; color: #666; margin-top: 0.5rem;">
-            <strong style="background: #ffebee; padding: 2px 4px;">Highlighted rows</strong> indicate identities with full administrative access.
-            MFA status: <span class="badge success" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">Enabled</span> = MFA configured,
-            <span class="badge critical" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">Disabled</span> = No MFA,
-            <span class="badge medium" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">Unknown</span> = Status not determined.
-        </p>
-        {% endif %}
-
-        <!-- Show Root Identities (even if not critical) -->
-        {% if ciem_data[provider].root_count > 0 and ciem_data[provider].root_count > ciem_data[provider].critical_count %}
-        <h3>{{ provider }} Identities with Root/Admin Access</h3>
-        <p style="margin: 0.5rem 0;">
-            Found {{ ciem_data[provider].root_count }} identities with full administrative privileges.
-            {% if ciem_data[provider].critical_count == 0 %}
-            None have ≥{{ ciem_data[provider].threshold }} unused entitlements.
-            {% endif %}
-        </p>
-        {% endif %}
-
-        <!-- Show High Privilege Identities (even if not root) -->
-        {% if ciem_data[provider].high_privilege_count > 0 and ciem_data[provider].high_privilege_count > ciem_data[provider].critical_count %}
-        <h3>{{ provider }} Identities with Excessive Unused Entitlements</h3>
-        <p style="margin: 0.5rem 0;">
-            Found {{ ciem_data[provider].high_privilege_count }} identities with ≥{{ ciem_data[provider].threshold }} unused entitlements.
-            {% if ciem_data[provider].critical_count == 0 %}
-            None have full administrative access.
-            {% endif %}
-        </p>
-        {% endif %}
-
-        <!-- Show Top Identities Table (ALL identities, sorted by risk) -->
-        {% if ciem_data[provider].all_identities is defined and not ciem_data[provider].all_identities.empty %}
-        <h3>{{ provider }} Top Identity Risks (by Unused Entitlements)</h3>
-
-        <table class="ciem-all-identities" style="width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9em;">
-            <thead>
-                <tr style="background-color: #f5f5f5;">
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: left;">Principal ID</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: left;">Name</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Admin</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">MFA</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Unused %</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Unused/Total</th>
-                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">Risk</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for row in ciem_data[provider].all_identities.itertuples() %}
-                <tr style="{% if row.has_full_admin and row.unused_count >= ciem_data[provider].threshold %}background-color: #ffebee;{% endif %}">
-                    <td style="padding: 0.4rem; border: 1px solid #ddd;"><code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 0.85em;">{{ row.PRINCIPAL_ID[:30] }}...</code></td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd;">{{ row.NAME }}</td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        {% if row.has_full_admin %}
-                        <span style="color: #d32f2f; font-weight: bold;">✓</span>
-                        {% else %}
-                        <span style="color: #999;">-</span>
-                        {% endif %}
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <span class="badge {% if row.mfa_status == 'Enabled' %}success{% elif row.mfa_status == 'Disabled' %}critical{% else %}medium{% endif %}" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.75em;">
-                            {{ row.mfa_status }}
-                        </span>
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <strong style="{% if row.unused_count >= ciem_data[provider].threshold %}color: #d32f2f;{% endif %}">{{ row.unused_percentage }}%</strong>
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <strong style="{% if row.unused_count >= ciem_data[provider].threshold %}color: #d32f2f;{% endif %}">{{ row.unused_count }}</strong> / {{ row.total_count }}
-                    </td>
-                    <td style="padding: 0.4rem; border: 1px solid #ddd; text-align: center;">
-                        <span class="badge {% if row.risk_severity == 'CRITICAL' %}critical{% elif row.risk_severity == 'HIGH' %}high{% elif row.risk_severity == 'MEDIUM' %}medium{% else %}low{% endif %}" style="padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.8em;">
-                            {{ row.risk_severity }}
-                        </span>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        <p style="font-size: 0.85em; color: #666; margin-top: 0.5rem;">
-            Showing top 25 identities sorted by risk. Identities with <strong style="background: #ffebee; padding: 2px 4px;">highlighted rows</strong> have both admin access and ≥{{ ciem_data[provider].threshold }} unused entitlements.
-        </p>
-        {% endif %}
-
-        {% endif %}
+<table class="exec-table">
+    <thead>
+        <tr>
+            <th class="narrow">#</th>
+            <th style="width:55px">Severity</th>
+            <th style="width:200px">Finding</th>
+            <th style="width:120px">Cloud Scope</th>
+            <th style="width:90px">Service Area</th>
+            <th style="width:180px">Contextual Risk</th>
+            <th style="width:180px">Business Impact</th>
+            <th style="width:180px">Recommended Fix</th>
+            <th style="width:70px">Priority</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for provider, provider_data, badge_class in provider_list %}
+      {% if provider_data and provider_data.critical_details is defined and not provider_data.critical_details.empty %}
+        {% set acol = acct_col(provider) %}
+        {% for idx, row in provider_data.critical_details.iterrows() %}
+          {% if ns.count < 10 %}
+          {% set ns.count = ns.count + 1 %}
+          <tr>
+            <td class="narrow">{{ ns.count }}</td>
+            <td><span class="badge badge-critical">Critical</span></td>
+            <td class="wide">
+                <strong>{{ row['Control'] | truncate(90, True, '…') }}</strong>
+            </td>
+            <td class="med">
+                <span class="badge badge-{{ badge_class }}">{{ provider }}</span><br>
+                <small class="text-muted">{{ row[acol] | truncate(24, True, '…') }}</small>
+            </td>
+            <td class="med">{{ row['Category'] }}</td>
+            <td class="wide">{{ compliance_context(row['Category']) }}</td>
+            <td class="wide">{{ compliance_impact(row['Category']) }}</td>
+            <td class="wide">{{ compliance_fix(row['Category']) }}</td>
+            <td><span class="badge badge-critical">Immediate</span></td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
     {% endfor %}
-
-    <!-- Recommendations -->
-    {% set total_high_privilege = (ciem_data.AWS.high_privilege_count if ciem_data.AWS and ciem_data.AWS.high_privilege_count is defined else 0) + (ciem_data.AZURE.high_privilege_count if ciem_data.AZURE and ciem_data.AZURE.high_privilege_count is defined else 0) + (ciem_data.GCP.high_privilege_count if ciem_data.GCP and ciem_data.GCP.high_privilege_count is defined else 0) %}
-    {% if total_high_privilege > 0 %}
-    <div class="action-section">
-        <h3>Recommended Actions</h3>
-        <ol class="action-list">
-            <li class="priority-high">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Enable MFA on All Identities</strong>
-                    <p>Immediately enable Multi-Factor Authentication (MFA) for all identities, especially those with administrative access or high unused entitlements. MFA significantly reduces the risk of credential compromise.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">2</span>
-                <div class="action-content">
-                    <strong>Reduce Unused Entitlements (≥70)</strong>
-                    <p>Review and remove unused permissions from identities with ≥70 unused entitlements. These over-provisioned identities violate least privilege principles and increase attack surface.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">3</span>
-                <div class="action-content">
-                    <strong>Review Administrative Access</strong>
-                    <p>Audit all identities with full administrative access. Remove admin privileges where not absolutely necessary and implement role-based access control (RBAC).</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">4</span>
-                <div class="action-content">
-                    <strong>Implement Least Privilege Policies</strong>
-                    <p>Apply the principle of least privilege across all identities. Grant only the minimum permissions required for each role and regularly review access rights.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">5</span>
-                <div class="action-content">
-                    <strong>Enable Just-In-Time (JIT) Access</strong>
-                    <p>Implement temporary privilege escalation for administrative tasks instead of permanent admin access. Use JIT access mechanisms to reduce standing privileges.</p>
-                </div>
-            </li>
-        </ol>
-    </div>
+    {% if ns.count == 0 %}
+    <tr>
+        <td colspan="9" style="text-align:center; color: var(--color-text-muted); padding: 1.5rem;">
+            No critical compliance findings detected — or compliance data was not retrieved for this assessment.
+        </td>
+    </tr>
     {% endif %}
+    </tbody>
+</table>
+
+<div class="section-summary">
+    <div class="ss-title">&#9650; Risk Summary — Why Immediate Action Matters</div>
+    {% if total_compliance_critical > 0 %}
+    <p><strong style="color:#DA291C;">{{total_compliance_critical}} critical compliance finding(s)</strong> were identified across cloud environments. These are not theoretical risks — CIS-critical controls represent the subset of misconfigurations most frequently exploited in pre-breach cloud environments. Unresolved critical findings leave foundational security controls — access management, encryption, network exposure, and audit logging — in a failed state. Each open finding must be treated as an active attack vector until the underlying control is remediated and verified by a rescan.</p>
+    {% else %}
+    <p>No critical compliance findings were detected. Continue monitoring for configuration drift — cloud environments change continuously and previously clean controls can regress following infrastructure updates, new account provisioning, or IaC deployments.</p>
+    {% endif %}
+</div>
+
 </section>
 {% endif %}
 
-<!-- Vulnerabilities Section -->
+{# ═══════════════════════════════════════════════════════
+   SECTION 3 — TOP VULNERABILITIES (RISK SCORE ≥ 9)
+   ═══════════════════════════════════════════════════════ #}
 {% if host_vulns_data or container_vulns_data %}
 <section id="vulnerabilities" class="pagebreak">
-    <h2>Workload Vulnerability Assessment</h2>
+<h2>3. Top Vulnerabilities — FortiCNAPP Risk Score ≥ 9</h2>
+<p>
+    FortiCNAPP filters all assessed CVEs to surface only those with a Risk Score of 9.0 or higher — a composite score that accounts for exploitability, blast radius (number of affected hosts/images), and presence of public exploit code. The following represent the most dangerous unpatched conditions in the environment.
+</p>
 
-    <p>
-        FortiCNAPP has performed agentless vulnerability scanning across your workloads. The following findings identify vulnerable hosts and container images with associated remediation guidance.
-    </p>
+{% set vuln_ns = namespace(count=0) %}
 
-    <div class="summary-grid">
-        {% if host_vulns_data %}
-        <div class="summary-card info">
-            <div class="number">{{host_vulns_data.hosts_scanned_count}}</div>
-            <div class="label">Total Hosts Scanned</div>
-        </div>
+<table class="exec-table">
+    <thead>
+        <tr>
+            <th class="narrow">#</th>
+            <th style="width:55px">Severity</th>
+            <th style="width:140px">Vulnerability (CVE)</th>
+            <th style="width:60px">Risk Score</th>
+            <th style="width:140px">Affected Resource</th>
+            <th style="width:130px">Package / Version</th>
+            <th style="width:200px">Attacker Outcome if Exploited</th>
+            <th style="width:130px">Recommended Fix</th>
+            <th style="width:65px">Priority</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% if host_vulns_data and host_vulns_data.top_risk_vulns is defined and not host_vulns_data.top_risk_vulns.empty %}
+      {% for idx, row in host_vulns_data.top_risk_vulns.iterrows() %}
+        {% if vuln_ns.count < 10 %}
+        {% set vuln_ns.count = vuln_ns.count + 1 %}
+        <tr>
+            <td class="narrow">{{ vuln_ns.count }}</td>
+            <td>
+                {% if row['Severity'] == 'Critical' %}<span class="badge badge-critical">Critical</span>
+                {% elif row['Severity'] == 'High' %}<span class="badge badge-high">High</span>
+                {% else %}<span class="badge badge-medium">{{ row['Severity'] }}</span>{% endif %}
+            </td>
+            <td><strong>{{ row['CVE'] }}</strong><br><small class="text-muted">Host</small></td>
+            <td style="text-align:center;">
+                <span class="risk-chip {% if row['Risk Score'] < 9.5 %}high{% endif %}">{{ row['Risk Score'] }}</span>
+            </td>
+            <td class="med">{{ row['Hostname'] | truncate(40, True, '…') }}</td>
+            <td class="med">
+                {{ row['Package'] }}<br>
+                <small class="text-muted">v{{ row['Installed Version'] | truncate(20) }}</small>
+            </td>
+            <td class="wide">{{ vuln_attacker_outcome(row['CVE'], row['Severity']) }}</td>
+            <td class="med">
+                {% if 'Fixed Version' in row and row['Fixed Version'] and row['Fixed Version'] != 'None' %}
+                    Update <strong>{{ row['Package'] }}</strong> to v{{ row['Fixed Version'] | truncate(20) }}
+                {% else %}
+                    Apply vendor patch; consult CVE advisory for workarounds.
+                {% endif %}
+            </td>
+            <td><span class="badge badge-critical">Immediate</span></td>
+        </tr>
         {% endif %}
-        {% if container_vulns_data %}
-        <div class="summary-card info">
-            <div class="number">{{container_vulns_data.containers_scanned_count}}</div>
-            <div class="label">Container Images Scanned</div>
-        </div>
+      {% endfor %}
+    {% endif %}
+    {% if container_vulns_data and container_vulns_data.top_risk_vulns is defined and not container_vulns_data.top_risk_vulns.empty %}
+      {% for idx, row in container_vulns_data.top_risk_vulns.iterrows() %}
+        {% if vuln_ns.count < 10 %}
+        {% set vuln_ns.count = vuln_ns.count + 1 %}
+        <tr>
+            <td class="narrow">{{ vuln_ns.count }}</td>
+            <td>
+                {% if row['Severity'] == 'Critical' %}<span class="badge badge-critical">Critical</span>
+                {% elif row['Severity'] == 'High' %}<span class="badge badge-high">High</span>
+                {% else %}<span class="badge badge-medium">{{ row['Severity'] }}</span>{% endif %}
+            </td>
+            <td><strong>{{ row['CVE'] }}</strong><br><small class="text-muted">Container</small></td>
+            <td style="text-align:center;">
+                <span class="risk-chip {% if row['Risk Score'] < 9.5 %}high{% endif %}">{{ row['Risk Score'] }}</span>
+            </td>
+            <td class="med">{{ row['Repository'] | truncate(40, True, '…') }}</td>
+            <td class="med">
+                {{ row['Package'] }}<br>
+                <small class="text-muted">v{{ row['Installed Version'] | truncate(20) }}</small>
+            </td>
+            <td class="wide">{{ vuln_attacker_outcome(row['CVE'], row['Severity']) }}</td>
+            <td class="med">
+                {% if 'Fixed Version' in row and row['Fixed Version'] and row['Fixed Version'] != 'None' %}
+                    Rebuild image with <strong>{{ row['Package'] }}</strong> v{{ row['Fixed Version'] | truncate(20) }}
+                {% else %}
+                    Update base image; consult CVE advisory for workarounds.
+                {% endif %}
+            </td>
+            <td><span class="badge badge-critical">Immediate</span></td>
+        </tr>
         {% endif %}
+      {% endfor %}
+    {% endif %}
+    {% if vuln_ns.count == 0 %}
+    <tr>
+        <td colspan="9" style="text-align:center; color: var(--color-text-muted); padding: 1.5rem;">
+            No vulnerabilities with Risk Score ≥ 9 were detected, or vulnerability data was not retrieved.
+        </td>
+    </tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<div class="info-box note">
+    <div class="info-box-icon">ℹ</div>
+    <div class="info-box-content">
+        <strong>FortiCNAPP Risk Score Explained</strong>
+        <p>The Risk Score (1–10) is a composite metric calculated by FortiCNAPP that weighs CVSS severity, number of affected hosts/images, package blast radius, and the presence of public exploit code. A score of 9.0+ places a vulnerability in the top tier requiring immediate attention regardless of CVSS alone.</p>
     </div>
+</div>
 
-    {% if host_vulns_data %}
-    <h3>Host Vulnerability Summary</h3>
-    {{ host_vulns_data.host_vulns_summary.to_html(index=False) | safe }}
-    {{ host_vulns_data.host_vulns_summary_bar_graphic | safe }}
-
-    {% if host_vulns_data.critical_vuln_count > 0 %}
-    <div class="info-box alert">
-        <div class="info-box-icon">!</div>
-        <div class="info-box-content">
-            <strong>Critical Vulnerabilities Detected</strong>
-            {{host_vulns_data.critical_vuln_count}} host(s) have critical vulnerabilities. Prioritize patching based on network exposure and data sensitivity.
+{% if host_vulns_data and host_vulns_data.host_patch_priority %}
+{% set _hp = host_vulns_data.host_patch_priority %}
+{% set _hp_max = (_hp | map(attribute='count') | list | max) %}
+{% set _hp_max = _hp_max if _hp_max > 0 else 1 %}
+<div style="display:flex; justify-content:center; margin: 1.5rem 0;">
+<div class="apple-chart" style="width:100%; max-width:720px;">
+    <div class="apple-chart-title">Host Patch Priority — High-Risk CVE Count per Host</div>
+    {% for item in _hp %}
+    <div class="chart-row">
+        <div class="chart-row-label">{{ item.hostname | truncate(38, True, '…') }}</div>
+        <div class="chart-track">
+            <div class="chart-bar" style="width:{{ ((item.count / _hp_max) * 100) | int }}%"></div>
         </div>
+        <div class="chart-row-value">{{ item.count }}</div>
     </div>
-    {% endif %}
-
-    {% if host_vulns_data.all_cves_detail is defined and not host_vulns_data.all_cves_detail.empty %}
-    <h4>Detailed CVE List (High, Medium, Low Severity)</h4>
-    <div class="info-box tip">
-        <div class="info-box-icon">i</div>
-        <div class="info-box-content">
-            <strong>Additional Vulnerabilities</strong>
-            The table below shows all High, Medium, and Low severity CVEs found across your hosts. Review and prioritize based on your environment and risk tolerance.
-        </div>
-    </div>
-    {{ host_vulns_data.all_cves_detail.to_html(index=False) | safe }}
-    {% endif %}
-    {% endif %}
-
-    {% if container_vulns_data %}
-    <h3>Container Vulnerability Summary</h3>
-    {{ container_vulns_data.container_vulns_summary.to_html(index=False) | safe }}
-    {{ container_vulns_data.container_vulns_summary_by_package_bar_graphic | safe }}
-
-    {% if container_vulns_data.critical_vuln_count > 0 %}
-    <div class="info-box alert">
-        <div class="info-box-icon">!</div>
-        <div class="info-box-content">
-            <strong>Vulnerable Container Images</strong>
-            {{container_vulns_data.critical_vuln_count}} container image(s) contain critical vulnerabilities. Update base images and rebuild affected containers.
-        </div>
-    </div>
-    {% endif %}
-    {% endif %}
-</section>
+    {% endfor %}
+</div>
+</div>
 {% endif %}
 
-<!-- Detailed Findings Appendix -->
-{% if host_vulns_data or container_vulns_data or aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
-<section id="detailed-findings" class="pagebreak">
-    <h2>Appendix: Detailed Findings</h2>
-    <p>This section contains granular details for remediation teams.</p>
-
-    {% if host_vulns_data or container_vulns_data %}
-    <h3>Detailed CVE Breakdown</h3>
-
-    {% if host_vulns_data and not host_vulns_data.fixable_vulns.empty %}
-    <h4>Hosts with Critical, Fixable Vulnerabilities (CVE Risk Score = 10)</h4>
-    <div class="info-box tip">
-        <div class="info-box-icon">i</div>
-        <div class="info-box-content">
-            <strong>Quick Win Opportunity</strong>
-            These vulnerabilities have fixes available. Patching these systems will significantly reduce your attack surface.
-        </div>
-    </div>
-    <div class="info-box warning">
-        <div class="info-box-icon">📊</div>
-        <div class="info-box-content">
-            <strong>Understanding Risk Score</strong>
-            <p style="margin: 0.5rem 0 0 0;">
-                This report displays <strong>Critical vulnerabilities with CVSS score 10.0</strong> (the highest severity).
-                The <strong>Risk Score</strong> shown represents the vulnerability impact, which is calculated based on:
-            </p>
-            <ul style="margin: 0.5rem 0 0 1.5rem; line-height: 1.6;">
-                <li><strong>Number of hosts or container images affected</strong> - More affected systems = higher risk</li>
-                <li><strong>Number of packages affected</strong> - Widespread package vulnerabilities = higher risk</li>
-            </ul>
-            <p style="margin: 0.5rem 0 0 0; font-size: 0.9em; color: var(--color-text-light);">
-                <em>Note: Risk Score differs from CVSS score. CVSS measures vulnerability severity, while Risk Score measures blast radius and organizational impact.</em>
-            </p>
-        </div>
-    </div>
-    {{ host_vulns_data.fixable_vulns.to_html() | safe }}
-
-    <div class="action-section" style="margin-top: 2rem;">
-        <h3>Host Vulnerability Recommendations</h3>
-        <ol class="action-list">
-            <li class="priority-critical">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Prioritize <span class="nist-badge nist-identify">IDENTIFY</span><span class="nist-badge nist-respond">RESPOND</span></strong>
-                    <p>High CVSS, public exploits, Internet-exposed, and critical hosts first.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">2</span>
-                <div class="action-content">
-                    <strong>Patch quickly <span class="nist-badge nist-protect">PROTECT</span></strong>
-                    <p>OS & software updates; automate where possible; test critical patches.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">3</span>
-                <div class="action-content">
-                    <strong>Reduce attack surface <span class="nist-badge nist-protect">PROTECT</span></strong>
-                    <p>Remove unused software/services, close unnecessary ports, harden configs.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">4</span>
-                <div class="action-content">
-                    <strong>Secure network & access <span class="nist-badge nist-protect">PROTECT</span></strong>
-                    <p>Firewalls, restricted SSH/VPN, segmentation; monitor exposed ports.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">5</span>
-                <div class="action-content">
-                    <strong>Continuous vulnerability scanning <span class="nist-badge nist-detect">DETECT</span></strong>
-                    <p>Regularly scan hosts, confirm remediation, focus on exploitable + Internet-exposed hosts.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">6</span>
-                <div class="action-content">
-                    <strong>Monitor & detect <span class="nist-badge nist-detect">DETECT</span></strong>
-                    <p>Use IDS/EDR; watch logs for suspicious activity.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">7</span>
-                <div class="action-content">
-                    <strong>Backup & document <span class="nist-badge nist-recover">RECOVER</span></strong>
-                    <p>Backup before patching; track remediation; include exposure in reports.</p>
-                </div>
-            </li>
-        </ol>
-    </div>
-    {% endif %}
-
-    {% if container_vulns_data and not container_vulns_data.fixable_vulns.empty %}
-    <h4>Containers with Critical, Fixable Vulnerabilities (CVE Risk Score = 10)</h4>
-    <div class="info-box tip">
-        <div class="info-box-icon">i</div>
-        <div class="info-box-content">
-            <strong>Image Update Required</strong>
-            Update the base images for these containers and rebuild to remediate the vulnerabilities.
-        </div>
-    </div>
-    <div class="info-box warning">
-        <div class="info-box-icon">📊</div>
-        <div class="info-box-content">
-            <strong>Understanding Risk Score</strong>
-            <p style="margin: 0.5rem 0 0 0;">
-                This report displays <strong>Critical vulnerabilities with CVSS score 10.0</strong> (the highest severity).
-                The <strong>Risk Score</strong> shown represents the vulnerability impact, which is calculated based on:
-            </p>
-            <ul style="margin: 0.5rem 0 0 1.5rem; line-height: 1.6;">
-                <li><strong>Number of container images affected</strong> - More affected images = higher risk</li>
-                <li><strong>Number of packages affected</strong> - Widespread package vulnerabilities = higher risk</li>
-            </ul>
-            <p style="margin: 0.5rem 0 0 0; font-size: 0.9em; color: var(--color-text-light);">
-                <em>Note: Risk Score differs from CVSS score. CVSS measures vulnerability severity, while Risk Score measures blast radius and organizational impact.</em>
-            </p>
-        </div>
-    </div>
-    {{ container_vulns_data.fixable_vulns.to_html() | safe }}
-    {% endif %}
-    {% endif %}
-
-    {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
-    <h3>Detailed Cloud Compliance Findings</h3>
-
-    {% if aws_compliance_data %}
-    <h4>AWS - High/Critical Compliance Findings</h4>
-    {{ aws_compliance_data.compliance_detail.to_html() | safe }}
-
-    {% if aws_compliance_data.critical_finding_count > 0 %}
-    <h4>AWS - Critical Findings with Remediation Details</h4>
-    {{ aws_compliance_data.critical_details.to_html().replace("\\n","<br>") | safe }}
-    {% endif %}
-    {% endif %}
-
-    {% if azure_compliance_data %}
-    <h4>Azure - High/Critical Compliance Findings</h4>
-    {{ azure_compliance_data.compliance_detail.to_html(index=False) | safe }}
-
-    {% if azure_compliance_data.critical_finding_count > 0 %}
-    <h4>Azure - Critical Findings with Remediation Details</h4>
-    {{ azure_compliance_data.critical_details.to_html().replace("\\n","<br>") | safe }}
-    {% endif %}
-
-    <div class="action-section" style="margin-top: 2rem;">
-        <h3>Cloud Compliance Recommendations</h3>
-        <p style="margin-bottom: 1.5rem; color: var(--color-text);">
-            Achieving and maintaining cloud compliance requires a systematic approach combining automation, continuous monitoring, and proactive remediation. Follow these best practices to strengthen your compliance posture:
-        </p>
-        <ol class="action-list">
-            <li class="priority-critical">
-                <span class="action-number">1</span>
-                <div class="action-content">
-                    <strong>Implement Continuous Compliance Monitoring <span class="nist-badge nist-detect">DETECT</span></strong>
-                    <p>Deploy automated tools like FortiCNAPP to continuously scan cloud environments for configuration drift, policy violations, and compliance gaps. Real-time monitoring enables immediate detection and faster remediation of non-compliant resources before they become security risks.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">2</span>
-                <div class="action-content">
-                    <strong>Automate Remediation Workflows <span class="nist-badge nist-respond">RESPOND</span></strong>
-                    <p>Configure automated responses for common compliance violations such as open security groups, unencrypted storage, or missing tags. Use Infrastructure-as-Code (IaC) to enforce compliant configurations and prevent manual misconfigurations.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">3</span>
-                <div class="action-content">
-                    <strong>Prioritize Critical & High Severity Findings <span class="nist-badge nist-identify">IDENTIFY</span><span class="nist-badge nist-respond">RESPOND</span></strong>
-                    <p>Address critical findings first, focusing on publicly exposed resources, data encryption gaps, IAM misconfigurations, and logging deficiencies. These pose the highest risk to your security posture and regulatory standing.</p>
-                </div>
-            </li>
-            <li class="priority-high">
-                <span class="action-number">4</span>
-                <div class="action-content">
-                    <strong>Establish Policy-as-Code <span class="nist-badge nist-protect">PROTECT</span></strong>
-                    <p>Define compliance policies as code to enforce security standards across all cloud accounts and environments. Use tools like Terraform, CloudFormation, or Azure Policy to codify CIS benchmarks, NIST frameworks, and regulatory requirements.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">5</span>
-                <div class="action-content">
-                    <strong>Enable Comprehensive Audit Logging <span class="nist-badge nist-detect">DETECT</span></strong>
-                    <p>Ensure CloudTrail (AWS), Activity Logs (Azure), and Cloud Audit Logs (GCP) are enabled across all regions and accounts. Centralize logs in a SIEM or log analytics platform for compliance reporting and forensic analysis.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">6</span>
-                <div class="action-content">
-                    <strong>Conduct Regular Compliance Assessments <span class="nist-badge nist-identify">IDENTIFY</span></strong>
-                    <p>Schedule recurring compliance scans (weekly or monthly) to track remediation progress and identify new violations. Compare results over time to measure improvement and demonstrate compliance to auditors.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">7</span>
-                <div class="action-content">
-                    <strong>Implement Least Privilege Access <span class="nist-badge nist-protect">PROTECT</span></strong>
-                    <p>Review and restrict IAM permissions to the minimum required for each role. Remove unused accounts, enforce MFA, rotate credentials regularly, and monitor privileged access with session recording and just-in-time access.</p>
-                </div>
-            </li>
-            <li class="priority-medium">
-                <span class="action-number">8</span>
-                <div class="action-content">
-                    <strong>Document & Report Compliance Status <span class="nist-badge nist-identify">IDENTIFY</span></strong>
-                    <p>Maintain compliance documentation including policies, procedures, remediation tracking, and audit reports. Generate executive dashboards showing compliance scores, trend analysis, and remediation velocity for stakeholders and auditors.</p>
-                </div>
-            </li>
-        </ol>
-        <div class="info-box tip" style="margin-top: 1.5rem;">
-            <div class="info-box-icon">💡</div>
-            <div class="info-box-content">
-                <strong>Continuous Compliance is Key</strong>
-                <p style="margin: 0.5rem 0 0 0;">
-                    Cloud environments are dynamic—resources are created, modified, and deleted constantly. Point-in-time compliance scans provide only a snapshot.
-                    <strong>Continuous compliance monitoring</strong> ensures your security posture remains strong 24/7 by detecting drift immediately and enabling rapid response to new violations.
-                </p>
-                <p style="margin: 0.5rem 0 0 0;">
-                    FortiCNAPP provides real-time compliance monitoring across AWS, Azure, and GCP with automated detection, prioritized remediation guidance, and executive reporting to maintain continuous compliance.
-                </p>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    {% if gcp_compliance_data %}
-    <h4>GCP - High/Critical Compliance Findings</h4>
-    {{ gcp_compliance_data.compliance_detail.to_html(index=False) | safe }}
-
-    {% if gcp_compliance_data.critical_finding_count > 0 %}
-    <h4>GCP - Critical Findings with Remediation Details</h4>
-    {{ gcp_compliance_data.critical_details.to_html().replace("\\n","<br>") | safe }}
-    {% endif %}
-    {% endif %}
-    {% endif %}
-</section>
+{% if container_vulns_data and container_vulns_data.fixable_vulns is defined and not container_vulns_data.fixable_vulns.empty %}
+<h3>Container Vulnerabilities — Fixable Critical CVEs</h3>
+{{ container_vulns_data.fixable_vulns.to_html(index=False) | safe }}
 {% endif %}
 
-<!-- Recommendations Section -->
-<section id="recommendations">
-    {% if recommendations %}
-    <div class="recommendations">
-        {{ recommendations | safe }}
-    </div>
+<div class="section-summary">
+    <div class="ss-title">&#9650; Risk Summary — Why Immediate Action Matters</div>
+    {% if total_vuln_critical > 0 %}
+    <p><strong style="color:#DA291C;">{{total_vuln_critical}} host(s) and/or container(s)</strong> are running with unpatched CVEs at FortiCNAPP Risk Score 9 or higher. This composite score accounts for CVSS severity, the number of affected assets, blast radius, and the presence of public exploit code — meaning real-world attack tooling is available and actively used against these vulnerabilities. The average time to exploit a disclosed CVE is <strong style="color:white;">12 days</strong>. For every day patching is deferred in this tier, the probability of a successful, in-the-wild exploitation event increases measurably.</p>
     {% else %}
-    <div class="recommendations">
-        <h2>Recommendations & Next Steps</h2>
-        <p>Based on the findings of this assessment, we recommend the following action plan:</p>
-        <ol>
-            <li><strong>Immediate (0-7 days):</strong> Address all critical vulnerabilities and rotate any exposed secrets identified in this report.</li>
-            <li><strong>Short-term (1-4 weeks):</strong> Remediate high-severity compliance findings and investigate behavioral alerts.</li>
-            <li><strong>Medium-term (1-3 months):</strong> Implement continuous monitoring with FortiCNAPP and establish remediation workflows.</li>
-            <li><strong>Ongoing:</strong> Schedule recurring Cloud Security Assessments to track improvement and detect new risks.</li>
-        </ol>
-        <p>Engage with your Fortinet account team and partner to review service offerings and prioritize remediation efforts.</p>
-    </div>
+    <p>No vulnerabilities at Risk Score ≥ 9 were detected in the assessed environment. Maintain the patch management cadence and continue scanning as new CVEs are disclosed — the threat landscape changes daily and previously clean workloads can become vulnerable following new CVE publications.</p>
     {% endif %}
-</section>
+</div>
 
-<!-- FortiCNAPP - One Platform Section -->
-<section id="forticnapp-platform" class="pagebreak">
-    <h2>Fortinet FortiCNAPP - One Platform</h2>
-    <div class="promo-section">
-        {% if forticnapp_platform_html %}{{ forticnapp_platform_html | safe }}{% endif %}
-    </div>
 </section>
+{% endif %}
 
-<!-- Fortinet Security Fabric Section -->
-<section id="fortinet-security-fabric" class="pagebreak">
-    <h2>Fortinet Security Fabric</h2>
-    <div class="promo-section">
-        {% if fortinet_sec_fabric_html %}{{ fortinet_sec_fabric_html | safe }}{% endif %}
-    </div>
+{# ═══════════════════════════════════════════════════════
+   SECTION 4 — IDENTITY & ENTITLEMENTS
+   ═══════════════════════════════════════════════════════ #}
+{% if ciem_data %}
+<section id="identity" class="pagebreak">
+<h2>4. Admin Accounts, Permissive Access, MFA &amp; Entitlements</h2>
+<p>
+    FortiCNAPP CIEM analysis assessed all cloud identities across AWS, Azure, and GCP for administrative privileges, unused entitlements, and MFA enforcement. The following identities pose the highest risk based on a combination of privilege level, entitlement excess, and authentication posture.
+</p>
+
+{% for provider in ['AWS', 'AZURE', 'GCP'] %}
+{% if ciem_data[provider] %}
+{% set pd = ciem_data[provider] %}
+
+<h3>
+    {% if provider == 'AWS' %}<span class="badge badge-aws">AWS</span>
+    {% elif provider == 'AZURE' %}<span class="badge badge-azure">Azure</span>
+    {% else %}<span class="badge badge-gcp">GCP</span>{% endif %}
+    &nbsp; <span class="text-critical">{{pd.root_count}} Admin</span>
+    &nbsp;·&nbsp; <small class="text-muted">Admin privilege + MFA disabled only</small>
+</h3>
+
+{% if pd.all_identities is defined and not pd.all_identities.empty %}
+{% set show_ns = namespace(count=0) %}
+{% for row in pd.all_identities.itertuples() %}
+  {% if row.has_full_admin and row.mfa_status == 'Disabled' %}
+    {% set show_ns.count = show_ns.count + 1 %}
+  {% endif %}
+{% endfor %}
+{% if show_ns.count > 0 %}
+<table class="exec-table">
+    <thead>
+        <tr>
+            <th style="width:160px">Identity</th>
+            <th style="width:80px">Privilege</th>
+            <th style="width:65px">MFA</th>
+            <th style="width:130px">Last Login</th>
+            <th style="width:100px">Idle Entitlements</th>
+            <th style="width:220px">Risk</th>
+            <th style="width:180px">Recommended Fix</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in pd.all_identities.itertuples() %}
+    {% if row.has_full_admin and row.mfa_status == 'Disabled' %}
+    <tr {% if row.has_full_admin and row.mfa_status == 'Disabled' %}style="background:#FDECEA;"{% endif %}>
+        <td>
+            <strong>{{ row.NAME | truncate(35, True, '…') }}</strong><br>
+            <small class="text-muted">{{ row.PRINCIPAL_ID | truncate(28, True, '…') }}</small>
+        </td>
+        <td>
+            {% if row.has_full_admin %}
+            <span class="badge badge-critical">Admin</span>
+            {% else %}
+            <span class="badge badge-info">Standard</span>
+            {% endif %}
+        </td>
+        <td>
+            {% if row.mfa_status == 'Disabled' %}
+            <span class="badge badge-mfa-off">No MFA</span>
+            {% elif row.mfa_status == 'Enabled' %}
+            <span class="badge badge-mfa-on">MFA On</span>
+            {% else %}
+            <span class="badge badge-medium">Unknown</span>
+            {% endif %}
+        </td>
+        <td>
+            {% if row.LAST_USED_TIME is string and row.LAST_USED_TIME %}
+            <strong>{{ row.LAST_USED_TIME | truncate(22, True, '') }}</strong>
+            {% else %}
+            <span class="text-muted">Never / Unknown</span>
+            {% endif %}
+        </td>
+        <td style="text-align:center;">
+            <strong class="text-critical">{{row.unused_percentage}}%</strong><br>
+            <small class="text-muted">idle</small>
+        </td>
+        <td class="wide">
+            <strong class="text-critical">CRITICAL:</strong> Full admin with no MFA — single credential theft enables complete environment compromise.
+        </td>
+        <td class="wide">
+            Enforce MFA immediately. Replace standing admin with JIT privilege escalation.
+        </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="text-muted" style="font-size:0.85rem; margin:0.5rem 0;">No admin identities with MFA disabled were found for {{provider}}.</p>
+{% endif %}
+{% endif %}
+
+{% endif %} {# end if ciem_data[provider] #}
+{% endfor %} {# end provider loop #}
+
+<!-- Identity Risk Commentary -->
+<div class="commentary-box">
+    <h4>Identity Risk Commentary</h4>
+    <p>
+        <strong>80% of breaches in the public cloud are caused by stolen or compromised identities</strong> — making identity the #1 attack vector in cloud environments (CrowdStrike Global Threat Report). FortiCNAPP's CIEM analysis reveals a pattern of persistent over-privilege across cloud identities. <strong>Admin accounts with full administrative rights and no MFA</strong> represent the single highest-risk condition in the environment — a single successful phishing attack on any such account would grant an adversary unrestricted access to cloud resources, billing controls, and data stores.
+    </p>
+    <p>
+        <strong>Standing privilege</strong> — permanent admin access that is always active rather than granted on demand — violates the principle of least privilege and is a recognized compliance failure under CIS, NIST, and most regulatory frameworks. The right-sizing of these entitlements should be treated as a compliance requirement, not a best-effort improvement.
+    </p>
+    <p>
+        <strong>Dormant and unused entitlements</strong> represent an invisible attack surface. Identities that have not used the majority of their granted permissions in the past 90 days should be reduced to their observed access pattern. FortiCNAPP can generate right-sized permission recommendations to accelerate this remediation.
+    </p>
+</div>
+
+<div class="section-summary">
+    <div class="ss-title">&#9650; Risk Summary — Why Immediate Action Matters</div>
+    {% if total_admin.val > 0 %}
+    <p><strong style="color:#DA291C;">{{total_admin.val}} admin identity(ies)</strong> with full cloud privileges have MFA disabled. A single phishing email targeting any one of these accounts grants an attacker unrestricted access to every cloud resource — compute, storage, networking, and billing controls. Admin accounts without MFA are the leading vector for cloud account takeover. Enforcing MFA on these accounts alone reduces account compromise risk by <strong style="color:white;">99.9%</strong> against automated and credential-based attacks. This is the single highest-priority remediation in this report.</p>
+    {% else %}
+    <p>No admin identities with MFA disabled were detected. Continue enforcing MFA at the identity provider level for all privileged accounts and audit entitlements on a quarterly basis to prevent privilege creep as personnel and roles change over time.</p>
+    {% endif %}
+</div>
+
 </section>
+{% endif %}
 
-<!-- Security Outcomes Section -->
-<section id="security-outcomes" class="pagebreak">
-    <h2>FortiCNAPP Security Outcomes</h2>
-    <div class="promo-section">
-        {% if sec_outcomes_html %}{{ sec_outcomes_html | safe }}{% endif %}
+{# ═══════════════════════════════════════════════════════
+   SECTION 5 — TOP CRITICAL ALERTS
+   ═══════════════════════════════════════════════════════ #}
+{% if alerts_data and alerts_data.alerts_raw is defined %}
+<section id="alerts" class="pagebreak">
+<h2>5. Top Critical Alerts</h2>
+<p>
+    The following FortiCNAPP critical-severity alerts were generated during the assessment window. Each alert represents a detection from FortiCNAPP's behavioral analytics engine — triggered when observed cloud activity deviates significantly from the established baseline. Composite alerts correlate multiple signals and indicate a higher likelihood of active attack activity.
+</p>
+
+{% set alert_count = alerts_data.alerts_raw | length %}
+{% if alert_count == 0 %}
+<div class="info-box tip">
+    <div class="info-box-icon">✓</div>
+    <div class="info-box-content">
+        <strong>No Critical Alerts</strong>
+        <p>FortiCNAPP did not generate any critical-severity behavioral alerts during the assessment window. Continue monitoring and ensure FortiCNAPP policy coverage is complete.</p>
     </div>
+</div>
+{% else %}
+<div class="info-box warning">
+    <div class="info-box-icon">⚠</div>
+    <div class="info-box-content">
+        <strong>{{critical_alert_count}} Critical Alert(s) Require Investigation</strong>
+        <p>Critical alerts from FortiCNAPP represent the highest-confidence detections of anomalous activity. Each should be reviewed by the security team and escalated if the activity cannot be confirmed as authorized.</p>
+    </div>
+</div>
+
+<table class="exec-table">
+    <thead>
+        <tr>
+            <th class="narrow">#</th>
+            <th style="width:50px">ID</th>
+            <th style="width:55px">Severity</th>
+            <th style="width:150px">Alert</th>
+            <th style="width:100px">Type</th>
+            <th style="width:105px">Time</th>
+            <th style="width:130px">IP or Domain Reputation</th>
+            <th style="width:160px">Description</th>
+            <th style="width:150px">Why It Matters</th>
+            <th style="width:160px">Recommended Next Action</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for idx, row in alerts_data.alerts_raw.head(10).iterrows() %}
+    <tr>
+        <td class="narrow">{{ loop.index }}</td>
+        <td><small class="text-muted">{{ row['Alert ID'] }}</small></td>
+        <td><span class="badge badge-critical">{{ row['Severity'] }}</span></td>
+        <td class="wide"><strong>{{ row['Alert Name'] }}</strong></td>
+        <td class="med">
+            {% if 'Alert Type' in row %}
+            <small class="text-muted">{{ row['Alert Type'] | truncate(35, True, '…') }}</small>
+            {% else %}—{% endif %}
+        </td>
+        <td><small>{{ row['Alert Time'] }}</small></td>
+        <td>
+            {% set _risk = row['IP or Domain Reputation'] %}
+            {% if _risk == 'Malicious' %}
+            <span class="badge badge-critical" title="Attacker activity">{{ _risk }}</span>
+            {% elif _risk == 'Negligent' %}
+            <span class="badge" style="background:#e67e22;color:#fff;" title="Misconfig / weak controls">{{ _risk }}</span>
+            {% elif _risk == 'Unauthorized' %}
+            <span class="badge" style="background:#8e44ad;color:#fff;" title="Shadow IT / unsanctioned service">{{ _risk }}</span>
+            {% else %}—{% endif %}
+        </td>
+        <td class="wide">{{ row['Description'] | truncate(110, True, '…') }}</td>
+        <td class="wide">
+            {% if 'Alert Type' in row %}{{ alert_why(row['Alert Name'], row['Alert Type']) }}
+            {% else %}{{ alert_why(row['Alert Name'], '') }}{% endif %}
+        </td>
+        <td class="wide">
+            {% if 'Alert Type' in row %}{{ alert_next(row['Alert Name'], row['Alert Type']) }}
+            {% else %}{{ alert_next(row['Alert Name'], '') }}{% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<div class="section-summary">
+    <div class="ss-title">&#9650; Risk Summary — Why Immediate Action Matters</div>
+    {% if critical_alert_count > 0 %}
+    <p><strong style="color:#DA291C;">{{critical_alert_count}} critical behavioral alert(s)</strong> were generated during the assessment window. FortiCNAPP critical alerts represent the highest-confidence detections — triggered only when observed activity significantly deviates from a learned behavioral baseline, or when multiple correlated signals indicate coordinated attack activity. Each unresolved alert extends attacker dwell time: the industry average is <strong style="color:white;">194 days</strong> from initial compromise to detection. Every day without investigation increases both the scope of compromise and the cost of incident response. Treat each unresolved critical alert as an active incident until proven otherwise.</p>
+    {% else %}
+    <p>No critical alerts were generated during the assessment window. Continue monitoring behavioral baselines and ensure FortiCNAPP policy coverage spans all active cloud accounts, regions, and workload types to maintain detection effectiveness as the environment evolves.</p>
+    {% endif %}
+</div>
+
 </section>
+{% endif %}
 
-<!-- State of Cloud Security Report Section -->
-<section id="state-of-cloud" class="pagebreak">
-    <h2>State of Cloud Security Report</h2>
-    <div class="promo-section">
-        {% if state_of_cloud_html %}{{ state_of_cloud_html | safe }}{% endif %}
+{# ═══════════════════════════════════════════════════════
+   TECHNICAL CONCLUSION & PRODUCT RECOMMENDATIONS
+   ═══════════════════════════════════════════════════════ #}
+<section id="conclusion" class="pagebreak">
+<h2>Fortinet Product and Solution Recommendations</h2>
+
+<div class="narrative">
+<p>
+    The FortiCNAPP non-intrusive assessment of <strong>{{customer}}</strong> reveals a multi-layered risk exposure spanning cloud configuration, workload security, identity governance, and behavioral threat signals.
+    {% if total_compliance_critical > 0 %}<strong>{{total_compliance_critical}} critical compliance finding(s)</strong> confirm foundational control gaps — including access management, network exposure, and audit logging — that represent exploitable attack surface without any specialized tooling.{% endif %}
+    {% if total_vuln_critical > 0 %}<strong>{{total_vuln_critical}} host(s) and/or container(s) carry unpatched CVEs</strong> with a Risk Score of 9 or higher, where known exploit code is publicly available and active exploitation in the wild has been documented.{% endif %}
+    {% if total_admin.val > 0 %}<strong>{{total_admin.val}} admin identity(ies) lack MFA</strong>, presenting a direct path to full environment compromise through a single credential phishing event.{% endif %}
+    {% if critical_alert_count > 0 %}<strong>{{critical_alert_count}} critical behavioral alert(s)</strong> indicate active or attempted anomalous activity requiring immediate investigation.{% endif %}
+    {% if _sc > 0 %}<strong>{{_sc}} secret(s)</strong> found in world-accessible locations represent directly usable credentials exposing downstream systems.{% endif %}
+</p>
+<p>
+    The following Fortinet products are recommended to address the specific risk vectors identified above. FortiCNAPP provides the continuous agentless detection layer; the complementary products below add prevention, enforcement, and response capabilities to convert visibility into active protection.
+</p>
+</div>
+
+<div class="product-grid">
+
+  <div class="product-card">
+    <div class="product-name">FortiCNAPP</div>
+    <div class="product-subtitle">Cloud Visibility</div>
+    <div class="product-addresses">
+      {% if total_compliance_critical > 0 %}<span class="badge badge-critical">CSPM</span>{% endif %}
+      {% if total_vuln_critical > 0 %}<span class="badge badge-critical">CWPP</span>{% endif %}
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-critical">CIEM</span>{% endif %}
+      {% if _sc > 0 %}<span class="badge badge-critical">Secrets</span>{% endif %}
+      {% if critical_alert_count > 0 %}<span class="badge badge-critical">Threat Detection</span>{% endif %}
     </div>
+    <ul class="product-caps">
+      <li><strong>CSPM</strong> — Continuous misconfiguration detection across AWS, Azure, and GCP against CIS, PCI-DSS, and SOC2 benchmarks with automated drift alerting.</li>
+      <li><strong>CWPP</strong> — Agentless vulnerability and runtime threat detection for hosts, containers, and serverless workloads with FortiCNAPP Risk Scoring.</li>
+      <li><strong>CIEM</strong> — Cloud Identity &amp; Entitlement Management: right-size permissions, eliminate standing privilege, and enforce MFA across all cloud identities.</li>
+    </ul>
+  </div>
+
+  <div class="product-card">
+    <div class="product-name">FortiGate</div>
+    <div class="product-subtitle">Cloud Edge Security</div>
+    <div class="product-addresses">
+      {% if total_vuln_critical > 0 %}<span class="badge badge-high">Virtual Patching</span>{% endif %}
+      {% if total_compliance_critical > 0 %}<span class="badge badge-high">Network Controls</span>{% endif %}
+      {% if total_admin.val > 0 %}<span class="badge badge-high">ZTNA</span>{% endif %}
+    </div>
+    <ul class="product-caps">
+      <li><strong>Cloud Edge Firewall</strong> — North-South traffic inspection and IPS-based virtual patching at cloud ingress/egress for immediate CVE coverage without maintenance windows.</li>
+      <li><strong>East-West Microsegmentation</strong> — enforce zero-trust workload connectivity to contain lateral movement and limit blast radius from compromised instances.</li>
+      <li><strong>ZTNA &amp; SD-WAN</strong> — replace legacy VPN with identity-aware, least-privilege access to cloud resources for admin, developer, and remote sessions.</li>
+    </ul>
+  </div>
+
+  <div class="product-card">
+    <div class="product-name">FortiAppSec Cloud</div>
+    <div class="product-subtitle">Cloud Application Web &amp; API Security · SaaS · DDoS CDN WAAP · ALB</div>
+    <div class="product-addresses">
+      {% if total_vuln_critical > 0 %}<span class="badge badge-medium">WAAP</span>{% endif %}
+      <span class="badge badge-medium">DDoS</span>
+      <span class="badge badge-medium">API Protection</span>
+      <span class="badge badge-medium">CDN</span>
+    </div>
+    <ul class="product-caps">
+      <li><strong>WAAP at the CDN Edge</strong> — globally distributed Web Application &amp; API Protection with volumetric and application-layer DDoS scrubbing before traffic reaches the origin.</li>
+      <li><strong>API Discovery &amp; Protection</strong> — auto-discover shadow and undocumented APIs, enforce schema-based policies, and block abuse and bot-driven attacks.</li>
+      <li><strong>ALB-Native Deployment</strong> — inline security for traffic flowing through Application Load Balancers with no agent overhead and full SSL/TLS visibility.</li>
+    </ul>
+  </div>
+
+  <div class="product-card">
+    <div class="product-name">FortiWeb</div>
+    <div class="product-subtitle">Cloud Application Web &amp; API · Gen AI (MCP) · ALB</div>
+    <div class="product-addresses">
+      {% if total_vuln_critical > 0 %}<span class="badge badge-medium">Virtual Patching</span>{% endif %}
+      <span class="badge badge-medium">WAF</span>
+      <span class="badge badge-medium">Gen AI Security</span>
+      <span class="badge badge-medium">ALB</span>
+    </div>
+    <ul class="product-caps">
+      <li><strong>WAF + Virtual Patching</strong> — ML-driven web attack prevention with immediate CVE exploit coverage for web-facing stacks before the underlying package is patched.</li>
+      <li><strong>Gen AI &amp; MCP Security</strong> — protect AI inference APIs and Model Context Protocol (MCP) endpoints from prompt injection, data exfiltration, and API abuse.</li>
+      <li><strong>ALB Integration</strong> — transparent inline inspection of HTTP/S traffic behind Application Load Balancers with API gateway schema validation and rate limiting.</li>
+    </ul>
+  </div>
+
+  <div class="product-card" style="flex: 1 1 100%;">
+    <div class="product-name">FortiCASB-SSPM</div>
+    <div class="product-subtitle">Data Governance &amp; Shadow IT · SaaS Supply Chain · SaaS Compliance</div>
+    <div class="product-addresses">
+      {% if total_admin.val > 0 or total_identity_high.val > 0 %}<span class="badge badge-high">Identity Risk</span>{% endif %}
+      {% if total_compliance_critical > 0 %}<span class="badge badge-high">SaaS Compliance</span>{% endif %}
+      <span class="badge badge-high">Shadow IT</span>
+      <span class="badge badge-high">Data Governance</span>
+      <span class="badge badge-high">Supply Chain</span>
+    </div>
+    <ul class="product-caps">
+      <li><strong>SaaS Security Posture Management</strong> — continuous misconfiguration detection and auto-remediation across M365, Google Workspace, Salesforce, and other sanctioned SaaS platforms.</li>
+      <li><strong>Shadow IT &amp; SaaS Supply Chain Risk</strong> — discover unsanctioned applications, assess OAuth and third-party integration risk, and enforce SaaS access governance policies.</li>
+      <li><strong>Data Governance &amp; DLP</strong> — classify and protect sensitive data in motion across SaaS platforms with policy-driven enforcement and audit-ready compliance reporting.</li>
+    </ul>
+  </div>
+
+</div>
+
+{% if fortinet_sec_fabric_html %}
+<div class="promo-section">{{ fortinet_sec_fabric_html | safe }}</div>
+{% endif %}
+
 </section>
 
 <footer>
-    <p>Generated by FortiCNAPP Cloud Security Assessment Tool</p>
-    <p>Report Date: {{date}} | Prepared for: {{customer}} | Author: {{author}}</p>
+    <p><strong>RAPID CLOUD ASSESSMENT REPORT – Powered by FortiCNAPP</strong></p>
+    <p>Prepared for: {{customer}} &nbsp;·&nbsp; Report Date: {{date}} &nbsp;·&nbsp; Author: {{author}}</p>
+    <p style="margin-top:0.5rem; opacity:0.75;">This report is confidential and intended solely for the named recipient. Generated by the FortiCNAPP Extensible Reporting Tool.</p>
+    {% if fortinet_resources_qr_html %}
+    <div style="margin-top:1.5rem; display:flex; align-items:center; justify-content:center; gap:2rem; flex-wrap:wrap;">
+        {% if company_logo_html %}
+        <div style="line-height:0; filter:brightness(0) invert(1); opacity:0.85;">
+            <style>.footer-logo img { height:38px !important; width:auto !important; display:block !important; float:none !important; }</style>
+            <div class="footer-logo">{{ company_logo_html | safe }}</div>
+        </div>
+        {% endif %}
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0.4rem;">
+            <div style="background:#FFFFFF; padding:6px; border-radius:6px; display:inline-block; line-height:0;">
+                {{ fortinet_resources_qr_html | safe }}
+            </div>
+            <span style="font-size:0.7rem; opacity:0.75; letter-spacing:0.5px;">fortinet.com/resources/reports/cloud-security</span>
+        </div>
+    </div>
+    {% endif %}
 </footer>
 
 </body>

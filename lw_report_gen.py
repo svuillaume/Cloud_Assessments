@@ -9,6 +9,7 @@ from modules.process_args import get_validated_arguments, pre_process_args
 from modules.utils import get_available_reports
 from modules.utils import alert_new_release
 from modules.reportgen import ReportGen  # do not remove, needed by pyinstaller
+from modules.spinner import Spinner
 
 
 def main():
@@ -44,12 +45,10 @@ def main():
         report_gui.exec()
     else:
         # Execute the selected report from command line (no GUI)
+        custom_logo = args.logo if args.logo else None
+        spinner = Spinner('Generating Cloud Security Posture')
+        spinner.start()
         try:
-            
-            if args.logo:
-                custom_logo = args.logo
-            else:
-                custom_logo = None
             if args.report_format == "HTML":
                 report_generator = pre_processed_args['report_to_run'](basedir, use_cache=args.cache_data, api_key_file=pre_processed_args['api_key_file'])
                 report = report_generator.generate(args.customer,
@@ -74,13 +73,13 @@ def main():
                                                 pagesize='a2',
                                                 pdf=True,
                                                 )
-
         except Exception as e:
-            logger.error(f"Report Generation failed for report {args.report}, did you specify one that exists? Check what's available with the '--list-reports' flag.")
-            logger.error("Exiting....")
+            spinner.stop(success=False)
+            logger.error(f"Report generation failed for '{args.report}'. Check what's available with '--list-reports'.")
             logger.error(str(e))
             logger.error(traceback.format_exc())
             sys.exit()
+        spinner.stop(success=True)
 
         # Generate a filename if one was not specified
         if not args.report_path:
