@@ -20,7 +20,7 @@ Until the next **Extensible-Reporting** release is published:
 
 ## Description
 
-A project to generate automated Rapid Cloud Assessment Reports 
+A updated FortiCNAPP project forked from Lacework Extensible Report to generate automated Rapid Cloud Assessment Reports 
 
 ## Quickstart
 
