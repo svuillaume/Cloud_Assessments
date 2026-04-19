@@ -1,8 +1,8 @@
-# Extensible Report Generator v.2
+# FortiCNAPP Rapid Cloud Assessment 
 
-# Important Notice — Extensible Report Generator v2
+## Important Notice 
 
-## Do Not Use the Compiled Binary (Release v2.0.2)
+### Do Not Use the Compiled Binary (Release v2.0.2)
 
 Please **do not use the compiled binary** available on the Releases page:
 
@@ -10,7 +10,7 @@ https://github.com/lacework/extensible-reporting/releases/tag/v2.0.2
 
 At this time, **not all scripts have been compiled and included** in the binary package.
 
-## Recommended Usage
+### Recommended Usage
 
 Until the next **Extensible-Reporting** release is published:
 
@@ -18,14 +18,9 @@ Until the next **Extensible-Reporting** release is published:
 - Run directly from source
 - Avoid relying on the current compiled executable
 
-## Summary
-
-**Temporary Guidance:**  
-Use Python scripts only until the next official release resolves binary packaging completeness.
-
 ## Description
 
-A project to abstract the gathering, transformations, and rendering of datasets from FortiCNAPP into auto-generated reports.
+A project to generate automated Rapid Cloud Assessment Reports 
 
 ## Quickstart
 
