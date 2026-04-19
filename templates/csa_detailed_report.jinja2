@@ -870,20 +870,13 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 
     <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
 
-        {# Overall score circle #}
+        {# Overall MultiCloud score circle — only on cover #}
         <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem; flex-shrink:0;">
             <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.12); border:3px solid rgba(255,255,255,0.55); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px rgba(255,255,255,0.18), inset 0 1px 0 rgba(255,255,255,0.2);">
                 <span style="font-size:3.6rem; font-weight:800; color:white; letter-spacing:-2px; line-height:1;">{{ _avg_csp_score | round(1) }}</span>
                 <span style="font-size:0.65rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase;">out of 10</span>
             </div>
             <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center; color:white;">MultiCloud<br>Cloud Security Posture Score</div>
-        </div>
-
-        {# Per-CSP semicircle gauges — SVG colours are vivid enough on the dark cover #}
-        <div style="display:flex; gap:0.5rem; align-items:flex-start; flex-wrap:wrap; justify-content:center;">
-            <div style="width:150px;">{{ csp_mini_gauge('AWS',   _score_aws,   brand_color='#FF9900') }}</div>
-            <div style="width:150px;">{{ csp_mini_gauge('AZURE', _score_azure, brand_color='#0078D4') }}</div>
-            <div style="width:150px;">{{ csp_mini_gauge('GCP',   _score_gcp,   brand_color='#34A853') }}</div>
         </div>
 
     </div>
@@ -941,6 +934,16 @@ Host workload — assess network exposure; check if publicly routable or in a DM
             <div class="tc-sub">Active detections requiring rapid triage or containment.</div>
         </a>
     </div>
+</div>
+
+{# ─── Per-CSP posture gauges — shown after TOC, matching HTML layout ─── #}
+<div style="margin: 2rem 0 1.5rem; text-align:center;">
+  <div style="font-size:0.68rem; font-weight:700; letter-spacing:3px; text-transform:uppercase; color:var(--color-text-muted); margin-bottom:1.2rem;">Cloud Provider Posture Breakdown</div>
+  <div style="display:flex; gap:1.5rem; justify-content:center; align-items:flex-start; flex-wrap:wrap;">
+    <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AWS',   _score_aws,   brand_color='#FF9900') }}</div>
+    <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('AZURE', _score_azure, brand_color='#0078D4') }}</div>
+    <div style="flex:1; min-width:160px; max-width:220px;">{{ csp_mini_gauge('GCP',   _score_gcp,   brand_color='#34A853') }}</div>
+  </div>
 </div>
 
 {# ═══════════════════════════════════════════════════════
