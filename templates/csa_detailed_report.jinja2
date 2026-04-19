@@ -739,19 +739,24 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 </div>
 {%- endmacro %}
 
-{# ── Mini semicircle gauge for per-CSP posture ── #}
-{% macro csp_mini_gauge(label, score) -%}
-{%- if score <= 6 -%}
+{# ── Mini semicircle gauge for per-CSP posture ──
+   brand_color: optional override — uses score-based colour when omitted #}
+{% macro csp_mini_gauge(label, score, brand_color=None) -%}
+{%- if score <= 3 -%}{%- set gl = 'CRITICAL' -%}
+{%- elif score <= 5 -%}{%- set gl = 'POOR' -%}
+{%- elif score <= 6 -%}{%- set gl = 'AT RISK' -%}
+{%- elif score < 8 -%}{%- set gl = 'MODERATE' -%}
+{%- elif score < 9 -%}{%- set gl = 'GOOD' -%}
+{%- else -%}{%- set gl = 'EXCELLENT' -%}
+{%- endif -%}
+{%- if brand_color -%}
+  {%- set gc = brand_color -%}
+{%- elif score <= 6 -%}
   {%- set gc = '#DA291C' -%}
-  {%- if score <= 3 -%}{%- set gl = 'CRITICAL' -%}
-  {%- elif score <= 5 -%}{%- set gl = 'POOR' -%}
-  {%- else -%}{%- set gl = 'AT RISK' -%}{%- endif -%}
 {%- elif score < 9 -%}
   {%- set gc = '#2563EB' -%}
-  {%- if score < 8 -%}{%- set gl = 'MODERATE' -%}
-  {%- else -%}{%- set gl = 'GOOD' -%}{%- endif -%}
 {%- else -%}
-  {%- set gc = '#1E7A3E' -%}{%- set gl = 'EXCELLENT' -%}
+  {%- set gc = '#1E7A3E' -%}
 {%- endif -%}
 {%- set _af = (score / 10.0) * 235.6 -%}
 <svg viewBox="0 0 220 148" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:220px;display:block;margin:0 auto;">
@@ -860,9 +865,9 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 
         {# Per-CSP semicircle gauges — SVG colours are vivid enough on the dark cover #}
         <div style="display:flex; gap:0.5rem; align-items:flex-start; flex-wrap:wrap; justify-content:center;">
-            <div style="width:150px;">{{ csp_mini_gauge('AWS',   _score_aws)   }}</div>
-            <div style="width:150px;">{{ csp_mini_gauge('AZURE', _score_azure) }}</div>
-            <div style="width:150px;">{{ csp_mini_gauge('GCP',   _score_gcp)   }}</div>
+            <div style="width:150px;">{{ csp_mini_gauge('AWS',   _score_aws,   brand_color='#FF9900') }}</div>
+            <div style="width:150px;">{{ csp_mini_gauge('AZURE', _score_azure, brand_color='#0078D4') }}</div>
+            <div style="width:150px;">{{ csp_mini_gauge('GCP',   _score_gcp,   brand_color='#34A853') }}</div>
         </div>
 
     </div>
