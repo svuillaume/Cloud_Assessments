@@ -34,28 +34,58 @@ This tool leverages the Lacework FortiCNAPP API to create HTML and PDF reports.
 ## Downloading and Setting up the Tool
 
 
-### Option 1:
+### Option 1: Run from source using a virtual environment (recommended)
 
-This option involves running the `lw_report_gen.py` command directly in this repo but has a few prerequisites.
+This option runs `lw_report_gen.py` directly from the cloned repo inside an isolated Python virtual environment so dependencies don't pollute your system Python.
 
-To run the python directly you will need
+**Prerequisites:** `python3` (3.9+) available on your PATH.
 
-- `python3`
-- `pip3` (latest version is required, run `pip3 install --upgrade pip`)
+#### 1 — Create and activate the virtual environment
 
-To install dependencies run:
+```bash
+# Create the venv (only needed once)
+python3 -m venv venv
+
+# Activate — macOS / Linux
+source venv/bin/activate
+
+# Activate — Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
 ```
-$ pip3 install -r requirements.txt
+
+You should see `(venv)` in your shell prompt once active.
+
+#### 2 — Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-On Windows or Linux run the script using the python interpreter:
-```
+#### 3 — Run the tool
+
+GUI mode (recommended for first use):
+```bash
 python lw_report_gen.py --gui --api-key-file <instancename>.json
 ```
-On a Mac you may need to specify "python3" instead of "python" ("python" references python 2, which won't work). so...
+
+CLI mode (headless / automation):
+```bash
+python lw_report_gen.py \
+  --author "Your Name" \
+  --customer "Acme Corp" \
+  --report CSA_Detailed \
+  --report-format HTML \
+  --api-key-file <instancename>.json
 ```
-python3 lw_report_gen.py --gui --api-key-file <instancename>.json
+
+#### 4 — Deactivate when done
+
+```bash
+deactivate
 ```
+
+> **Tip:** use `--cache-data` on subsequent runs to skip live API calls and reuse cached responses during development.
 
 ## Command Line Mode
 
