@@ -157,7 +157,7 @@ def main():
 
         if args.report_format == "HTML":
             report_file_name += ".html"
-            # Write out the report file
+            # Write full report (with annex)
             logger.info(f'Writing report to {report_file_name}')
             try:
                 with open(str(report_file_name), 'w') as file:
@@ -165,6 +165,21 @@ def main():
             except Exception as e:
                 logger.error(f'Failed writing report file {report_file_name}: {str(e)}')
                 sys.exit()
+            # Write compact variant (without annex)
+            compact_file_name = report_file_name.replace('_RCA_', '_RCA_C')
+            logger.info(f'Writing compact report (no annex) to {compact_file_name}')
+            try:
+                report_compact = report_generator.render(
+                    args.customer, args.author,
+                    custom_logo=custom_logo,
+                    pagesize='a3',
+                    pdf=False,
+                    include_annex=False,
+                )
+                with open(compact_file_name, 'w') as file:
+                    file.write(report_compact)
+            except Exception as e:
+                logger.error(f'Failed writing compact report file {compact_file_name}: {str(e)}')
         elif args.report_format == "PDF":
             report_file_name += ".pdf"
             logger.info(f'Writing report to {report_file_name}')

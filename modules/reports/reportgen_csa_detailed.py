@@ -54,7 +54,7 @@ class ReportGenCSADetailed(ReportGen):
         self.ciem_data=self.gather_identity_entitlement_data(alerts_start_time.generate_time_string(), alerts_end_time.generate_time_string(), threshold=ciem_threshold)
         _step(95, 'Rendering report...')
 
-    def render(self, customer, author, pagesize="a3", custom_logo=None, pdf=False):
+    def render(self, customer, author, pagesize="a3", custom_logo=None, pdf=False, include_annex=True):
         if custom_logo and os.path.isfile(custom_logo):
             self.custom_logo_html = self.file_to_image_tag(custom_logo, 'png', align='right')
         else:
@@ -84,7 +84,8 @@ class ReportGenCSADetailed(ReportGen):
             recommendations=self.recommendations,
             fortinet_resources_qr_html=self.fortinet_resources_qr_html,
             pagesize=pagesize,
-            pdf=pdf
+            pdf=pdf,
+            include_annex=include_annex,
         )
 
     def generate(self,
