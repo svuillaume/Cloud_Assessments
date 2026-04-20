@@ -106,246 +106,76 @@
         }
         header img { height: 38px; }
 
-        /* ── Cover — dashboard intelligence style ── */
+        /* ── Cover — minimal centered ── */
         .cover-accent-bar { height: 2px; background: var(--color-primary); margin: 0 -4rem; }
         .report-cover {
-            background: #070a0f;
+            background: #0d1117;
             color: white;
             padding: 0;
             margin: 0 -4rem 2.5rem;
             display: flex;
             flex-direction: column;
+            min-height: 76vh;
             border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .cover-nav {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0.55rem 2.5rem;
-            background: #050710;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.6rem 2.5rem;
             border-bottom: 1px solid rgba(255,255,255,0.05);
         }
-        .cover-nav-label {
-            font-size: 0.53rem;
-            font-weight: 700;
-            letter-spacing: 3.5px;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.22);
-        }
+        .cover-nav-label { font-size: 0.52rem; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: rgba(255,255,255,0.2); }
         .cover-nav-right { display: flex; align-items: center; gap: 1.25rem; }
-        .cover-class-chip {
-            font-size: 0.48rem;
-            font-weight: 800;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            color: #DA291C;
-            background: rgba(218,41,28,0.1);
-            border: 1px solid rgba(218,41,28,0.2);
-            padding: 0.15rem 0.55rem;
-            border-radius: 3px;
-        }
-        .cover-nav-date {
-            font-size: 0.52rem;
-            color: rgba(255,255,255,0.2);
-            letter-spacing: 1px;
-        }
-        .cover-hero {
-            display: flex;
-            align-items: flex-end;
-            justify-content: space-between;
-            padding: 2.5rem 2.5rem 1.75rem;
-            gap: 2rem;
-        }
-        .cover-eyebrow {
-            font-size: 0.53rem;
-            font-weight: 700;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            color: rgba(218,41,28,0.8);
-            margin-bottom: 0.8rem;
-        }
-        .cover-title {
-            font-size: 3.8rem;
-            font-weight: 900;
-            line-height: 0.96;
-            color: #fff;
-            letter-spacing: -3px;
-            margin-bottom: 0.7rem;
-            border: none;
-        }
-        .cover-subtitle {
-            font-size: 0.8rem;
-            color: rgba(255,255,255,0.25);
-            margin-bottom: 1.4rem;
-        }
-        .cover-csp-row { display: flex; gap: 0.38rem; flex-wrap: wrap; }
-        .cover-csp {
-            font-size: 0.5rem;
-            font-weight: 700;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            padding: 0.18rem 0.55rem;
-            border-radius: 3px;
-            border: 1px solid rgba(255,255,255,0.09);
-            color: rgba(255,255,255,0.3);
-        }
-        .cover-hero-status { text-align: right; flex-shrink: 0; padding-bottom: 0.15rem; }
-        .cvr-status-badge {
-            display: inline-block;
-            font-size: 0.8rem;
-            font-weight: 800;
-            letter-spacing: 2.5px;
-            text-transform: uppercase;
-            padding: 0.38rem 1rem;
-            border-radius: 5px;
-            margin-bottom: 0.28rem;
-        }
-        .cvr-critical { background: rgba(218,41,28,0.18); color: #FF5555; border: 1px solid rgba(218,41,28,0.35); }
-        .cvr-high     { background: rgba(204,74,26,0.16);  color: #FF7744; border: 1px solid rgba(204,74,26,0.32); }
-        .cvr-atrisk   { background: rgba(183,119,13,0.16); color: #FFBB00; border: 1px solid rgba(183,119,13,0.32); }
-        .cvr-moderate { background: rgba(30,122,62,0.16);  color: #55DD88; border: 1px solid rgba(30,122,62,0.32); }
-        .cvr-secure   { background: rgba(30,122,62,0.22);  color: #4ADE80; border: 1px solid rgba(30,122,62,0.42); }
-        .cover-status-sub {
-            font-size: 0.48rem;
-            color: rgba(255,255,255,0.18);
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            text-align: right;
-        }
+        .cover-class-chip { font-size: 0.48rem; font-weight: 800; letter-spacing: 2px; text-transform: uppercase; color: #DA291C; background: rgba(218,41,28,0.1); border: 1px solid rgba(218,41,28,0.2); padding: 0.15rem 0.55rem; border-radius: 3px; }
+        .cover-nav-date { font-size: 0.52rem; color: rgba(255,255,255,0.2); letter-spacing: 1px; }
 
-        /* ── Metrics strip ── */
-        .cover-metrics {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            margin: 0 2.5rem;
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        .cov-metric {
-            padding: 1.3rem 1.4rem 1.1rem;
-            background: #0b0e16;
-            border-right: 1px solid rgba(255,255,255,0.05);
-            position: relative;
-        }
-        .cov-metric:last-child { border-right: none; }
-        .cov-metric::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 2px;
-        }
-        .cov-m-red::before    { background: #DA291C; }
-        .cov-m-orange::before { background: #CC4A1A; }
-        .cov-m-amber::before  { background: #B7770D; }
-        .cov-m-green::before  { background: #1E7A3E; }
-        .cov-metric-num {
-            font-size: 2.9rem;
-            font-weight: 900;
-            line-height: 1;
-            letter-spacing: -2px;
-            margin-bottom: 0.25rem;
-        }
-        .cov-m-red    .cov-metric-num { color: #FF5555; }
-        .cov-m-orange .cov-metric-num { color: #FF8855; }
-        .cov-m-amber  .cov-metric-num { color: #FFB800; }
-        .cov-m-green  .cov-metric-num { color: #4ADE80; }
-        .cov-metric-label {
-            font-size: 0.52rem;
-            font-weight: 700;
-            letter-spacing: 1.8px;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.26);
-            line-height: 1.5;
-        }
-        .cov-metric-state {
-            font-size: 0.47rem;
-            font-weight: 800;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin-top: 0.3rem;
-        }
-        .cov-m-red    .cov-metric-state { color: rgba(255,85,85,0.65); }
-        .cov-m-orange .cov-metric-state { color: rgba(255,136,85,0.65); }
-        .cov-m-amber  .cov-metric-state { color: rgba(255,184,0,0.65); }
-        .cov-m-green  .cov-metric-state { color: rgba(74,222,128,0.65); }
-
-        /* ── Per-CSP posture rows ── */
-        .cover-posture {
-            margin: 1rem 2.5rem 0;
-            border: 1px solid rgba(255,255,255,0.06);
-            border-radius: 10px;
-            overflow: hidden;
-        }
-        .cov-posture-row {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            padding: 0.65rem 1.25rem;
-            background: #0b0e16;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
-        }
-        .cov-posture-row:last-child { border-bottom: none; }
-        .cov-csp-name {
-            font-size: 0.56rem;
-            font-weight: 700;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.4);
-            min-width: 50px;
-        }
-        .cov-posture-bar-track {
+        .cover-body {
             flex: 1;
-            height: 3px;
-            background: rgba(255,255,255,0.06);
-            border-radius: 2px;
-            overflow: hidden;
-        }
-        .cov-posture-bar-fill { height: 100%; border-radius: 2px; }
-        .cov-posture-badge {
-            font-size: 0.48rem;
-            font-weight: 800;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            padding: 0.14rem 0.52rem;
-            border-radius: 3px;
-            min-width: 60px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.75rem 3rem 1.25rem;
+            gap: 1.5rem;
             text-align: center;
         }
-        .cov-posture-score {
-            font-size: 0.6rem;
-            font-weight: 700;
-            color: rgba(255,255,255,0.22);
-            min-width: 46px;
-            text-align: right;
+        .cover-eyebrow { font-size: 0.5rem; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: rgba(218,41,28,0.65); margin-bottom: 0.4rem; }
+        .cover-title { font-size: 2.1rem; font-weight: 900; color: #fff; letter-spacing: -0.5px; line-height: 1.1; margin-bottom: 0.2rem; border: none; }
+        .cover-subtitle { font-size: 0.8rem; color: rgba(255,255,255,0.26); }
+        .cover-donut-svg { display: block; width: 190px; height: 190px; }
+
+        /* ── Stat cards ── */
+        .cover-cards { display: flex; gap: 0.65rem; justify-content: center; flex-wrap: wrap; width: 100%; max-width: 880px; }
+        .cover-card {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 12px;
+            padding: 1.1rem 1.25rem 1rem;
+            flex: 1; min-width: 120px; max-width: 165px;
+            position: relative; overflow: hidden; text-align: left;
         }
+        .cover-card::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; }
+        .cc-red::before    { background: #DA291C; }
+        .cc-orange::before { background: #CC6B1A; }
+        .cc-amber::before  { background: #B7770D; }
+        .cc-purple::before { background: #8B5CF6; }
+        .cc-yellow::before { background: #F59E0B; }
+        .cc-green::before  { background: #1E7A3E; }
+        .cover-card-num { font-size: 2.5rem; font-weight: 900; line-height: 1; letter-spacing: -2px; margin-bottom: 0.3rem; }
+        .cc-red    .cover-card-num { color: #FF5555; }
+        .cc-orange .cover-card-num { color: #FF8855; }
+        .cc-amber  .cover-card-num { color: #FFB800; }
+        .cc-purple .cover-card-num { color: #A78BFA; }
+        .cc-yellow .cover-card-num { color: #FBBF24; }
+        .cc-green  .cover-card-num { color: #4ADE80; }
+        .cover-card-label { font-size: 0.7rem; font-weight: 700; color: rgba(255,255,255,0.6); margin-bottom: 0.12rem; line-height: 1.3; }
+        .cover-card-sub { font-size: 0.56rem; color: rgba(255,255,255,0.22); }
 
         /* ── Cover meta footer ── */
-        .cover-meta {
-            display: flex;
-            align-items: center;
-            padding: 0.85rem 2.5rem 1rem;
-            margin-top: 1.1rem;
-            border-top: 1px solid rgba(255,255,255,0.05);
-            gap: 0;
-        }
+        .cover-meta { display: flex; align-items: center; padding: 0.8rem 2.5rem 0.95rem; border-top: 1px solid rgba(255,255,255,0.05); gap: 0; }
         .cover-meta-item { display: flex; flex-direction: column; gap: 0.15rem; flex: 1; }
-        .cmi-label {
-            font-size: 0.46rem;
-            font-weight: 700;
-            letter-spacing: 2.5px;
-            text-transform: uppercase;
-            color: rgba(255,255,255,0.16);
-        }
+        .cmi-label { font-size: 0.46rem; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; color: rgba(255,255,255,0.16); }
         .cmi-value { font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.6); }
-        .cover-meta-sep {
-            width: 1px;
-            height: 26px;
-            background: rgba(255,255,255,0.05);
-            margin: 0 1.5rem 0 0;
-            flex-shrink: 0;
-            align-self: center;
-        }
+        .cover-meta-sep { width: 1px; height: 26px; background: rgba(255,255,255,0.05); margin: 0 1.5rem 0 0; flex-shrink: 0; align-self: center; }
 
         /* ── Confirmed-clean callout ── */
         .confirmed-clean {
@@ -1444,73 +1274,92 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         </div>
     </div>
 
-    <!-- Hero row -->
-    <div class="cover-hero">
+    <!-- Cover body — centered title + donut + stat cards -->
+    <div class="cover-body">
         <div>
             <div class="cover-eyebrow">Cloud Security Intelligence Briefing</div>
-            <h1 class="cover-title">Rapid Cloud<br>Assessment</h1>
-            <div class="cover-subtitle">{{customer}} &nbsp;&middot;&nbsp; Multi-Cloud Risk Analysis &amp; Remediation Roadmap</div>
-            <div class="cover-csp-row">
-                {% if aws_compliance_data %}<span class="cover-csp">Amazon Web Services</span>{% endif %}
-                {% if azure_compliance_data %}<span class="cover-csp">Microsoft Azure</span>{% endif %}
-                {% if gcp_compliance_data %}<span class="cover-csp">Google Cloud Platform</span>{% endif %}
+            <h1 class="cover-title">Rapid Cloud Assessment</h1>
+            <div class="cover-subtitle">{{customer}}</div>
+        </div>
+
+        {% set _tf = _sc + total_compliance_critical + total_vuln_critical + total_admin.val + critical_alert_count %}
+        {% if _tf > 0 %}
+          {% set _circ = 565.5 %}
+          {% set _gap = 4.0 %}
+          {% set _a_s  = [(_sc / _tf * _circ) - _gap, 0] | max %}
+          {% set _a_co = [(total_compliance_critical / _tf * _circ) - _gap, 0] | max %}
+          {% set _a_v  = [(total_vuln_critical / _tf * _circ) - _gap, 0] | max %}
+          {% set _a_ad = [(total_admin.val / _tf * _circ) - _gap, 0] | max %}
+          {% set _a_al = [(critical_alert_count / _tf * _circ) - _gap, 0] | max %}
+          {% set _ns = namespace(o = -(_circ / 4.0)) %}
+          {% set _o_s  = _ns.o %}{% set _ns.o = _ns.o - (_sc / _tf * _circ) %}
+          {% set _o_co = _ns.o %}{% set _ns.o = _ns.o - (total_compliance_critical / _tf * _circ) %}
+          {% set _o_v  = _ns.o %}{% set _ns.o = _ns.o - (total_vuln_critical / _tf * _circ) %}
+          {% set _o_ad = _ns.o %}{% set _ns.o = _ns.o - (total_admin.val / _tf * _circ) %}
+          {% set _o_al = _ns.o %}
+        {% endif %}
+        <svg class="cover-donut-svg" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="110" cy="110" r="90" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="22"/>
+            {% if _tf > 0 %}
+            {% if _sc > 0 %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#DA291C" stroke-width="22"
+                    stroke-dasharray="{{ _a_s }} {{ _circ }}" stroke-dashoffset="{{ _o_s }}" stroke-linecap="butt"/>
+            {% endif %}
+            {% if total_compliance_critical > 0 %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#CC6B1A" stroke-width="22"
+                    stroke-dasharray="{{ _a_co }} {{ _circ }}" stroke-dashoffset="{{ _o_co }}" stroke-linecap="butt"/>
+            {% endif %}
+            {% if total_vuln_critical > 0 %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#B7770D" stroke-width="22"
+                    stroke-dasharray="{{ _a_v }} {{ _circ }}" stroke-dashoffset="{{ _o_v }}" stroke-linecap="butt"/>
+            {% endif %}
+            {% if total_admin.val > 0 %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#8B5CF6" stroke-width="22"
+                    stroke-dasharray="{{ _a_ad }} {{ _circ }}" stroke-dashoffset="{{ _o_ad }}" stroke-linecap="butt"/>
+            {% endif %}
+            {% if critical_alert_count > 0 %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#F59E0B" stroke-width="22"
+                    stroke-dasharray="{{ _a_al }} {{ _circ }}" stroke-dashoffset="{{ _o_al }}" stroke-linecap="butt"/>
+            {% endif %}
+            {% else %}
+            <circle cx="110" cy="110" r="90" fill="none" stroke="#1E7A3E" stroke-width="22" opacity="0.4"/>
+            {% endif %}
+            <text x="110" y="104" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+                  font-size="44" font-weight="900" fill="white">{% if _tf > 0 %}{{_tf}}{% else %}0{% endif %}</text>
+            <text x="110" y="122" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+                  font-size="9" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.38)">CRITICAL RISK</text>
+            <text x="110" y="135" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+                  font-size="9" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.38)">FINDINGS</text>
+        </svg>
+
+        <div class="cover-cards">
+            <div class="cover-card {% if _sc > 0 %}cc-red{% else %}cc-green{% endif %}">
+                <div class="cover-card-num">{{_sc}}</div>
+                <div class="cover-card-label">Exposed Secrets</div>
+                <div class="cover-card-sub">{% if _sc > 0 %}Rotate immediately{% else %}&#10003; Clear{% endif %}</div>
+            </div>
+            <div class="cover-card {% if total_compliance_critical > 0 %}cc-orange{% else %}cc-green{% endif %}">
+                <div class="cover-card-num">{{total_compliance_critical}}</div>
+                <div class="cover-card-label">Compliance Gaps</div>
+                <div class="cover-card-sub">{% if total_compliance_critical > 0 %}Critical violations{% else %}&#10003; Compliant{% endif %}</div>
+            </div>
+            <div class="cover-card {% if total_vuln_critical > 0 %}cc-amber{% else %}cc-green{% endif %}">
+                <div class="cover-card-num">{{total_vuln_critical}}</div>
+                <div class="cover-card-label">Critical CVEs</div>
+                <div class="cover-card-sub">{% if total_vuln_critical > 0 %}Risk score &ge; 9{% else %}&#10003; No critical CVEs{% endif %}</div>
+            </div>
+            <div class="cover-card {% if total_admin.val > 0 %}cc-purple{% else %}cc-green{% endif %}">
+                <div class="cover-card-num">{{total_admin.val}}</div>
+                <div class="cover-card-label">Admin Accounts</div>
+                <div class="cover-card-sub">{% if total_admin.val > 0 %}Full privileges{% else %}&#10003; Least privilege{% endif %}</div>
+            </div>
+            <div class="cover-card {% if critical_alert_count > 0 %}cc-yellow{% else %}cc-green{% endif %}">
+                <div class="cover-card-num">{{critical_alert_count}}</div>
+                <div class="cover-card-label">Critical Alerts</div>
+                <div class="cover-card-sub">{% if critical_alert_count > 0 %}Investigate{% else %}&#10003; No alerts{% endif %}</div>
             </div>
         </div>
-        <div class="cover-hero-status">
-            {% if _avg_csp_score < 3 %}<div class="cvr-status-badge cvr-critical">CRITICAL</div>
-            {% elif _avg_csp_score < 5 %}<div class="cvr-status-badge cvr-high">HIGH RISK</div>
-            {% elif _avg_csp_score < 7 %}<div class="cvr-status-badge cvr-atrisk">AT RISK</div>
-            {% elif _avg_csp_score < 9 %}<div class="cvr-status-badge cvr-moderate">MODERATE</div>
-            {% else %}<div class="cvr-status-badge cvr-secure">SECURE</div>{% endif %}
-            <div class="cover-status-sub">Overall Posture</div>
-        </div>
     </div>
-
-    <!-- Metrics strip -->
-    <div class="cover-metrics">
-        <div class="cov-metric {% if _sc > 0 %}cov-m-red{% else %}cov-m-green{% endif %}">
-            <div class="cov-metric-num">{{_sc}}</div>
-            <div class="cov-metric-label">Exposed<br>Secrets</div>
-            <div class="cov-metric-state">{% if _sc > 0 %}Needs Action{% else %}&#10003; Clear{% endif %}</div>
-        </div>
-        <div class="cov-metric {% if total_compliance_critical > 5 %}cov-m-red{% elif total_compliance_critical > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
-            <div class="cov-metric-num">{{total_compliance_critical}}</div>
-            <div class="cov-metric-label">Compliance<br>Gaps</div>
-            <div class="cov-metric-state">{% if total_compliance_critical > 0 %}Review Required{% else %}&#10003; Compliant{% endif %}</div>
-        </div>
-        <div class="cov-metric {% if total_vuln_critical > 5 %}cov-m-red{% elif total_vuln_critical > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
-            <div class="cov-metric-num">{{total_vuln_critical}}</div>
-            <div class="cov-metric-label">Critical<br>CVEs</div>
-            <div class="cov-metric-state">{% if total_vuln_critical > 0 %}Patch Required{% else %}&#10003; No Critical CVEs{% endif %}</div>
-        </div>
-        <div class="cov-metric {% if total_admin.val > 10 %}cov-m-red{% elif total_admin.val > 0 %}cov-m-amber{% else %}cov-m-green{% endif %}">
-            <div class="cov-metric-num">{{total_admin.val}}</div>
-            <div class="cov-metric-label">Admin<br>Accounts</div>
-            <div class="cov-metric-state">{% if total_admin.val > 0 %}Review Access{% else %}&#10003; Least Privilege{% endif %}</div>
-        </div>
-        <div class="cov-metric {% if critical_alert_count > 3 %}cov-m-red{% elif critical_alert_count > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
-            <div class="cov-metric-num">{{critical_alert_count}}</div>
-            <div class="cov-metric-label">Critical<br>Alerts</div>
-            <div class="cov-metric-state">{% if critical_alert_count > 0 %}Investigate{% else %}&#10003; No Alerts{% endif %}</div>
-        </div>
-    </div>
-
-    <!-- Per-CSP posture rows -->
-    {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
-    <div class="cover-posture">
-        {% for _cn, _cs, _cd in [('AWS', _score_aws, aws_compliance_data), ('Azure', _score_azure, azure_compliance_data), ('GCP', _score_gcp, gcp_compliance_data)] %}
-        {% if _cd %}
-        <div class="cov-posture-row">
-            <div class="cov-csp-name">{{_cn}}</div>
-            <div class="cov-posture-bar-track">
-                <div class="cov-posture-bar-fill" style="width:{{ (_cs / 10.0 * 100) | int }}%; background:{% if _cs < 5 %}#DA291C{% elif _cs < 7 %}#FFB800{% else %}#1E7A3E{% endif %};"></div>
-            </div>
-            <span class="cov-posture-badge {% if _cs < 5 %}cvr-critical{% elif _cs < 7 %}cvr-atrisk{% elif _cs < 9 %}cvr-moderate{% else %}cvr-secure{% endif %}">{% if _cs < 3 %}CRITICAL{% elif _cs < 5 %}HIGH RISK{% elif _cs < 7 %}AT RISK{% elif _cs < 9 %}GOOD{% else %}SECURE{% endif %}</span>
-            <div class="cov-posture-score">{{_cs | round(1)}} / 10</div>
-        </div>
-        {% endif %}{% endfor %}
-    </div>
-    {% endif %}
 
     <!-- Meta footer -->
     <div class="cover-meta">
