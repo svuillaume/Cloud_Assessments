@@ -1226,7 +1226,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         {% if _sc > 0 %}
         <a href="#secrets" class="toc-card">
             <div class="tc-num">01 &mdash; Secrets</div>
-            <div class="tc-title">Secrets</div>
+            <div class="tc-title">Top Critical Exposed Secrets</div>
             <div class="tc-sub">Exposed credentials, tokens, and keys with immediate compromise potential.</div>
         </a>
         {% endif %}
@@ -1237,17 +1237,17 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         </a>
         <a href="#vulnerabilities" class="toc-card">
             <div class="tc-num">03 &mdash; Vulnerabilities</div>
-            <div class="tc-title">Critical Vulnerabilities</div>
+            <div class="tc-title">Top Critical Vulnerability Findings</div>
             <div class="tc-sub">Internet-facing or exploitable issues with FortiCNAPP Risk Score ≥ 9.</div>
         </a>
         <a href="#identity" class="toc-card">
             <div class="tc-num">04 &mdash; Identity</div>
-            <div class="tc-title">Admin Access &amp; Entitlements</div>
+            <div class="tc-title">Top Critical Identity &amp; Access Findings</div>
             <div class="tc-sub">Overprivileged identities, dormant admins, and MFA gaps.</div>
         </a>
         <a href="#alerts" class="toc-card">
             <div class="tc-num">05 &mdash; Alerts</div>
-            <div class="tc-title">Critical Alerts</div>
+            <div class="tc-title">Top Critical Alert Findings</div>
             <div class="tc-sub">Active detections requiring rapid triage or containment.</div>
         </a>
         <a href="#annex-products" class="toc-card">
@@ -1344,7 +1344,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    SECTION 1 — SECRETS
    ═══════════════════════════════════════════════════════ #}
 <section id="secrets" class="pagebreak">
-<h2>1. Secrets</h2>
+<h2>1. Top Critical Exposed Secrets</h2>
 {% if secrets_data and secrets_data.secrets_count > 0 %}
 {{ secrets_data.secrets_html | safe }}
 {% else %}
@@ -1459,7 +1459,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if host_vulns_data or container_vulns_data %}
 <section id="vulnerabilities" class="pagebreak">
-<h2>3. Top Vulnerabilities &mdash; Risk Score &ge; 9</h2>
+<h2>3. Top Critical Vulnerability Findings &mdash; Risk Score &ge; 9</h2>
 <p>
     FortiCNAPP filters all assessed CVEs to surface only those with a Risk Score of 9.0 or higher — a composite score that accounts for exploitability, blast radius (number of affected hosts/images), and presence of public exploit code. The following represent the most dangerous unpatched conditions in the environment.
 </p>
@@ -1608,7 +1608,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if ciem_data %}
 <section id="identity" class="pagebreak">
-<h2>4. Admin Accounts, Permissive Access, MFA &amp; Entitlements</h2>
+<h2>4. Top Critical Identity &amp; Access Findings</h2>
 <p>
     FortiCNAPP CIEM analysis assessed all cloud identities across AWS, Azure, and GCP for administrative privileges, unused entitlements, and MFA enforcement. The following identities pose the highest risk based on a combination of privilege level, entitlement excess, and authentication posture.
 </p>
@@ -1731,7 +1731,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if alerts_data and alerts_data.alerts_raw is defined %}
 <section id="alerts" class="pagebreak">
-<h2>5. Top Critical Alerts</h2>
+<h2>5. Top Critical Alert Findings</h2>
 <p>
     The following FortiCNAPP critical-severity alerts were generated during the assessment window. Each alert represents a detection from FortiCNAPP's behavioral analytics engine — triggered when observed cloud activity deviates significantly from the established baseline. Composite alerts correlate multiple signals and indicate a higher likelihood of active attack activity.
 </p>
