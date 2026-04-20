@@ -94,205 +94,283 @@
             font-size: 14px;
         }
 
-        /* ── Header — dark, flush into cover ── */
+        /* ── Header ── */
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 1.2rem 2rem;
-            background: #080808;
+            padding: 1rem 2.5rem;
+            background: #070a0f;
             margin-bottom: 0;
-            border-bottom: 1px solid rgba(255,255,255,0.07);
+            border-bottom: 1px solid rgba(255,255,255,0.06);
         }
-        header img { height: 40px; }
+        header img { height: 38px; }
 
-        /* ── Cover — dark intelligence briefing style ── */
-        .cover-accent-bar {
-            height: 3px;
-            background: linear-gradient(90deg, var(--color-primary) 0%, rgba(218,41,28,0.15) 100%);
-            margin: 0 -4rem;   /* bleed past body padding */
-        }
+        /* ── Cover — dashboard intelligence style ── */
+        .cover-accent-bar { height: 2px; background: var(--color-primary); margin: 0 -4rem; }
         .report-cover {
-            background: #080808;
-            background-image:
-                radial-gradient(ellipse 70% 60% at 85% 20%, rgba(110,10,10,0.55) 0%, transparent 65%),
-                radial-gradient(ellipse 40% 50% at 8% 95%,  rgba(218,41,28,0.06) 0%, transparent 55%);
+            background: #070a0f;
             color: white;
             padding: 0;
-            margin: 0 -4rem 2rem;   /* bleed past body padding */
+            margin: 0 -4rem 2.5rem;
             display: flex;
             flex-direction: column;
-            min-height: 70vh;
-            position: relative;
-            overflow: hidden;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
         }
-        /* subtle dot-grid texture */
-        .report-cover::after {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background-image:
-                radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px);
-            background-size: 32px 32px;
-            pointer-events: none;
-        }
-        .cover-class-strip {
-            font-size: 0.56rem;
-            font-weight: 800;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            color: rgba(218,41,28,0.75);
-            padding: 0.5rem 2.5rem;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            position: relative; z-index: 1;
-        }
-        .cover-main {
+        .cover-nav {
             display: flex;
-            align-items: flex-start;
+            align-items: center;
             justify-content: space-between;
-            gap: 2.5rem;
-            flex: 1;
-            padding: 3.5rem 2.5rem 2rem;
-            position: relative;
-            z-index: 1;
+            padding: 0.55rem 2.5rem;
+            background: #050710;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
         }
-        .cover-left { flex: 1; min-width: 0; }
+        .cover-nav-label {
+            font-size: 0.53rem;
+            font-weight: 700;
+            letter-spacing: 3.5px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.22);
+        }
+        .cover-nav-right { display: flex; align-items: center; gap: 1.25rem; }
+        .cover-class-chip {
+            font-size: 0.48rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #DA291C;
+            background: rgba(218,41,28,0.1);
+            border: 1px solid rgba(218,41,28,0.2);
+            padding: 0.15rem 0.55rem;
+            border-radius: 3px;
+        }
+        .cover-nav-date {
+            font-size: 0.52rem;
+            color: rgba(255,255,255,0.2);
+            letter-spacing: 1px;
+        }
+        .cover-hero {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            padding: 2.5rem 2.5rem 1.75rem;
+            gap: 2rem;
+        }
         .cover-eyebrow {
-            font-size: 0.6rem;
+            font-size: 0.53rem;
             font-weight: 700;
             letter-spacing: 4px;
             text-transform: uppercase;
-            color: rgba(218,41,28,0.9);
-            margin-bottom: 1.4rem;
+            color: rgba(218,41,28,0.8);
+            margin-bottom: 0.8rem;
         }
         .cover-title {
-            font-size: 3.6rem;
+            font-size: 3.8rem;
             font-weight: 900;
-            line-height: 1.03;
+            line-height: 0.96;
             color: #fff;
-            letter-spacing: -2.5px;
-            margin-bottom: 1rem;
+            letter-spacing: -3px;
+            margin-bottom: 0.7rem;
             border: none;
         }
         .cover-subtitle {
-            font-size: 0.95rem;
-            color: rgba(255,255,255,0.38);
-            margin-bottom: 2.5rem;
-            letter-spacing: 0.3px;
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.25);
+            margin-bottom: 1.4rem;
         }
-        .cover-csp-row { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+        .cover-csp-row { display: flex; gap: 0.38rem; flex-wrap: wrap; }
         .cover-csp {
-            font-size: 0.58rem;
+            font-size: 0.5rem;
             font-weight: 700;
             letter-spacing: 1.5px;
             text-transform: uppercase;
-            padding: 0.22rem 0.7rem;
+            padding: 0.18rem 0.55rem;
             border-radius: 3px;
-            border: 1px solid rgba(255,255,255,0.13);
-            color: rgba(255,255,255,0.4);
-        }
-
-        /* ── Status Card (replaces score circle) ── */
-        .cover-status-card {
-            flex-shrink: 0;
-            width: 220px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-top: 3px solid var(--color-primary);
-            border-radius: 14px;
-            padding: 1.4rem 1.25rem 1.25rem;
-            position: relative; z-index: 1;
-        }
-        .csc-header {
-            font-size: 0.55rem;
-            font-weight: 800;
-            letter-spacing: 3px;
-            text-transform: uppercase;
+            border: 1px solid rgba(255,255,255,0.09);
             color: rgba(255,255,255,0.3);
-            margin-bottom: 0.8rem;
         }
+        .cover-hero-status { text-align: right; flex-shrink: 0; padding-bottom: 0.15rem; }
         .cvr-status-badge {
             display: inline-block;
-            font-size: 1.05rem;
-            font-weight: 900;
+            font-size: 0.8rem;
+            font-weight: 800;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            padding: 0.38rem 1rem;
+            border-radius: 5px;
+            margin-bottom: 0.28rem;
+        }
+        .cvr-critical { background: rgba(218,41,28,0.18); color: #FF5555; border: 1px solid rgba(218,41,28,0.35); }
+        .cvr-high     { background: rgba(204,74,26,0.16);  color: #FF7744; border: 1px solid rgba(204,74,26,0.32); }
+        .cvr-atrisk   { background: rgba(183,119,13,0.16); color: #FFBB00; border: 1px solid rgba(183,119,13,0.32); }
+        .cvr-moderate { background: rgba(30,122,62,0.16);  color: #55DD88; border: 1px solid rgba(30,122,62,0.32); }
+        .cvr-secure   { background: rgba(30,122,62,0.22);  color: #4ADE80; border: 1px solid rgba(30,122,62,0.42); }
+        .cover-status-sub {
+            font-size: 0.48rem;
+            color: rgba(255,255,255,0.18);
             letter-spacing: 2px;
             text-transform: uppercase;
-            padding: 0.35rem 0.85rem;
-            border-radius: 6px;
-            margin-bottom: 1.2rem;
-        }
-        .cvr-critical { background: rgba(218,41,28,0.18); color: #FF5555; border: 1px solid rgba(218,41,28,0.4); }
-        .cvr-high     { background: rgba(204,74,26,0.18);  color: #FF7744; border: 1px solid rgba(204,74,26,0.4); }
-        .cvr-atrisk   { background: rgba(183,119,13,0.18); color: #FFBB00; border: 1px solid rgba(183,119,13,0.4); }
-        .cvr-moderate { background: rgba(30,122,62,0.18);  color: #55DD88; border: 1px solid rgba(30,122,62,0.4); }
-        .cvr-secure   { background: rgba(30,122,62,0.25);  color: #4ADE80; border: 1px solid rgba(30,122,62,0.5); }
-        .cvr-rows { display: flex; flex-direction: column; gap: 0.5rem; }
-        .cvr-row {
-            display: flex;
-            align-items: center;
-            gap: 0.55rem;
-            padding: 0.4rem 0.6rem;
-            border-radius: 6px;
-            background: rgba(255,255,255,0.03);
-        }
-        .cvr-dot {
-            width: 7px; height: 7px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .cvr-row-red    .cvr-dot { background: #DA291C; box-shadow: 0 0 6px rgba(218,41,28,0.7); }
-        .cvr-row-orange .cvr-dot { background: #CC4A1A; box-shadow: 0 0 5px rgba(204,74,26,0.6); }
-        .cvr-row-amber  .cvr-dot { background: #B7770D; box-shadow: 0 0 5px rgba(183,119,13,0.5); }
-        .cvr-row-green  .cvr-dot { background: #1E7A3E; box-shadow: 0 0 4px rgba(30,122,62,0.4); }
-        .cvr-name {
-            flex: 1;
-            font-size: 0.72rem;
-            color: rgba(255,255,255,0.62);
-        }
-        .cvr-count {
-            font-size: 0.82rem;
-            font-weight: 700;
-            min-width: 24px;
             text-align: right;
         }
-        .cvr-row-red    .cvr-count { color: #FF6B6B; }
-        .cvr-row-orange .cvr-count { color: #FF8855; }
-        .cvr-row-amber  .cvr-count { color: #FFB800; }
-        .cvr-row-green  .cvr-count { color: #4ADE80; }
 
-        /* ── Cover meta bar ── */
+        /* ── Metrics strip ── */
+        .cover-metrics {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            margin: 0 2.5rem;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .cov-metric {
+            padding: 1.3rem 1.4rem 1.1rem;
+            background: #0b0e16;
+            border-right: 1px solid rgba(255,255,255,0.05);
+            position: relative;
+        }
+        .cov-metric:last-child { border-right: none; }
+        .cov-metric::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+        }
+        .cov-m-red::before    { background: #DA291C; }
+        .cov-m-orange::before { background: #CC4A1A; }
+        .cov-m-amber::before  { background: #B7770D; }
+        .cov-m-green::before  { background: #1E7A3E; }
+        .cov-metric-num {
+            font-size: 2.9rem;
+            font-weight: 900;
+            line-height: 1;
+            letter-spacing: -2px;
+            margin-bottom: 0.25rem;
+        }
+        .cov-m-red    .cov-metric-num { color: #FF5555; }
+        .cov-m-orange .cov-metric-num { color: #FF8855; }
+        .cov-m-amber  .cov-metric-num { color: #FFB800; }
+        .cov-m-green  .cov-metric-num { color: #4ADE80; }
+        .cov-metric-label {
+            font-size: 0.52rem;
+            font-weight: 700;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.26);
+            line-height: 1.5;
+        }
+        .cov-metric-state {
+            font-size: 0.47rem;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-top: 0.3rem;
+        }
+        .cov-m-red    .cov-metric-state { color: rgba(255,85,85,0.65); }
+        .cov-m-orange .cov-metric-state { color: rgba(255,136,85,0.65); }
+        .cov-m-amber  .cov-metric-state { color: rgba(255,184,0,0.65); }
+        .cov-m-green  .cov-metric-state { color: rgba(74,222,128,0.65); }
+
+        /* ── Per-CSP posture rows ── */
+        .cover-posture {
+            margin: 1rem 2.5rem 0;
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .cov-posture-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.65rem 1.25rem;
+            background: #0b0e16;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .cov-posture-row:last-child { border-bottom: none; }
+        .cov-csp-name {
+            font-size: 0.56rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+            min-width: 50px;
+        }
+        .cov-posture-bar-track {
+            flex: 1;
+            height: 3px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .cov-posture-bar-fill { height: 100%; border-radius: 2px; }
+        .cov-posture-badge {
+            font-size: 0.48rem;
+            font-weight: 800;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            padding: 0.14rem 0.52rem;
+            border-radius: 3px;
+            min-width: 60px;
+            text-align: center;
+        }
+        .cov-posture-score {
+            font-size: 0.6rem;
+            font-weight: 700;
+            color: rgba(255,255,255,0.22);
+            min-width: 46px;
+            text-align: right;
+        }
+
+        /* ── Cover meta footer ── */
         .cover-meta {
             display: flex;
-            align-items: stretch;
-            border-top: 1px solid rgba(255,255,255,0.07);
-            padding: 1.1rem 2.5rem 1.4rem;
+            align-items: center;
+            padding: 0.85rem 2.5rem 1rem;
+            margin-top: 1.1rem;
+            border-top: 1px solid rgba(255,255,255,0.05);
             gap: 0;
-            position: relative; z-index: 1;
         }
-        .cover-meta-item {
-            display: flex;
-            flex-direction: column;
-            gap: 0.18rem;
-            flex: 1;
-            padding: 0 1.5rem 0 0;
-        }
+        .cover-meta-item { display: flex; flex-direction: column; gap: 0.15rem; flex: 1; }
         .cmi-label {
-            font-size: 0.53rem;
+            font-size: 0.46rem;
             font-weight: 700;
             letter-spacing: 2.5px;
             text-transform: uppercase;
-            color: rgba(255,255,255,0.25);
+            color: rgba(255,255,255,0.16);
         }
-        .cmi-value {
-            font-size: 0.88rem;
-            font-weight: 600;
-            color: rgba(255,255,255,0.78);
-        }
+        .cmi-value { font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.6); }
         .cover-meta-sep {
             width: 1px;
-            background: rgba(255,255,255,0.07);
+            height: 26px;
+            background: rgba(255,255,255,0.05);
             margin: 0 1.5rem 0 0;
             flex-shrink: 0;
+            align-self: center;
+        }
+
+        /* ── Confirmed-clean callout ── */
+        .confirmed-clean {
+            background: rgba(30,122,62,0.08);
+            border: 1px solid rgba(30,122,62,0.2);
+            border-left: 4px solid #1E7A3E;
+            border-radius: 0 10px 10px 0;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .cc-label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #4ADE80;
+            margin-bottom: 0.5rem;
+        }
+        .cc-items { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .cc-item {
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: rgba(30,122,62,0.9);
+            background: rgba(30,122,62,0.1);
+            border: 1px solid rgba(30,122,62,0.22);
+            padding: 0.18rem 0.6rem;
+            border-radius: 4px;
         }
 
         /* ── Section Headers ── */
@@ -1343,64 +1421,85 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 <div class="cover-accent-bar"></div>
 <div class="report-cover">
-    <div class="cover-class-strip">&#9632;&nbsp; Confidential &nbsp;&#9632;&nbsp; Restricted Distribution &nbsp;&#9632;&nbsp; FortiCNAPP Rapid Cloud Assessment</div>
 
-    <div class="cover-main">
-        <div class="cover-left">
-            <div class="cover-eyebrow">Cloud Security Intelligence Briefing</div>
-            <h1 class="cover-title">Rapid Cloud<br>Assessment</h1>
-            <div class="cover-subtitle">FortiCNAPP Multi-Cloud Risk Findings &amp; Leadership Recommendations</div>
-            <div class="cover-csp-row">
-                {% if aws_compliance_data %}<span class="cover-csp">&#9632; Amazon Web Services</span>{% endif %}
-                {% if azure_compliance_data %}<span class="cover-csp">&#9632; Microsoft Azure</span>{% endif %}
-                {% if gcp_compliance_data %}<span class="cover-csp">&#9632; Google Cloud Platform</span>{% endif %}
-            </div>
-        </div>
-
-        {# Status Card — replaces score circle #}
-        <div class="cover-status-card">
-            <div class="csc-header">Security Status</div>
-            {% if _avg_csp_score < 3 %}
-              <div class="cvr-status-badge cvr-critical">CRITICAL</div>
-            {% elif _avg_csp_score < 5 %}
-              <div class="cvr-status-badge cvr-high">HIGH RISK</div>
-            {% elif _avg_csp_score < 7 %}
-              <div class="cvr-status-badge cvr-atrisk">AT RISK</div>
-            {% elif _avg_csp_score < 9 %}
-              <div class="cvr-status-badge cvr-moderate">MODERATE</div>
-            {% else %}
-              <div class="cvr-status-badge cvr-secure">SECURE</div>
-            {% endif %}
-            <div class="cvr-rows">
-                <div class="cvr-row {% if _sc > 0 %}cvr-row-red{% else %}cvr-row-green{% endif %}">
-                    <div class="cvr-dot"></div>
-                    <div class="cvr-name">Exposed Secrets</div>
-                    <div class="cvr-count">{{_sc}}</div>
-                </div>
-                <div class="cvr-row {% if total_compliance_critical > 5 %}cvr-row-red{% elif total_compliance_critical > 0 %}cvr-row-orange{% else %}cvr-row-green{% endif %}">
-                    <div class="cvr-dot"></div>
-                    <div class="cvr-name">Compliance Gaps</div>
-                    <div class="cvr-count">{{total_compliance_critical}}</div>
-                </div>
-                <div class="cvr-row {% if total_vuln_critical > 5 %}cvr-row-red{% elif total_vuln_critical > 0 %}cvr-row-orange{% else %}cvr-row-green{% endif %}">
-                    <div class="cvr-dot"></div>
-                    <div class="cvr-name">Critical CVEs</div>
-                    <div class="cvr-count">{{total_vuln_critical}}</div>
-                </div>
-                <div class="cvr-row {% if total_admin.val > 10 %}cvr-row-red{% elif total_admin.val > 0 %}cvr-row-amber{% else %}cvr-row-green{% endif %}">
-                    <div class="cvr-dot"></div>
-                    <div class="cvr-name">Admin Accounts</div>
-                    <div class="cvr-count">{{total_admin.val}}</div>
-                </div>
-                <div class="cvr-row {% if critical_alert_count > 3 %}cvr-row-red{% elif critical_alert_count > 0 %}cvr-row-orange{% else %}cvr-row-green{% endif %}">
-                    <div class="cvr-dot"></div>
-                    <div class="cvr-name">Critical Alerts</div>
-                    <div class="cvr-count">{{critical_alert_count}}</div>
-                </div>
-            </div>
+    <!-- Nav strip -->
+    <div class="cover-nav">
+        <div class="cover-nav-label">FortiCNAPP &nbsp;&middot;&nbsp; Rapid Cloud Assessment Report</div>
+        <div class="cover-nav-right">
+            <span class="cover-class-chip">&#9632; Confidential</span>
+            <span class="cover-nav-date">{{date}}</span>
         </div>
     </div>
 
+    <!-- Hero row -->
+    <div class="cover-hero">
+        <div>
+            <div class="cover-eyebrow">Cloud Security Intelligence Briefing</div>
+            <h1 class="cover-title">Rapid Cloud<br>Assessment</h1>
+            <div class="cover-subtitle">{{customer}} &nbsp;&middot;&nbsp; Multi-Cloud Risk Analysis &amp; Remediation Roadmap</div>
+            <div class="cover-csp-row">
+                {% if aws_compliance_data %}<span class="cover-csp">Amazon Web Services</span>{% endif %}
+                {% if azure_compliance_data %}<span class="cover-csp">Microsoft Azure</span>{% endif %}
+                {% if gcp_compliance_data %}<span class="cover-csp">Google Cloud Platform</span>{% endif %}
+            </div>
+        </div>
+        <div class="cover-hero-status">
+            {% if _avg_csp_score < 3 %}<div class="cvr-status-badge cvr-critical">CRITICAL</div>
+            {% elif _avg_csp_score < 5 %}<div class="cvr-status-badge cvr-high">HIGH RISK</div>
+            {% elif _avg_csp_score < 7 %}<div class="cvr-status-badge cvr-atrisk">AT RISK</div>
+            {% elif _avg_csp_score < 9 %}<div class="cvr-status-badge cvr-moderate">MODERATE</div>
+            {% else %}<div class="cvr-status-badge cvr-secure">SECURE</div>{% endif %}
+            <div class="cover-status-sub">Overall Posture</div>
+        </div>
+    </div>
+
+    <!-- Metrics strip -->
+    <div class="cover-metrics">
+        <div class="cov-metric {% if _sc > 0 %}cov-m-red{% else %}cov-m-green{% endif %}">
+            <div class="cov-metric-num">{{_sc}}</div>
+            <div class="cov-metric-label">Exposed<br>Secrets</div>
+            <div class="cov-metric-state">{% if _sc > 0 %}Needs Action{% else %}&#10003; Clear{% endif %}</div>
+        </div>
+        <div class="cov-metric {% if total_compliance_critical > 5 %}cov-m-red{% elif total_compliance_critical > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
+            <div class="cov-metric-num">{{total_compliance_critical}}</div>
+            <div class="cov-metric-label">Compliance<br>Gaps</div>
+            <div class="cov-metric-state">{% if total_compliance_critical > 0 %}Review Required{% else %}&#10003; Compliant{% endif %}</div>
+        </div>
+        <div class="cov-metric {% if total_vuln_critical > 5 %}cov-m-red{% elif total_vuln_critical > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
+            <div class="cov-metric-num">{{total_vuln_critical}}</div>
+            <div class="cov-metric-label">Critical<br>CVEs</div>
+            <div class="cov-metric-state">{% if total_vuln_critical > 0 %}Patch Required{% else %}&#10003; No Critical CVEs{% endif %}</div>
+        </div>
+        <div class="cov-metric {% if total_admin.val > 10 %}cov-m-red{% elif total_admin.val > 0 %}cov-m-amber{% else %}cov-m-green{% endif %}">
+            <div class="cov-metric-num">{{total_admin.val}}</div>
+            <div class="cov-metric-label">Admin<br>Accounts</div>
+            <div class="cov-metric-state">{% if total_admin.val > 0 %}Review Access{% else %}&#10003; Least Privilege{% endif %}</div>
+        </div>
+        <div class="cov-metric {% if critical_alert_count > 3 %}cov-m-red{% elif critical_alert_count > 0 %}cov-m-orange{% else %}cov-m-green{% endif %}">
+            <div class="cov-metric-num">{{critical_alert_count}}</div>
+            <div class="cov-metric-label">Critical<br>Alerts</div>
+            <div class="cov-metric-state">{% if critical_alert_count > 0 %}Investigate{% else %}&#10003; No Alerts{% endif %}</div>
+        </div>
+    </div>
+
+    <!-- Per-CSP posture rows -->
+    {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
+    <div class="cover-posture">
+        {% for _cn, _cs, _cd in [('AWS', _score_aws, aws_compliance_data), ('Azure', _score_azure, azure_compliance_data), ('GCP', _score_gcp, gcp_compliance_data)] %}
+        {% if _cd %}
+        <div class="cov-posture-row">
+            <div class="cov-csp-name">{{_cn}}</div>
+            <div class="cov-posture-bar-track">
+                <div class="cov-posture-bar-fill" style="width:{{ (_cs / 10.0 * 100) | int }}%; background:{% if _cs < 5 %}#DA291C{% elif _cs < 7 %}#FFB800{% else %}#1E7A3E{% endif %};"></div>
+            </div>
+            <span class="cov-posture-badge {% if _cs < 5 %}cvr-critical{% elif _cs < 7 %}cvr-atrisk{% elif _cs < 9 %}cvr-moderate{% else %}cvr-secure{% endif %}">{% if _cs < 3 %}CRITICAL{% elif _cs < 5 %}HIGH RISK{% elif _cs < 7 %}AT RISK{% elif _cs < 9 %}GOOD{% else %}SECURE{% endif %}</span>
+            <div class="cov-posture-score">{{_cs | round(1)}} / 10</div>
+        </div>
+        {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Meta footer -->
     <div class="cover-meta">
         <div class="cover-meta-item">
             <span class="cmi-label">Prepared For</span>
@@ -1495,25 +1594,33 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {# Determine breach risk level from posture score #}
 {% if posture_score < 3 %}
   {% set _brb_level = 'CRITICAL' %}{% set _brb_class = 'brb-level-critical' %}
-  {% set _brb_headline = 'Immediate board-level escalation required — active breach pathways confirmed.' %}
-  {% set _brb_sub = 'Multiple high-severity findings chain to a realistic breach scenario. Every day without remediation extends attacker opportunity in your environment.' %}
+  {% set _brb_headline = 'Priority remediation plan included — addressing these findings significantly reduces risk.' %}
+  {% set _brb_sub = 'Several high-severity findings were identified. This report includes a clear 30-day action roadmap to close these gaps and strengthen your cloud security posture.' %}
   {% set _brb_pct = 92 %}
 {% elif posture_score < 5 %}
   {% set _brb_level = 'HIGH' %}{% set _brb_class = 'brb-level-critical' %}
-  {% set _brb_headline = 'Significant exposure — critical findings require executive-level action this week.' %}
-  {% set _brb_sub = 'Exploitable vulnerabilities and misconfigurations expose the organization to credential theft, data loss, or ransomware without external attacker capability.' %}
+  {% set _brb_headline = 'Targeted improvements identified — a focused remediation plan is included.' %}
+  {% set _brb_sub = 'Key gaps were found in cloud posture. The findings in this report, with the accompanying roadmap, provide a clear path to materially improving security this quarter.' %}
   {% set _brb_pct = 72 %}
 {% elif posture_score < 7 %}
   {% set _brb_level = 'ELEVATED' %}{% set _brb_class = 'brb-level-elevated' %}
-  {% set _brb_headline = 'Risk above acceptable threshold — a structured remediation plan is required.' %}
-  {% set _brb_sub = 'Notable gaps in cloud posture increase the attack surface. Findings carry clear breach pathways and should be addressed within defined timelines.' %}
+  {% set _brb_headline = 'Good foundation with clear improvement areas — remediation roadmap inside.' %}
+  {% set _brb_sub = 'The assessment confirmed a solid baseline. Addressing the identified gaps will move the organization to a strong, defensible cloud security posture.' %}
   {% set _brb_pct = 48 %}
 {% else %}
   {% set _brb_level = 'MODERATE' %}{% set _brb_class = 'brb-level-moderate' %}
-  {% set _brb_headline = 'Manageable risk level — maintain remediation cadence and monitoring.' %}
-  {% set _brb_sub = 'Some findings require attention but overall posture is within acceptable risk tolerance. Continuous monitoring and scheduled patching is recommended.' %}
+  {% set _brb_headline = 'Strong security posture — a few targeted improvements will complete the picture.' %}
+  {% set _brb_sub = 'Overall cloud security posture is within acceptable risk tolerance. Remaining findings are manageable and can be addressed through standard remediation cycles.' %}
   {% set _brb_pct = 26 %}
 {% endif %}
+
+{# Count clean categories for the positive callout #}
+{% set _clean = namespace(val=0) %}
+{% if _sc == 0 %}{% set _clean.val = _clean.val + 1 %}{% endif %}
+{% if total_compliance_critical == 0 %}{% set _clean.val = _clean.val + 1 %}{% endif %}
+{% if total_vuln_critical == 0 %}{% set _clean.val = _clean.val + 1 %}{% endif %}
+{% if total_admin.val == 0 %}{% set _clean.val = _clean.val + 1 %}{% endif %}
+{% if critical_alert_count == 0 %}{% set _clean.val = _clean.val + 1 %}{% endif %}
 
 <!-- Breach Risk Indicator -->
 <div class="breach-risk-bar">
@@ -1534,6 +1641,20 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         </div>
     </div>
 </div>
+
+<!-- Confirmed Clean callout — only shown when at least one category is clear -->
+{% if _clean.val > 0 %}
+<div class="confirmed-clean">
+    <div class="cc-label">&#10003;&nbsp; Assessment confirmed {{_clean.val}} of 5 finding categories are clear</div>
+    <div class="cc-items">
+        {% if _sc == 0 %}<span class="cc-item">&#10003; No Exposed Secrets</span>{% endif %}
+        {% if total_compliance_critical == 0 %}<span class="cc-item">&#10003; Compliance Posture Clean</span>{% endif %}
+        {% if total_vuln_critical == 0 %}<span class="cc-item">&#10003; No Critical CVEs</span>{% endif %}
+        {% if total_admin.val == 0 %}<span class="cc-item">&#10003; Identity Access Controlled</span>{% endif %}
+        {% if critical_alert_count == 0 %}<span class="cc-item">&#10003; No Critical Alerts</span>{% endif %}
+    </div>
+</div>
+{% endif %}
 
 <!-- KPI Grid -->
 <div class="exec-kpi-grid">
