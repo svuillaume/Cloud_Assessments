@@ -169,6 +169,12 @@
         .cc-green  .cover-card-num { color: #4ADE80; }
         .cover-card-label { font-size: 0.7rem; font-weight: 700; color: rgba(255,255,255,0.6); margin-bottom: 0.12rem; line-height: 1.3; }
         .cover-card-sub { font-size: 0.56rem; color: rgba(255,255,255,0.22); }
+        a.cover-card { text-decoration: none; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
+        a.cover-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.4); border-color: rgba(255,255,255,0.18); }
+
+        /* ── Section back-nav (HTML only) ── */
+        .section-back { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.55rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: rgba(255,255,255,0.3); text-decoration: none; margin-bottom: 0.6rem; padding: 0.3rem 0.7rem; border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; transition: color 0.15s, border-color 0.15s; }
+        .section-back:hover { color: rgba(255,255,255,0.7); border-color: rgba(255,255,255,0.2); }
 
         /* ── Cover meta footer ── */
         .cover-meta { display: flex; align-items: center; padding: 0.8rem 2.5rem 0.95rem; border-top: 1px solid rgba(255,255,255,0.05); gap: 0; }
@@ -1333,31 +1339,31 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         </svg>
 
         <div class="cover-cards">
-            <div class="cover-card {% if _sc > 0 %}cc-red{% else %}cc-green{% endif %}">
+            <a class="cover-card {% if _sc > 0 %}cc-red{% else %}cc-green{% endif %}" href="#secrets">
                 <div class="cover-card-num">{{_sc}}</div>
                 <div class="cover-card-label">Exposed Secrets</div>
                 <div class="cover-card-sub">{% if _sc > 0 %}Rotate immediately{% else %}&#10003; Clear{% endif %}</div>
-            </div>
-            <div class="cover-card {% if total_compliance_critical > 0 %}cc-orange{% else %}cc-green{% endif %}">
+            </a>
+            <a class="cover-card {% if total_compliance_critical > 0 %}cc-orange{% else %}cc-green{% endif %}" href="#compliance">
                 <div class="cover-card-num">{{total_compliance_critical}}</div>
                 <div class="cover-card-label">Compliance Gaps</div>
                 <div class="cover-card-sub">{% if total_compliance_critical > 0 %}Critical violations{% else %}&#10003; Compliant{% endif %}</div>
-            </div>
-            <div class="cover-card {% if total_vuln_critical > 0 %}cc-amber{% else %}cc-green{% endif %}">
+            </a>
+            <a class="cover-card {% if total_vuln_critical > 0 %}cc-amber{% else %}cc-green{% endif %}" href="#vulnerabilities">
                 <div class="cover-card-num">{{total_vuln_critical}}</div>
                 <div class="cover-card-label">Critical CVEs</div>
                 <div class="cover-card-sub">{% if total_vuln_critical > 0 %}Risk score &ge; 9{% else %}&#10003; No critical CVEs{% endif %}</div>
-            </div>
-            <div class="cover-card {% if total_admin.val > 0 %}cc-purple{% else %}cc-green{% endif %}">
+            </a>
+            <a class="cover-card {% if total_admin.val > 0 %}cc-purple{% else %}cc-green{% endif %}" href="#identity">
                 <div class="cover-card-num">{{total_admin.val}}</div>
                 <div class="cover-card-label">Admin Accounts</div>
                 <div class="cover-card-sub">{% if total_admin.val > 0 %}Full privileges{% else %}&#10003; Least privilege{% endif %}</div>
-            </div>
-            <div class="cover-card {% if critical_alert_count > 0 %}cc-yellow{% else %}cc-green{% endif %}">
+            </a>
+            <a class="cover-card {% if critical_alert_count > 0 %}cc-yellow{% else %}cc-green{% endif %}" href="#alerts">
                 <div class="cover-card-num">{{critical_alert_count}}</div>
                 <div class="cover-card-label">Critical Alerts</div>
                 <div class="cover-card-sub">{% if critical_alert_count > 0 %}Investigate{% else %}&#10003; No alerts{% endif %}</div>
-            </div>
+            </a>
         </div>
     </div>
 
@@ -1609,6 +1615,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    SECTION 1 — SECRETS
    ═══════════════════════════════════════════════════════ #}
 <section id="secrets" class="pagebreak">
+{% if not pdf %}<a class="section-back" href="#">&#8592; Back to Overview</a>{% endif %}
 <div class="section-hero">
     <div class="sh-ghost-num">01</div>
     <div class="sh-body">
@@ -1655,6 +1662,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if aws_compliance_data or azure_compliance_data or gcp_compliance_data %}
 <section id="compliance" class="pagebreak">
+{% if not pdf %}<a class="section-back" href="#">&#8592; Back to Overview</a>{% endif %}
 <div class="section-hero">
     <div class="sh-ghost-num">02</div>
     <div class="sh-body">
@@ -1756,6 +1764,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if host_vulns_data or container_vulns_data %}
 <section id="vulnerabilities" class="pagebreak">
+{% if not pdf %}<a class="section-back" href="#">&#8592; Back to Overview</a>{% endif %}
 <div class="section-hero">
     <div class="sh-ghost-num">03</div>
     <div class="sh-body">
@@ -1922,6 +1931,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if ciem_data %}
 <section id="identity" class="pagebreak">
+{% if not pdf %}<a class="section-back" href="#">&#8592; Back to Overview</a>{% endif %}
 <div class="section-hero">
     <div class="sh-ghost-num">04</div>
     <div class="sh-body">
@@ -2063,6 +2073,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    ═══════════════════════════════════════════════════════ #}
 {% if alerts_data and alerts_data.alerts_raw is defined %}
 <section id="alerts" class="pagebreak">
+{% if not pdf %}<a class="section-back" href="#">&#8592; Back to Overview</a>{% endif %}
 <div class="section-hero">
     <div class="sh-ghost-num">05</div>
     <div class="sh-body">
