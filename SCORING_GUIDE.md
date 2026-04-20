@@ -8,12 +8,12 @@ This repository contains two scoring systems: the **Live Dashboard risk score** 
 
 ### Score Bands
 
-| Band     | Range  | Color  |
-|----------|--------|--------|
-| LOW      | 10–39  | Green  |
-| MEDIUM   | 40–59  | Yellow |
-| HIGH     | 60–79  | Orange |
-| CRITICAL | ≥ 80   | Red    |
+| Band            | Range | Color  |
+|-----------------|-------|--------|
+| EMERGING        | < 40  | Red    |
+| STEADY          | 40–59 | Orange |
+| HIGH PERFORMING | 60–79 | Yellow |
+| OUTSTANDING     | ≥ 80  | Green  |
 
 ### Formula
 

@@ -938,7 +938,7 @@ let _lastData=null;
 function renderRiskFindings(d){
   const p=Math.max(0,100-(d.riskScore??0));
   const color=p>=80?'var(--ok)':p>=60?'#0d9488':p>=40?'var(--me)':'var(--cr)';
-  const band=p>=80?'GREAT POSTURE':p>=60?'GOOD POSTURE':p>=40?'MEDIUM POSTURE':'POOR POSTURE';
+  const band=p>=80?'OUTSTANDING':p>=60?'HIGH PERFORMING':p>=40?'STEADY':'EMERGING';
   const rn=document.getElementById('rf-num');rn.textContent=p;rn.style.color=color;
   const rb=document.getElementById('rf-band');rb.textContent=band;rb.style.color=color;
   document.getElementById('rf-k-a').textContent=d.alerts?.length??0;
@@ -965,7 +965,7 @@ function renderRiskFindings(d){
 function renderLab(d){
   const p=Math.max(0,100-(d.riskScore??0));
   const color=p>=80?'var(--ok)':p>=60?'#0d9488':p>=40?'var(--me)':'var(--cr)';
-  const band=p>=80?'GREAT POSTURE':p>=60?'GOOD POSTURE':p>=40?'MEDIUM POSTURE':'POOR POSTURE';
+  const band=p>=80?'OUTSTANDING':p>=60?'HIGH PERFORMING':p>=40?'STEADY':'EMERGING';
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
   const actions=[];
@@ -1042,7 +1042,7 @@ function updateRiskScore(riskScore){
   const p=Math.max(0,100-riskScore);
   // green=great → red=poor
   const color=p>=80?'#22c55e':p>=60?'#84cc16':p>=40?'#f59e0b':'#ef4444';
-  const band=p>=80?'GREAT':p>=60?'GOOD':p>=40?'MEDIUM':'POOR';
+  const band=p>=80?'OUTSTANDING':p>=60?'HIGH PERFORMING':p>=40?'STEADY':'EMERGING';
   document.getElementById('rs-band').textContent=band+' POSTURE';
   const t=document.getElementById('gauge-txt');t.textContent=band;t.setAttribute('fill',color);
   const N=36,fill=Math.round(p/100*N);
