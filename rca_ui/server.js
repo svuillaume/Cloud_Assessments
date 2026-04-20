@@ -611,10 +611,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
   </div>
   <!-- Generate Report button -->
   <div style="padding:0 0 6px">
-    <button class="rpt-btn" onclick="openReportModal()">
+    <a href="https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html" target="_blank" rel="noopener" class="rpt-btn" style="display:flex;text-decoration:none">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Report
-    </button>
+    </a>
   </div>
   <!-- Sidebar gauge + meta -->
   <div style="padding:16px 14px;border-top:1px solid #172540;margin-top:auto">
@@ -1060,89 +1060,8 @@ setInterval(()=>{
   document.getElementById('countdown').textContent='Next refresh in '+cd+'s';
 },1000);
 
-// ── Report Generator Modal ────────────────────────────────────────────────────
-function openReportModal(){
-  document.getElementById('rpt-author').value='Fortinet';
-  document.getElementById('rpt-customer').value='';
-  document.getElementById('rpt-status').innerHTML='';
-  document.getElementById('rpt-dl').innerHTML='';
-  document.getElementById('rpt-form').style.display='';
-  document.getElementById('rpt-actions').style.display='';
-  document.getElementById('modal-overlay').classList.add('open');
-  setTimeout(function(){document.getElementById('rpt-customer').focus();},80);
-}
-function closeReportModal(){document.getElementById('modal-overlay').classList.remove('open');}
-document.getElementById('modal-overlay').addEventListener('click',function(e){if(e.target===this)closeReportModal();});
-
-async function submitReport(){
-  const author=document.getElementById('rpt-author').value.trim()||'Fortinet';
-  const customer=document.getElementById('rpt-customer').value.trim();
-  if(!customer){document.getElementById('rpt-customer').focus();return;}
-  const btn=document.getElementById('rpt-submit');
-  btn.disabled=true;
-  document.getElementById('rpt-form').style.display='none';
-  document.getElementById('rpt-actions').style.display='none';
-  const st=document.getElementById('rpt-status');
-  st.innerHTML='<div class="spinner" style="margin:0 auto 10px"></div>Fetching data from FortiCNAPP&hellip;<br><span style="font-size:10px;color:#2e4a68">Phase 1 of 2 — generating HTML report</span>';
-  try{
-    const r=await fetch('http://localhost:8081/run-report',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({author,customer}),
-    });
-    if(!r.ok)throw new Error('Runner returned HTTP '+r.status);
-    const d=await r.json();
-    if(!d.ok)throw new Error(d.error||'Unknown error');
-    st.innerHTML='<span style="color:#22c55e;font-size:18px">&#10003;</span><br>Report generated successfully';
-    document.getElementById('rpt-dl').innerHTML=
-      '<div class="modal-dl">'
-      +'<a href="http://localhost:8081/download/'+encodeURIComponent(d.html)+'" target="_blank">'
-      +'<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
-      +'Download HTML Report</a>'
-      +'<a href="http://localhost:8081/download/'+encodeURIComponent(d.pdf)+'" target="_blank">'
-      +'<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
-      +'Download PDF Report</a></div>';
-    document.getElementById('rpt-close').style.display='';
-  }catch(ex){
-    const isConn=ex.message.includes('fetch')||ex.message.includes('Failed');
-    st.innerHTML='<span style="color:#ef4444">&#9888;</span> '+(isConn
-      ?'Cannot reach Report Runner.<br><span style="font-size:10px">Make sure <b>node report_runner.js</b> is running on port 8081.</span>'
-      :e(ex.message));
-    document.getElementById('rpt-form').style.display='';
-    document.getElementById('rpt-actions').style.display='';
-    btn.disabled=false;
-  }
-}
 </script>
 
-<!-- Report Modal -->
-<div class="modal-overlay" id="modal-overlay">
-  <div class="modal-box">
-    <div class="modal-title">Generate Assessment Report</div>
-    <div class="modal-sub">Produces both HTML &amp; PDF via the CSA report engine</div>
-    <div id="rpt-form">
-      <div class="modal-field">
-        <div class="modal-label">Author Name</div>
-        <input class="modal-input" id="rpt-author" type="text" placeholder="e.g. John Smith" value="Fortinet"/>
-      </div>
-      <div class="modal-field">
-        <div class="modal-label">Customer / Company</div>
-        <input class="modal-input" id="rpt-customer" type="text" placeholder="e.g. Acme Corp"/>
-      </div>
-    </div>
-    <div id="rpt-status" class="modal-status"></div>
-    <div id="rpt-dl"></div>
-    <div class="modal-actions" id="rpt-actions">
-      <button class="modal-btn ghost" onclick="closeReportModal()">Cancel</button>
-      <button class="modal-btn primary" id="rpt-submit" onclick="submitReport()">
-        Generate Both
-      </button>
-    </div>
-    <div class="modal-actions" id="rpt-close" style="display:none">
-      <button class="modal-btn ghost" onclick="closeReportModal()">Close</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>`;
 }
