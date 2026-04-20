@@ -182,19 +182,38 @@ def main():
                 logger.error(f'Failed writing compact report file {compact_file_name}: {str(e)}')
         elif args.report_format == "PDF":
             report_file_name += ".pdf"
-            logger.info(f'Writing report to {report_file_name}')
-            try:
-                if _find_chrome():
-                    logger.info('PDF backend: Chrome headless')
-                    ok = _html_to_pdf_chrome(report, report_file_name)
-                    if not ok:
-                        raise RuntimeError('Chrome headless exited with non-zero status')
-                else:
-                    logger.warning('Chrome not found — falling back to WeasyPrint')
-                    _html_to_pdf_weasyprint(report, report_file_name, basedir)
-            except Exception as e:
-                logger.error(f'Failed writing report file {report_file_name}: {str(e)}')
-                sys.exit()    
+            compact_pdf_name = report_file_name.replace('_RCA_', '_RCA_C')
+            chrome = _find_chrome()
+            for pdf_path, html_src, label in [
+                (report_file_name, report, 'full'),
+                (compact_pdf_name, None, 'compact'),
+            ]:
+                if label == 'compact':
+                    try:
+                        html_src = report_generator.render(
+                            args.customer, args.author,
+                            custom_logo=custom_logo,
+                            pagesize='a2',
+                            pdf=True,
+                            include_annex=False,
+                        )
+                    except Exception as e:
+                        logger.error(f'Failed rendering compact PDF: {str(e)}')
+                        continue
+                logger.info(f'Writing {label} PDF to {pdf_path}')
+                try:
+                    if chrome:
+                        logger.info('PDF backend: Chrome headless')
+                        ok = _html_to_pdf_chrome(html_src, pdf_path)
+                        if not ok:
+                            raise RuntimeError('Chrome headless exited with non-zero status')
+                    else:
+                        logger.warning('Chrome not found — falling back to WeasyPrint')
+                        _html_to_pdf_weasyprint(html_src, pdf_path, basedir)
+                except Exception as e:
+                    logger.error(f'Failed writing {label} PDF {pdf_path}: {str(e)}')
+                    if label == 'full':
+                        sys.exit()    
 
 if __name__ == "__main__":
     main()
