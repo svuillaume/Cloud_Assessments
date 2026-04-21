@@ -611,27 +611,27 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
   </div>
   <!-- Generate Report button -->
   <div style="padding:0 0 6px">
-    <button class="rpt-btn" onclick="openReportModal()">
+    <button class="rpt-btn" onclick="window.open('https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html','_blank')">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Report
     </button>
   </div>
-  <!-- Sidebar gauge + meta -->
+  <!-- Sidebar donut (small) + meta -->
   <div style="padding:16px 14px;border-top:1px solid #172540;margin-top:auto">
     <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-      <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#243b56">Security Posture</div>
-      <svg id="gauge-svg" viewBox="0 0 200 168" width="160" height="134" style="overflow:visible;display:block">
-        <defs>
-          <filter id="glow-f" x="-80%" y="-80%" width="260%" height="260%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <g id="gauge-ticks"></g>
-        <text id="gauge-txt" x="100" y="112" text-anchor="middle" font-size="14" font-weight="800" letter-spacing="2" fill="white" font-family="-apple-system,Inter,sans-serif">—</text>
-        <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">POSTURE</text>
+      <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#243b56">Critical Risk Findings</div>
+      <svg viewBox="0 0 220 220" width="120" height="120" style="display:block">
+        <circle cx="110" cy="110" r="80" fill="none" stroke="#162438" stroke-width="32"/>
+        <g transform="rotate(-90,110,110)">
+          <circle id="pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#b85555" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,85,85,.45))"/>
+          <circle id="pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#b87030" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,112,48,.45))"/>
+          <circle id="pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#7b65c0" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(123,101,192,.45))"/>
+          <circle id="pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#a07818" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(160,120,24,.45))"/>
+        </g>
+        <text id="pie-total" x="110" y="100" text-anchor="middle" dominant-baseline="middle" fill="#d0dce8" font-size="40" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
+        <text x="110" y="127" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
+        <text x="110" y="139" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">FINDINGS</text>
       </svg>
-      <div class="rs-band" id="rs-band" style="display:none">—</div>
     </div>
     <div style="margin-top:12px;font-size:10px;color:#2e4d6e;line-height:1.8;text-align:center">
       <div><b id="acct-lbl" style="color:#5a7ea0">${account}</b></div>
@@ -649,20 +649,21 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
   <div class="pie-section">
-    <!-- Single large centered donut chart -->
-    <div class="pie-donut">
-      <svg viewBox="0 0 220 220" width="360" height="360">
-        <circle cx="110" cy="110" r="80" fill="none" stroke="#162438" stroke-width="32"/>
-        <g transform="rotate(-90,110,110)">
-          <circle id="pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#b85555" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,85,85,.45))"/>
-          <circle id="pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#b87030" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,112,48,.45))"/>
-          <circle id="pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#7b65c0" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(123,101,192,.45))"/>
-          <circle id="pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#a07818" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(160,120,24,.45))"/>
-        </g>
-        <text id="pie-total" x="110" y="100" text-anchor="middle" dominant-baseline="middle" fill="#d0dce8" font-size="40" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
-        <text x="110" y="127" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
-        <text x="110" y="139" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">FINDINGS</text>
+    <!-- Large centered posture gauge -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px">
+      <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#243b56">Security Posture</div>
+      <svg id="gauge-svg" viewBox="0 0 200 168" width="280" height="235" style="overflow:visible;display:block">
+        <defs>
+          <filter id="glow-f" x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <g id="gauge-ticks"></g>
+        <text id="gauge-txt" x="100" y="112" text-anchor="middle" font-size="14" font-weight="800" letter-spacing="2" fill="white" font-family="-apple-system,Inter,sans-serif">—</text>
+        <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">POSTURE</text>
       </svg>
+      <div class="rs-band" id="rs-band">—</div>
     </div>
     <!-- 4-column legend grid below -->
     <div class="pie-legend">
@@ -938,7 +939,7 @@ let _lastData=null;
 function renderRiskFindings(d){
   const p=Math.max(0,100-(d.riskScore??0));
   const color=p>=80?'var(--ok)':p>=60?'#0d9488':p>=40?'var(--me)':'var(--cr)';
-  const band=p>=80?'GREAT POSTURE':p>=60?'GOOD POSTURE':p>=40?'MEDIUM POSTURE':'POOR POSTURE';
+  const band=p>=80?'EXCELLENT POSTURE':p>=60?'IMPROVING POSTURE':p>=40?'EMERGING POSTURE':'BUILDING POSTURE';
   const rn=document.getElementById('rf-num');rn.textContent=p;rn.style.color=color;
   const rb=document.getElementById('rf-band');rb.textContent=band;rb.style.color=color;
   document.getElementById('rf-k-a').textContent=d.alerts?.length??0;
@@ -965,7 +966,7 @@ function renderRiskFindings(d){
 function renderLab(d){
   const p=Math.max(0,100-(d.riskScore??0));
   const color=p>=80?'var(--ok)':p>=60?'#0d9488':p>=40?'var(--me)':'var(--cr)';
-  const band=p>=80?'GREAT POSTURE':p>=60?'GOOD POSTURE':p>=40?'MEDIUM POSTURE':'POOR POSTURE';
+  const band=p>=80?'EXCELLENT POSTURE':p>=60?'IMPROVING POSTURE':p>=40?'EMERGING POSTURE':'BUILDING POSTURE';
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
   const actions=[];
@@ -1042,7 +1043,7 @@ function updateRiskScore(riskScore){
   const p=Math.max(0,100-riskScore);
   // green=great → red=poor
   const color=p>=80?'#22c55e':p>=60?'#84cc16':p>=40?'#f59e0b':'#ef4444';
-  const band=p>=80?'GREAT':p>=60?'GOOD':p>=40?'MEDIUM':'POOR';
+  const band=p>=80?'EXCELLENT':p>=60?'IMPROVING':p>=40?'EMERGING':'BUILDING';
   document.getElementById('rs-band').textContent=band+' POSTURE';
   const t=document.getElementById('gauge-txt');t.textContent=band;t.setAttribute('fill',color);
   const N=36,fill=Math.round(p/100*N);
