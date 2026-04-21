@@ -1190,61 +1190,15 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     <h1>Rapid Cloud Assessment Report</h1>
     <div class="subtitle">Cloud Security Risk Findings</div>
 
-    {# ── Cover dual-gauge: posture arc (left) + findings donut (right) ── #}
-    {% set _tf = _sc + total_compliance_critical + total_vuln_critical + total_admin.val + critical_alert_count %}
-    {% set _circ = 565.5 %}{% set _gap = 4.0 %}
-    {% if _tf > 0 %}
-      {% set _ns2 = namespace(o = -(_circ / 4.0)) %}
-      {% set _a_s  = [(_sc / _tf * _circ) - _gap, 0] | max %}{% set _o_s  = _ns2.o %}{% set _ns2.o = _ns2.o - (_sc / _tf * _circ) %}
-      {% set _a_co = [(total_compliance_critical / _tf * _circ) - _gap, 0] | max %}{% set _o_co = _ns2.o %}{% set _ns2.o = _ns2.o - (total_compliance_critical / _tf * _circ) %}
-      {% set _a_v  = [(total_vuln_critical / _tf * _circ) - _gap, 0] | max %}{% set _o_v  = _ns2.o %}{% set _ns2.o = _ns2.o - (total_vuln_critical / _tf * _circ) %}
-      {% set _a_ad = [(total_admin.val / _tf * _circ) - _gap, 0] | max %}{% set _o_ad = _ns2.o %}{% set _ns2.o = _ns2.o - (total_admin.val / _tf * _circ) %}
-      {% set _a_al = [(critical_alert_count / _tf * _circ) - _gap, 0] | max %}{% set _o_al = _ns2.o %}
-    {% endif %}
-    <div style="display:flex; align-items:center; justify-content:center; gap:3rem; flex:1; margin:1.5rem 0; flex-wrap:wrap;">
-
-      <!-- Posture score: large semi-circle gauge -->
-      <div style="display:flex; flex-direction:column; align-items:center; gap:0.5rem; flex-shrink:0;">
-        <svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg" style="width:280px; display:block;">
-          <text x="150" y="18" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="11" font-weight="700" letter-spacing="3" fill="rgba(255,255,255,0.55)">SECURITY POSTURE SCORE</text>
-          <!-- Track -->
-          <path d="M 40,165 A 110,110 0 0,1 260,165" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="22" stroke-linecap="round"/>
-          <!-- Glow fill -->
-          <path d="M 40,165 A 110,110 0 0,1 260,165" fill="none" stroke="{{ _g_color }}" stroke-width="28" stroke-linecap="round" stroke-dasharray="{{ _arc_fill }} 1000" opacity="0.22"/>
-          <!-- Fill -->
-          <path d="M 40,165 A 110,110 0 0,1 260,165" fill="none" stroke="{{ _g_color }}" stroke-width="22" stroke-linecap="round" stroke-dasharray="{{ _arc_fill }} 1000"/>
-          <!-- Score number -->
-          <text x="150" y="148" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="52" font-weight="900" letter-spacing="-2" fill="white">{{posture_score | round(1)}}</text>
-          <text x="150" y="167" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="10" fill="rgba(255,255,255,0.5)">out of 10</text>
-          <text x="150" y="184" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="11" font-weight="800" letter-spacing="2" fill="{{ _g_color }}">{{ _g_label }}</text>
-          <text x="32"  y="178" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="9" fill="rgba(255,255,255,0.3)">0</text>
-          <text x="268" y="178" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="9" fill="rgba(255,255,255,0.3)">10</text>
-        </svg>
-        <div style="font-size:0.65rem; opacity:0.6; letter-spacing:2px; text-transform:uppercase; color:white; text-align:center;">
-          {% if aws_compliance_data and azure_compliance_data and gcp_compliance_data %}MultiCloud{% elif aws_compliance_data and azure_compliance_data %}AWS &amp; Azure{% elif aws_compliance_data and gcp_compliance_data %}AWS &amp; GCP{% elif azure_compliance_data and gcp_compliance_data %}Azure &amp; GCP{% elif aws_compliance_data %}AWS{% elif azure_compliance_data %}Azure{% elif gcp_compliance_data %}GCP{% else %}Cloud{% endif %}
+    <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
+        <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem; flex-shrink:0;">
+            <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.12); border:3px solid rgba(255,255,255,0.55); display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px rgba(255,255,255,0.18), inset 0 1px 0 rgba(255,255,255,0.2);">
+                <span style="font-size:3.6rem; font-weight:800; color:white; letter-spacing:-2px; line-height:1;">{{posture_score | round(1)}}</span>
+                <span style="font-size:0.65rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase;">out of 10</span>
+            </div>
+            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center; color:white;">
+                {% if aws_compliance_data and azure_compliance_data and gcp_compliance_data %}MultiCloud{% elif aws_compliance_data and azure_compliance_data %}AWS &amp; Azure{% elif aws_compliance_data and gcp_compliance_data %}AWS &amp; GCP{% elif azure_compliance_data and gcp_compliance_data %}Azure &amp; GCP{% elif aws_compliance_data %}Amazon Web Services{% elif azure_compliance_data %}Microsoft Azure{% elif gcp_compliance_data %}Google Cloud Platform{% else %}Cloud{% endif %}<br>Cloud Security Posture Score</div>
         </div>
-      </div>
-
-      <!-- Critical Risk Findings donut -->
-      <div style="display:flex; flex-direction:column; align-items:center; gap:0.5rem; flex-shrink:0;">
-        <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" style="width:180px; display:block;">
-          <circle cx="110" cy="110" r="90" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="22"/>
-          {% if _tf > 0 %}
-            {% if _sc > 0 %}<circle cx="110" cy="110" r="90" fill="none" stroke="#DA291C" stroke-width="22" stroke-dasharray="{{ _a_s }} {{ _circ }}" stroke-dashoffset="{{ _o_s }}" stroke-linecap="butt"/>{% endif %}
-            {% if total_compliance_critical > 0 %}<circle cx="110" cy="110" r="90" fill="none" stroke="#CC6B1A" stroke-width="22" stroke-dasharray="{{ _a_co }} {{ _circ }}" stroke-dashoffset="{{ _o_co }}" stroke-linecap="butt"/>{% endif %}
-            {% if total_vuln_critical > 0 %}<circle cx="110" cy="110" r="90" fill="none" stroke="#B7770D" stroke-width="22" stroke-dasharray="{{ _a_v }} {{ _circ }}" stroke-dashoffset="{{ _o_v }}" stroke-linecap="butt"/>{% endif %}
-            {% if total_admin.val > 0 %}<circle cx="110" cy="110" r="90" fill="none" stroke="#8B5CF6" stroke-width="22" stroke-dasharray="{{ _a_ad }} {{ _circ }}" stroke-dashoffset="{{ _o_ad }}" stroke-linecap="butt"/>{% endif %}
-            {% if critical_alert_count > 0 %}<circle cx="110" cy="110" r="90" fill="none" stroke="#F59E0B" stroke-width="22" stroke-dasharray="{{ _a_al }} {{ _circ }}" stroke-dashoffset="{{ _o_al }}" stroke-linecap="butt"/>{% endif %}
-          {% else %}
-            <circle cx="110" cy="110" r="90" fill="none" stroke="rgba(30,122,62,0.5)" stroke-width="22"/>
-          {% endif %}
-          <text x="110" y="104" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="42" font-weight="900" fill="white">{{ _tf if _tf > 0 else '0' }}</text>
-          <text x="110" y="122" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.45)">CRITICAL RISK</text>
-          <text x="110" y="134" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" font-weight="700" letter-spacing="2" fill="rgba(255,255,255,0.45)">FINDINGS</text>
-        </svg>
-        <div style="font-size:0.65rem; opacity:0.6; letter-spacing:2px; text-transform:uppercase; color:white; text-align:center;">By Category</div>
-      </div>
-
     </div>
 
     <div class="meta-row">
