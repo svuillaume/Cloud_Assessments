@@ -15,6 +15,7 @@ och.json
 lw_report_gen.log
 weasyprint.log
 samv.json
+FORTINET_*.json
 *_key.json
 *apikey*.json
 venv/
@@ -22,3 +23,4 @@ myvenv/
 debug_alert_entities.py
 lw_report_gen_mac_arm
 security-summary.html
+.env
