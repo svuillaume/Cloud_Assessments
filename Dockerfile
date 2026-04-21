@@ -1,6 +1,6 @@
 ARG FUNCTION_DIR="/function"
 
-FROM public.ecr.aws/docker/library/python:bookworm as build-image
+FROM public.ecr.aws/docker/library/python:3.12-bookworm as build-image
 
 ARG FUNCTION_DIR="/function"
 
@@ -24,7 +24,7 @@ RUN pip install \
         -r ${FUNCTION_DIR}/lambda_requirements.txt
 
 
-FROM public.ecr.aws/docker/library/python:bookworm
+FROM public.ecr.aws/docker/library/python:3.12-bookworm
 ARG FUNCTION_DIR
 RUN apt-get update && \
     apt-get install -y xfonts-75dpi xfonts-base
