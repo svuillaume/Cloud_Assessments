@@ -723,29 +723,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
     <div style="text-align:center;line-height:1.3">
       <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
     </div>
-    <svg id="gauge-svg" viewBox="0 0 300 215" width="320" height="230" style="overflow:visible;display:block">
-      <defs>
-        <linearGradient id="gauge-grad" gradientUnits="userSpaceOnUse" x1="55" y1="140" x2="245" y2="140">
-          <stop offset="0%"   stop-color="#22c55e"/>
-          <stop offset="28%"  stop-color="#a3e635"/>
-          <stop offset="52%"  stop-color="#eab308"/>
-          <stop offset="76%"  stop-color="#f97316"/>
-          <stop offset="100%" stop-color="#ef4444"/>
-        </linearGradient>
-        <filter id="needle-drop" x="-100%" y="-100%" width="300%" height="300%">
-          <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="rgba(0,0,0,.3)"/>
-        </filter>
-      </defs>
-      <path id="gauge-track" fill="none" stroke="#e5e7eb"          stroke-width="22" stroke-linecap="round"/>
-      <path id="gauge-arc"   fill="none" stroke="url(#gauge-grad)" stroke-width="22" stroke-linecap="round"/>
-      <g id="gauge-ticks"></g>
-      <g id="gauge-bands"></g>
-      <path id="gauge-needle" d="M0,0" fill="#1f2937" filter="url(#needle-drop)"/>
-      <circle cx="150" cy="140" r="8" fill="#1f2937"/>
-      <circle cx="150" cy="140" r="3" fill="#e5e7eb"/>
-      <text id="gauge-txt" x="150" y="134" text-anchor="middle" font-size="0" fill="transparent">—</text>
+    <svg id="gauge-svg" viewBox="0 0 300 168" width="300" height="168" style="display:block;overflow:visible;margin:4px auto 0">
+      <path id="gauge-track" fill="none" stroke="#e2e8f0" stroke-width="26" stroke-linecap="round"
+            d="M 35,150 A 115,115 0 0,1 265,150"/>
+      <path id="gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="26" stroke-linecap="round"
+            stroke-dasharray="0 361" d="M 35,150 A 115,115 0 0,1 265,150"/>
+      <text id="gauge-band" x="150" y="110" text-anchor="middle" font-size="12" font-weight="700"
+            letter-spacing="1.5" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+      <text id="gauge-score" x="150" y="148" text-anchor="middle" font-size="52" font-weight="800"
+            font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+      <text x="150" y="165" text-anchor="middle" font-size="11" fill="#94a3b8"
+            font-family="-apple-system,Inter,sans-serif">/100</text>
     </svg>
-    <div class="rs-band" id="rs-band">—</div>
+    <div class="rs-band" id="rs-band" style="display:none">—</div>
     <!-- Findings summary below gauge -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-top:4px;font-size:12px;min-width:200px">
       <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="color:#475569">Alerts</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-a">—</span></div>
@@ -1101,47 +1091,17 @@ async function load(){
   }
 }
 
-(function initGauge(){
-  const NS='http://www.w3.org/2000/svg';
-  const CX=150,CY=140,R=105,SW=22,START=135,SWEEP=270;
-  function pt(deg,r){var rad=deg*Math.PI/180;return [+(CX+r*Math.cos(rad)).toFixed(2),+(CY+r*Math.sin(rad)).toFixed(2)];}
-  // Full 270° arc path (large-arc=1 because 270>180, sweep=1 clockwise)
-  var s=pt(START,R),e=pt(START+SWEEP,R);
-  var d='M'+s[0]+','+s[1]+' A'+R+','+R+' 0 1,1 '+e[0]+','+e[1];
-  document.getElementById('gauge-track').setAttribute('d',d);
-  document.getElementById('gauge-arc').setAttribute('d',d);
-  // boundary labels at 0, 20, 50, 80, 100
-  var tg=document.getElementById('gauge-ticks');
-  [0,20,50,80,100].forEach(function(v){
-    var deg=START+(v/100)*SWEEP,lp=pt(deg,R+SW/2+15);
-    var lbl=document.createElementNS(NS,'text');
-    lbl.setAttribute('x',lp[0]);lbl.setAttribute('y',lp[1]);
-    lbl.setAttribute('text-anchor','middle');lbl.setAttribute('dominant-baseline','middle');
-    lbl.setAttribute('font-size','9.5');lbl.setAttribute('fill','#6b7280');
-    lbl.setAttribute('font-weight','600');lbl.setAttribute('font-family','-apple-system,Inter,sans-serif');
-    lbl.textContent=v;
-    tg.appendChild(lbl);
-  });
-  window._G={CX:CX,CY:CY,R:R,SW:SW,START:START,SWEEP:SWEEP};
-})();
-
 function updateRiskScore(p){
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const rsb=document.getElementById('rs-band');rsb.textContent=band;rsb.style.color=color;
-  const t=document.getElementById('gauge-txt');t.textContent=p;
-  // move needle — tip points inward from outside the arc
-  const G=window._G||{CX:150,CY:140,R:105,SW:22,START:135,SWEEP:270};
-  const deg=G.START+(p/100)*G.SWEEP;
-  const rad=deg*Math.PI/180;
-  const tipR=G.R-G.SW/2-5, baseR=G.R+G.SW/2+13;
-  const tipX=G.CX+tipR*Math.cos(rad),tipY=G.CY+tipR*Math.sin(rad);
-  const baseX=G.CX+baseR*Math.cos(rad),baseY=G.CY+baseR*Math.sin(rad);
-  const pr=rad+Math.PI/2,hw=8;
-  const lx=baseX+hw*Math.cos(pr),ly=baseY+hw*Math.sin(pr);
-  const rx=baseX-hw*Math.cos(pr),ry=baseY-hw*Math.sin(pr);
-  const needle=document.getElementById('gauge-needle');
-  if(needle)needle.setAttribute('d','M'+tipX.toFixed(1)+','+tipY.toFixed(1)+' L'+lx.toFixed(1)+','+ly.toFixed(1)+' L'+rx.toFixed(1)+','+ry.toFixed(1)+' Z');
+  const arcLen=361;
+  const fill=(p/100)*arcLen;
+  const arc=document.getElementById('gauge-arc');
+  if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
+  const gb=document.getElementById('gauge-band');
+  if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
+  const gs=document.getElementById('gauge-score');
+  if(gs){gs.textContent=p;gs.setAttribute('fill',color);}
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
