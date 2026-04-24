@@ -1115,7 +1115,7 @@ function updateRiskScore(riskScore){
   const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
   document.getElementById('rs-band').textContent=band+' POSTURE';
   const t=document.getElementById('gauge-txt');t.textContent=p.toFixed(1);t.setAttribute('fill',color);
-  const N=36,fill=Math.round(p/100*N);
+  const N=36,fill=Math.round(p/10*N);
   document.querySelectorAll('.gtick').forEach((tk,i)=>{
     const lit=i<=fill;
     tk.setAttribute('stroke',lit?color:'#1e3450');
