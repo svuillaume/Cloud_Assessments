@@ -811,28 +811,26 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
-  <div style="text-align:center;padding:20px 32px 8px;background:#fff;border-bottom:1px solid var(--border)">
-    <div style="font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Fortinet Cloud Risk IQ</div>
-    <svg id="rf-gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:400px;overflow:visible;margin:0 auto">
-      <defs>
-        <linearGradient id="rf-band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
-          <stop offset="0%"    stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#f59e0b"/>
-          <stop offset="90.5%" stop-color="#f59e0b"/>
-          <stop offset="90.5%" stop-color="#22c55e"/>
-          <stop offset="100%"  stop-color="#22c55e"/>
-        </linearGradient>
-      </defs>
-      <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
-            d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <path id="rf-gauge-arc" fill="none" stroke="url(#rf-band-grad)" stroke-width="34" stroke-linecap="round"
-            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <text id="rf-gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
-            letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+  <div style="text-align:center;padding:24px 32px 16px;background:#fff;border-bottom:1px solid var(--border)">
+    <div style="font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C;margin-bottom:16px">Critical Risk Findings</div>
+    <svg viewBox="0 0 220 220" width="240" height="240" style="display:block;margin:0 auto;overflow:visible">
+      <circle cx="110" cy="110" r="80" fill="none" stroke="#e2e8f0" stroke-width="32"/>
+      <g transform="rotate(-90,110,110)">
+        <circle id="rf-pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#ef4444" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#f97316" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#8b5cf6" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#f59e0b" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+      </g>
+      <text id="rf-pie-total" x="110" y="102" text-anchor="middle" dominant-baseline="middle" fill="#0f172a" font-size="42" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
+      <text x="110" y="128" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
+      <text x="110" y="140" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">FINDINGS</text>
     </svg>
+    <div style="display:flex;gap:20px;justify-content:center;margin-top:14px;flex-wrap:wrap;font-size:11px">
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('alerts')"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444"></div><span style="color:#475569">Alerts</span><b id="rf-n-a" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">CVEs</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:9px;height:9px;border-radius:50%;background:#8b5cf6"></div><span style="color:#475569">Identities</span><b id="rf-n-i" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Compliance</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
+    </div>
   </div>
   <div class="rf-kpis">
     <div class="rf-kpi"><div class="rf-kpi-lbl">Critical Alerts</div><div class="rf-kpi-val" id="rf-k-a">—</div><div class="rf-kpi-sub">Open &amp; unresolved</div></div>
@@ -890,10 +888,10 @@ function setKpi(id,n){document.getElementById(id).textContent=n;}
 function setCount(id,n,bad){const el=document.getElementById(id);el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
 function buildPie(d){
   var segs=[
-    {id:'pseg-a',n:(d.alerts||[]).length},
-    {id:'pseg-v',n:(d.vulns||[]).length},
-    {id:'pseg-i',n:(d.identities||[]).length},
-    {id:'pseg-c',n:(d.compliance||[]).length},
+    {id:'pseg-a',rfid:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
+    {id:'pseg-v',rfid:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
+    {id:'pseg-i',rfid:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
+    {id:'pseg-c',rfid:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
   ];
   var total=segs.reduce(function(s,c){return s+c.n;},0);
   var C=502.65,GAP=7;
@@ -901,18 +899,24 @@ function buildPie(d){
   var usable=C-GAP*active;
   var cum=0;
   segs.forEach(function(seg){
-    var el=document.getElementById(seg.id);if(!el)return;
+    var el=document.getElementById(seg.id);
+    var rfEl=document.getElementById(seg.rfid);
     var len=total===0?0:(seg.n/total)*usable;
-    (function(e,l,o){
+    (function(e,rfe,l,o){
       requestAnimationFrame(function(){
-        e.setAttribute('stroke-dasharray',l.toFixed(1)+' '+(C-l).toFixed(1));
-        e.setAttribute('stroke-dashoffset',(-o).toFixed(1));
+        var da=l.toFixed(1)+' '+(C-l).toFixed(1),doff=(-o).toFixed(1);
+        if(e){e.setAttribute('stroke-dasharray',da);e.setAttribute('stroke-dashoffset',doff);}
+        if(rfe){rfe.setAttribute('stroke-dasharray',da);rfe.setAttribute('stroke-dashoffset',doff);}
       });
-    })(el,len,cum);
+    })(el,rfEl,len,cum);
+    var nl=document.getElementById('rf-n-'+seg.key);
+    if(nl)nl.textContent=seg.n||'0';
     if(seg.n>0)cum+=len+GAP;
   });
   var ct=document.getElementById('pie-total');
   if(ct)ct.textContent=total||'0';
+  var rft=document.getElementById('rf-pie-total');
+  if(rft)rft.textContent=total||'0';
 }
 function setBody(id,h){document.getElementById(id).innerHTML=h;}
 function state(id,icon,msg){setBody(id,'<div class="state"><span class="state-icon">'+icon+'</span><span>'+e(msg)+'</span></div>');}
@@ -1104,10 +1108,6 @@ function updateRiskScore(p){
   if(arc){arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
   const gb=document.getElementById('gauge-band');
   if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
-  const rfa=document.getElementById('rf-gauge-arc');
-  if(rfa){rfa.setAttribute('stroke-dasharray',fill+' '+arcLen);}
-  const rfb=document.getElementById('rf-gauge-band');
-  if(rfb){rfb.textContent=band;rfb.setAttribute('fill',color);}
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
