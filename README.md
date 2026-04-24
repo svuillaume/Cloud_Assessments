@@ -4,7 +4,7 @@
 
 **A beginner-friendly toolkit to assess the security of any cloud environment using [FortiCNAPP](https://www.fortinet.com/products/forticnapp) (Lacework CNAPP).**
 
-In 10 minutes you'll have a live security dashboard and a customer-ready PDF report.
+In 10 minutes you'll have a live security dashboard — powered by the **Fortinet Cloud Risk IQ** score — and a customer-ready PDF report.
 
 [![📄 View Sample Report](https://img.shields.io/badge/📄_View-Sample_Report-blue?style=for-the-badge)](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
 
@@ -32,10 +32,31 @@ This repository contains **two tools** that work together to help you assess a c
 
 | # | Tool | File | What it does | When to use it |
 |---|------|------|--------------|----------------|
-| 1 | **Live Dashboard** | `rca_ui/server.js` | A real-time web UI showing alerts, CVEs, identities, and compliance status | Demos, workshops, live customer reviews |
+| 1 | **Live Dashboard** | `rca_ui/server.js` | Real-time white-theme UI showing the **Fortinet Cloud Risk IQ** score, alerts, CVEs, identities, and compliance | Demos, workshops, live customer reviews |
 | 2 | **CSA Report Generator** | `lw_report_gen.py` | Generates a professional Cloud Security Assessment report in PDF or HTML | Leave-behinds, executive summaries, audits |
 
 > 💡 **New to CNAPP?** Start with the Dashboard in **mock mode** (no credentials required — see [Step 2](#-step-2--run-the-live-dashboard)).
+
+### Fortinet Cloud Risk IQ
+
+The dashboard computes a **0–100 risk score** — lower is better — from five live inputs:
+
+| Input | Saturates at | Max weight |
+|-------|:------------:|:----------:|
+| Critical CVEs (risk ≥ 9.0) | 15 | 2.5 |
+| Critical CVSS 10.0 CVEs | 10 | 1.5 |
+| Admins without MFA | 30 | 2.5 |
+| Critical alerts | 10 | 1.5 |
+| Critical non-compliance | 10 | 1.0 |
+
+| Score | Band | |
+|:-----:|------|-|
+| 0–19 | Proactive Security | 🟢 |
+| 20–49 | Progressing Cloud Security Posture | 🔵 |
+| 50–79 | Some Attention Needed | 🟠 |
+| 80–100 | Immediate Attention Needed | 🔴 |
+
+See [SCORING_GUIDE.md](SCORING_GUIDE.md) for the full formula and worked example.
 
 ---
 
@@ -273,12 +294,12 @@ Quick reference for what each file does:
 
 | File | What it's for |
 |------|----------------|
-| `rca_ui/server.js` | The dashboard web server (Node.js) |
+| `rca_ui/server.js` | Dashboard web server — white Fortinet-themed UI, Fortinet Cloud Risk IQ gauge |
 | `rca_ui/Dockerfile` | Build instructions for the dashboard container |
 | `rca_ui/mock_data.json` | Sample data used in mock mode |
 | `rca_ui/report_runner.js` | Runs reports from the dashboard UI |
 | `lw_report_gen.py` | Python script that generates CSA reports |
-| `SCORING_GUIDE.md` | How risk and maturity scores are calculated |
+| `SCORING_GUIDE.md` | Fortinet Cloud Risk IQ formula, bands, and worked example |
 | `requirements.txt` | Python dependencies for the report generator |
 
 ---
