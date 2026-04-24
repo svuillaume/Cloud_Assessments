@@ -726,8 +726,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 <div class="view active" id="view-overview">
   <div class="pie-section">
     <div style="text-align:center;line-height:1.3">
-      <div style="font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#4a7fa8">MultiCloud</div>
-      <div style="font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#2e4d6e">Cloud Security Posture Score</div>
+      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#4a7fa8">RiskIQ Score</div>
     </div>
     <svg id="gauge-svg" viewBox="0 0 200 168" width="280" height="235" style="overflow:visible;display:block">
       <defs>
@@ -741,6 +740,13 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">/ 10</text>
     </svg>
     <div class="rs-band" id="rs-band">—</div>
+    <!-- Findings summary below gauge -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-top:4px;font-size:12px;min-width:200px">
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#b85555;flex-shrink:0"></div><span style="color:#5a7ea0">Alerts</span><span style="margin-left:auto;color:#d0dce8;font-weight:800;font-size:14px" id="ov-a">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#b87030;flex-shrink:0"></div><span style="color:#5a7ea0">CVEs</span><span style="margin-left:auto;color:#d0dce8;font-weight:800;font-size:14px" id="ov-v">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#7b65c0;flex-shrink:0"></div><span style="color:#5a7ea0">Identities</span><span style="margin-left:auto;color:#d0dce8;font-weight:800;font-size:14px" id="ov-i">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#a07818;flex-shrink:0"></div><span style="color:#5a7ea0">Compliance</span><span style="margin-left:auto;color:#d0dce8;font-weight:800;font-size:14px" id="ov-c">—</span></div>
+    </div>
   </div>
   <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#2e4d6e;font-style:italic">Aiming towards a better, more secure cloud posture</div>
   <div class="footer">FortiCNAPP Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
@@ -803,7 +809,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
   <div class="rf-posture">
     <div class="rf-pos-num" id="rf-num">—</div>
     <div class="rf-pos-meta">
-      <div class="rf-pos-lbl">MultiCloud Cloud Security Posture Score</div>
+      <div class="rf-pos-lbl">RiskIQ Score</div>
       <div class="rf-pos-band" id="rf-band">—</div>
       <div class="rf-pos-sub">Higher is better &nbsp;·&nbsp; 0–10 scale</div>
     </div>
@@ -1008,10 +1014,15 @@ function renderRiskFindings(d){
   const band=scoreBand(p);
   const rn=document.getElementById('rf-num');rn.textContent=p.toFixed(1);rn.style.color=color;
   const rb=document.getElementById('rf-band');rb.textContent=band;rb.style.color=color;
-  document.getElementById('rf-k-a').textContent=d.alerts?.length??0;
-  document.getElementById('rf-k-v').textContent=d.vulns?.length??0;
-  document.getElementById('rf-k-c').textContent=d.compliance?.length??0;
-  document.getElementById('rf-k-i').textContent=d.identities?.length??0;
+  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
+  document.getElementById('rf-k-a').textContent=na;
+  document.getElementById('rf-k-v').textContent=nv;
+  document.getElementById('rf-k-c').textContent=nc;
+  document.getElementById('rf-k-i').textContent=ni;
+  document.getElementById('ov-a').textContent=na;
+  document.getElementById('ov-v').textContent=nv;
+  document.getElementById('ov-i').textContent=ni;
+  document.getElementById('ov-c').textContent=nc;
   const base='https://'+d.account;
   const items=[];
   (d.alerts||[]).forEach(r=>items.push({cat:'Alert',title:r.alertName,detail:r.alertType,score:95,href:base+'/ui/investigation/alerts/'+r.alertId}));
