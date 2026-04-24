@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// FortiCNAPP Rapid Cloud Assessment — Live Dashboard
+// Fortinet Rapid Cloud Assessment — Live Dashboard
 // Usage:  node server.js   |   open http://localhost:8080
 // No npm packages required.
 
@@ -739,7 +739,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     </div>
   </div>
   <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#94a3b8;font-style:italic">Aiming towards a better, more secure cloud posture</div>
-  <div class="footer">FortiCNAPP Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
 </div><!-- /view-overview -->
 
 <!-- ═══ View: Critical Alerts ═══ -->
@@ -1183,7 +1183,7 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   const mode = MOCK_FILE ? 'MOCK' : 'LIVE';
   console.log('\n┌──────────────────────────────────────────────────┐');
-  console.log(`│  FortiCNAPP Rapid Cloud Assessment — ${mode.padEnd(11)}│`);
+  console.log(`│  Fortinet Rapid Cloud Assessment — ${mode.padEnd(11)}│`);
   console.log('├──────────────────────────────────────────────────┤');
   console.log(`│  Account  : ${LW_ACCOUNT.padEnd(37)}│`);
   if (MOCK_FILE) {
