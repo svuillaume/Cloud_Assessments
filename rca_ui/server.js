@@ -6,6 +6,13 @@
 'use strict';
 const http  = require('http');
 const https = require('https');
+const fs    = require('fs');
+const path  = require('path');
+
+const CONTACTS_CSV = path.join(__dirname, 'contacts.csv');
+if (!fs.existsSync(CONTACTS_CSV)) {
+  fs.writeFileSync(CONTACTS_CSV, 'Timestamp,FirstName,LastName,Company,Role,Email\n');
+}
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const LW_ACCOUNT = process.env.LW_ACCOUNT || 'partner-demo.lacework.net';
@@ -1135,9 +1142,12 @@ function submitLogin(){
   if(!first||!last){err.textContent='Please enter your first and last name.';return;}
   if(!company){err.textContent='Please enter your company name.';return;}
   if(!role){err.textContent='Please select your role.';return;}
-  if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){err.textContent='Please enter a valid email address.';return;}
+  const emailInput=document.getElementById('li-email');
+  if(!email||!emailInput.checkValidity()){err.textContent='Please enter a valid email address.';return;}
   err.textContent='';
-  sessionStorage.setItem('rca_user',JSON.stringify({first,last,company,role,email}));
+  const user={first,last,company,role,email};
+  sessionStorage.setItem('rca_user',JSON.stringify(user));
+  fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
   load();
 }
@@ -1170,6 +1180,27 @@ http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS);
     res.end();
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/register') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { first, last, company, role, email } = JSON.parse(body);
+        const ts = new Date().toISOString();
+        const row = [ts, first, last, company, role, email]
+          .map(v => `"${(v||'').replace(/"/g,'""')}"`)
+          .join(',') + '\n';
+        fs.appendFileSync(CONTACTS_CSV, row);
+        console.log(`[register] ${first} ${last} <${email}> — ${company} (${role})`);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ ok: false }));
+      }
+    });
     return;
   }
   if (req.url === '/api/data') {
