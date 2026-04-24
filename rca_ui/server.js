@@ -484,7 +484,7 @@ td.r{text-align:right;padding-right:16px}
 .vha-purple{background:#f8f6ff;border-bottom:1px solid rgba(109,40,217,.2)}.vha-purple .vh-title{color:#7c3aed}.vha-purple .vh-badge{background:rgba(109,40,217,.08);color:#7c3aed;border:1px solid rgba(109,40,217,.2)}
 
 /* ── Alert description cell ── */
-td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-height:1.45;padding-top:7px;padding-bottom:7px}
+td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-height:1.5;padding-top:7px;padding-bottom:7px}
 
 /* ── Agent tip ── */
 .agent-tip{font-size:10px;color:var(--accent-l);cursor:default;border-bottom:1px dashed var(--accent);padding-bottom:1px}
@@ -928,8 +928,8 @@ function renderAlerts(rows,err){
       const href=baseA+'/ui/investigation/alerts/'+r.alertId;
       return'<tr class="'+strip('critical')+'">'
         +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a></td>'
-        +'<td class="p" title="'+e(r.alertName)+'"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(tr(r.alertName,32))+'</a></td>'
-        +'<td class="desc">'+e(tr(desc,160))+'</td>'
+        +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertName||'—')+'</a></td>'
+        +'<td class="desc">'+e(desc||'—')+'</td>'
         +'<td>'+status(r.status)+'</td>'
         +'<td class="m">'+fmtDate(r.startTime)+'</td>'
       +'</tr>';
