@@ -558,9 +558,72 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 .modal-dl a{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0a1826;border:1px solid #1e3450;border-radius:8px;color:#c0d4ec;text-decoration:none;font-size:12px;font-weight:600;transition:background .15s}
 .modal-dl a:hover{background:#101e30}
 .modal-dl a svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+/* ── Login overlay ── */
+.login-overlay{position:fixed;inset:0;z-index:2000;background:linear-gradient(135deg,#040c18 0%,#071525 60%,#0a1e36 100%);display:flex;align-items:center;justify-content:center}
+.login-box{width:420px;max-width:92vw;background:#0c1826;border:1px solid #1a3050;border-radius:20px;padding:36px 36px 28px;box-shadow:0 32px 80px rgba(0,0,0,.7)}
+.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.login-logo-name{font-size:13px;font-weight:700;color:#8aa8c8;line-height:1.3;letter-spacing:.02em}
+.login-title{font-size:20px;font-weight:800;color:#d8e8f4;margin-bottom:4px}
+.login-sub{font-size:11.5px;color:#2e4d6e;margin-bottom:24px}
+.login-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.login-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.login-label{font-size:10px;font-weight:700;color:#3a6090;letter-spacing:.1em;text-transform:uppercase}
+.login-input{background:#070f1c;border:1px solid #1a3050;border-radius:8px;padding:9px 12px;color:#d0dce8;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
+.login-input:focus{border-color:#c93428}
+.login-select{appearance:none;background:#070f1c url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%233a6090'/%3E%3C/svg%3E") no-repeat right 10px center;border:1px solid #1a3050;border-radius:8px;padding:9px 28px 9px 12px;color:#d0dce8;font-size:13px;font-family:inherit;outline:none;width:100%;cursor:pointer;transition:border-color .15s}
+.login-select:focus{border-color:#c93428}
+.login-btn{width:100%;margin-top:8px;padding:12px;border-radius:10px;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:13px;font-weight:700;border:none;cursor:pointer;letter-spacing:.04em;transition:filter .15s}
+.login-btn:hover{filter:brightness(1.15)}
+.login-err{font-size:11px;color:#ef4444;margin-top:8px;min-height:16px;text-align:center}
 </style>
 </head>
 <body>
+
+<!-- Login overlay -->
+<div class="login-overlay" id="login-overlay">
+  <div class="login-box">
+    <div class="login-logo">
+      <svg viewBox="0 0 100 100" width="36" height="36"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
+      <div class="login-logo-name">FortiCNAPP<br>Rapid Cloud Assessment</div>
+    </div>
+    <div class="login-title">Welcome</div>
+    <div class="login-sub">Please identify yourself to access the dashboard</div>
+    <div class="login-row">
+      <div class="login-field">
+        <div class="login-label">First Name</div>
+        <input class="login-input" id="li-first" type="text" placeholder="Jane" autocomplete="given-name"/>
+      </div>
+      <div class="login-field">
+        <div class="login-label">Last Name</div>
+        <input class="login-input" id="li-last" type="text" placeholder="Smith" autocomplete="family-name"/>
+      </div>
+    </div>
+    <div class="login-field">
+      <div class="login-label">Company</div>
+      <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
+    </div>
+    <div class="login-field">
+      <div class="login-label">Role</div>
+      <select class="login-select" id="li-role">
+        <option value="" disabled selected>Select your role…</option>
+        <option>CISO / Security Leader</option>
+        <option>Security Architect</option>
+        <option>Cloud Engineer</option>
+        <option>DevSecOps</option>
+        <option>IT Manager</option>
+        <option>Sales / PreSales</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div class="login-field">
+      <div class="login-label">Email</div>
+      <input class="login-input" id="li-email" type="email" placeholder="jane.smith@acme.com" autocomplete="email"/>
+    </div>
+    <button class="login-btn" onclick="submitLogin()">Access Dashboard</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
 <div class="app-layout">
 
 <!-- Sidebar -->
@@ -1053,7 +1116,34 @@ function updateRiskScore(riskScore){
   });
 }
 
-load();
+// ── Login ─────────────────────────────────────────────────────────────────────
+(function checkLogin(){
+  const s=sessionStorage.getItem('rca_user');
+  if(s){
+    document.getElementById('login-overlay').style.display='none';
+    load();
+  }
+})();
+
+function submitLogin(){
+  const first=document.getElementById('li-first').value.trim();
+  const last=document.getElementById('li-last').value.trim();
+  const company=document.getElementById('li-company').value.trim();
+  const role=document.getElementById('li-role').value;
+  const email=document.getElementById('li-email').value.trim();
+  const err=document.getElementById('login-err');
+  if(!first||!last){err.textContent='Please enter your first and last name.';return;}
+  if(!company){err.textContent='Please enter your company name.';return;}
+  if(!role){err.textContent='Please select your role.';return;}
+  if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){err.textContent='Please enter a valid email address.';return;}
+  err.textContent='';
+  sessionStorage.setItem('rca_user',JSON.stringify({first,last,company,role,email}));
+  document.getElementById('login-overlay').style.display='none';
+  load();
+}
+
+document.getElementById('li-email').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
+
 setInterval(load,REFRESH*1000);
 setInterval(()=>{
   cd=Math.max(0,cd-1);
