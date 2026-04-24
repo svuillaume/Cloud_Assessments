@@ -1005,8 +1005,21 @@ function nav(name){
 
 let _lastData=null;
 
+// Penalty-based posture score — mirrors CSA report MultiCloud formula (0–10, higher = better)
+function calcPostureScore(d){
+  const nAlerts=(d.alerts||[]).length;
+  const nVulns =(d.vulns ||[]).length;
+  const nComp  =(d.compliance||[]).length;
+  const nAdmin =(d.identities||[]).length;
+  const pAlerts=Math.min(nAlerts/10,1)*1.5;
+  const pVuln  =Math.min(nVulns /15,1)*2.5;
+  const pComp  =Math.min(nComp  /10,1)*1.5;
+  const pAdmin =Math.min(nAdmin /30,1)*2.5;
+  return Math.max(0,10-(pAlerts+pVuln+pComp+pAdmin));
+}
+
 function renderRiskFindings(d){
-  const p=Math.max(0,(100-(d.riskScore??0))/10);
+  const p=calcPostureScore(d);
   const color=p>=9?'var(--ok)':p>=5?'var(--me)':'var(--cr)';
   const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
   const rn=document.getElementById('rf-num');rn.textContent=p.toFixed(1);rn.style.color=color;
@@ -1033,7 +1046,7 @@ function renderRiskFindings(d){
 }
 
 function renderLab(d){
-  const p=Math.max(0,(100-(d.riskScore??0))/10);
+  const p=calcPostureScore(d);
   const color=p>=9?'var(--ok)':p>=5?'var(--me)':'var(--cr)';
   const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
   const ls=document.getElementById('lab-score');ls.textContent=p.toFixed(1);ls.style.color=color;
@@ -1064,7 +1077,7 @@ async function load(){
     renderVulns(d.vulns,d.errors?.vulns);
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
-    updateRiskScore(d.riskScore??0);
+    updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
     buildPie(d);
@@ -1108,8 +1121,7 @@ async function load(){
   }
 })();
 
-function updateRiskScore(riskScore){
-  const p=Math.max(0,(100-riskScore)/10);
+function updateRiskScore(p){
   // green=great → red=poor
   const color=p>=9?'#22c55e':p>=5?'#f59e0b':'#ef4444';
   const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';

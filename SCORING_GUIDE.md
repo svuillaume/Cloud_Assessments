@@ -1,6 +1,6 @@
 <div align="center">
 
-Both tools share the same three-stage maturity model on a unified **0–10 scale**.
+Both tools share the **same formula and three-stage maturity model** on a unified **0–10 scale**.
 
 | Stage      | Score (0–10) | Color  |
 |------------|-------------|--------|
@@ -10,11 +10,26 @@ Both tools share the same three-stage maturity model on a unified **0–10 scale
 
 ---
 
-## Dashboard Risk Score (source of truth)
+## MultiCloud Posture Score (shared formula — dashboard gauge & CSA report)
 
-`posture = 100 − riskScore`  →  stage derived from posture %
+Both the dashboard gauge and the CSA report MultiCloud gauge use the same penalty-based formula:
 
-### Formula
+```
+posture_score = max(10.0 − (p_comp + p_vuln + p_admin + p_alerts), 0)
+```
+
+| Variable | Formula | Max penalty | Saturates at |
+|----------|---------|-------------|-------------|
+| `p_comp`   | `min(critical_compliance / 10, 1) × 1.5` | 1.5 pts | 10 critical findings |
+| `p_vuln`   | `min(critical_vulns / 15, 1) × 2.5`      | 2.5 pts | 15 critical CVEs     |
+| `p_admin`  | `min(admin_no_mfa / 30, 1) × 2.5`        | 2.5 pts | 30 admin w/o MFA     |
+| `p_alerts` | `min(critical_alerts / 10, 1) × 1.5`     | 1.5 pts | 10 critical alerts   |
+
+> 💡 The CSA report adds a `p_secrets` penalty (up to 2.0 pts) for secrets in insecure paths. The dashboard does not fetch secrets data, so this term is omitted there.
+
+### Legacy Dashboard Risk Score (internal, not shown in gauge)
+
+The server still computes a `riskScore` (0–100) for internal use:
 
 ```
 topIdent = max(identity.METRICS.risk_score) × 100   # Lacework 0-1 → 0-100  (60%)
@@ -23,12 +38,6 @@ alertPts = min(criticalAlerts × 3, 15)              # urgency boost          (1
 
 riskScore = min(100, round(topIdent × 0.60 + topCve × 0.25 + alertPts))
 ```
-
-| Input | Source field | Weight | Rationale |
-|-------|-------------|--------|-----------|
-| Highest identity risk | `METRICS.risk_score` | **60%** | Majority of breaches start with compromised identity |
-| Highest CVE risk | `vuln.riskScore` (CVSS) | **25%** | Attack surface / exploitability signal |
-| Critical alert count | alert count × 3, capped 15 pt | **15%** | Urgency: active unresolved threats |
 
 ---
 
