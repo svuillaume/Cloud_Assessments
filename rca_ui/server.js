@@ -738,7 +738,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       </defs>
       <g id="gauge-ticks"></g>
       <text id="gauge-txt" x="100" y="112" text-anchor="middle" font-size="14" font-weight="800" letter-spacing="2" fill="white" font-family="-apple-system,Inter,sans-serif">—</text>
-      <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">RISK SCORE</text>
+      <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">/ 10</text>
     </svg>
     <div class="rs-band" id="rs-band">—</div>
   </div>
@@ -985,9 +985,9 @@ function nav(name){
 
 let _lastData=null;
 
-// Risk score: 0 = best posture, 10 = highest risk (lower is better)
-// Mirrors CSA report MultiCloud penalty formula, normalized to 0–10
-function calcRiskScore(d){
+// Posture score: 10 = best, 0 = worst (higher is better)
+// Penalty-based, normalized to 0–10
+function calcPostureScore(d){
   const nAlerts=(d.alerts||[]).length;
   const nVulns =(d.vulns ||[]).length;
   const nComp  =(d.compliance||[]).length;
@@ -997,13 +997,14 @@ function calcRiskScore(d){
   const pComp  =Math.min(nComp  /10,1)*1.5;
   const pAdmin =Math.min(nAdmin /30,1)*2.5;
   // max penalty without secrets = 8; normalize to 0–10
-  return parseFloat(Math.min(10,(pAlerts+pVuln+pComp+pAdmin)/8*10).toFixed(1));
+  return parseFloat(Math.max(0, 10-(pAlerts+pVuln+pComp+pAdmin)/8*10).toFixed(1));
 }
-function scoreColor(r){return r<2?'#22c55e':r<5?'#3b82f6':r<8?'#f59e0b':'#ef4444';}
-function scoreBand(r){return r<2?'Strong Security Posture':r<5?'Stable Security Posture':r<8?'Improvement Opportunities Identified':'Priority Attention Recommended';}
+// 0–1.9 Red · 2–4.9 Orange · 5–7.9 Blue · 8–10 Green
+function scoreColor(p){return p>=8?'#22c55e':p>=5?'#3b82f6':p>=2?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=8?'Strong Security Posture':p>=5?'Stable Security Posture':p>=2?'Improvement Opportunities Identified':'Priority Attention Recommended';}
 
 function renderRiskFindings(d){
-  const p=calcRiskScore(d);
+  const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
   const rn=document.getElementById('rf-num');rn.textContent=p.toFixed(1);rn.style.color=color;
@@ -1030,7 +1031,7 @@ function renderRiskFindings(d){
 }
 
 function renderLab(d){
-  const p=calcRiskScore(d);
+  const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p.toFixed(1);ls.style.color=color;
@@ -1061,7 +1062,7 @@ async function load(){
     renderVulns(d.vulns,d.errors?.vulns);
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
-    updateRiskScore(calcRiskScore(d));
+    updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
     buildPie(d);
@@ -1105,12 +1106,12 @@ async function load(){
   }
 })();
 
-function updateRiskScore(risk){
-  const color=scoreColor(risk);
-  const band=scoreBand(risk);
+function updateRiskScore(p){
+  const color=scoreColor(p);
+  const band=scoreBand(p);
   document.getElementById('rs-band').textContent=band;
-  const t=document.getElementById('gauge-txt');t.textContent=risk.toFixed(1);t.setAttribute('fill',color);
-  const N=36,fill=Math.round(risk/10*N);
+  const t=document.getElementById('gauge-txt');t.textContent=p.toFixed(1);t.setAttribute('fill',color);
+  const N=36,fill=Math.round(p/10*N);
   document.querySelectorAll('.gtick').forEach((tk,i)=>{
     const lit=i<=fill;
     tk.setAttribute('stroke',lit?color:'#1e3450');

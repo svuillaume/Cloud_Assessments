@@ -8,19 +8,19 @@ Both tools share the **same risk score model** on a unified **0–10 scale** —
 
 | Score (0–10) | Security Posture | Color |
 |:------------:|------------------|:-----:|
-| 0.0 – 1.9 | Strong Security Posture | 🟢 Green |
-| 2.0 – 4.9 | Stable Security Posture | 🔵 Blue |
-| 5.0 – 7.9 | Improvement Opportunities Identified | 🟠 Orange |
-| 8.0 – 10.0 | Priority Attention Recommended | 🔴 Red |
+| 0.0 – 1.9 | Priority Attention Recommended | 🔴 Red |
+| 2.0 – 4.9 | Improvement Opportunities Identified | 🟠 Orange |
+| 5.0 – 7.9 | Stable Security Posture | 🔵 Blue |
+| 8.0 – 10.0 | Strong Security Posture | 🟢 Green |
 
 ### Guidance
 
-- **Green** — Strong controls and mature security practices are in place.
-- **Blue** — Good overall posture with areas to continue improving.
-- **Orange** — Meaningful opportunities exist to strengthen controls and reduce risk.
 - **Red** — Immediate focus is recommended to address higher-risk findings quickly.
+- **Orange** — Meaningful opportunities exist to strengthen controls and reduce risk.
+- **Blue** — Good overall posture with areas to continue improving.
+- **Green** — Strong controls and mature security practices are in place.
 
-> 📐 **Lower score = better posture.** A score of 0 means no penalty-triggering findings. A score of 10 means all inputs are fully saturated.
+> 📐 **Higher score = better posture.** A score of 10 means no penalty-triggering findings. A score of 0 means all inputs are fully saturated.
 
 ---
 

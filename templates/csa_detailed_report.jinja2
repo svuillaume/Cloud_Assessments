@@ -1079,22 +1079,19 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {# ── Mini semicircle gauge for per-CSP posture ──
    brand_color: optional override — uses score-based colour when omitted #}
 {% macro csp_mini_gauge(label, score, brand_color=None) -%}
-{%- set _risk = 10.0 - score -%}
-{%- if _risk < 2 -%}{%- set gl = 'Strong Security Posture' -%}
-{%- elif _risk < 5 -%}{%- set gl = 'Stable Security Posture' -%}
-{%- elif _risk < 8 -%}{%- set gl = 'Improvement Opportunities' -%}
+{%- if score >= 8 -%}{%- set gl = 'Strong Security Posture' -%}
+{%- elif score >= 5 -%}{%- set gl = 'Stable Security Posture' -%}
+{%- elif score >= 2 -%}{%- set gl = 'Improvement Opportunities' -%}
 {%- else -%}{%- set gl = 'Priority Attention' -%}
 {%- endif -%}
-{%- if brand_color -%}
-  {%- set gc = brand_color -%}
-{%- elif _risk < 2 -%}
+{%- if score >= 8 -%}
   {%- set gc = '#22c55e' -%}
-{%- elif _risk < 5 -%}
+{%- elif score >= 5 -%}
   {%- set gc = '#3b82f6' -%}
-{%- elif _risk < 8 -%}
-  {%- set gc = '#CC7A00' -%}
+{%- elif score >= 2 -%}
+  {%- set gc = '#f59e0b' -%}
 {%- else -%}
-  {%- set gc = '#DA291C' -%}
+  {%- set gc = '#ef4444' -%}
 {%- endif -%}
 {%- set _af = (score / 10.0) * 235.6 -%}
 <svg viewBox="0 0 220 148" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:220px;display:block;margin:0 auto;">
@@ -1102,8 +1099,8 @@ Host workload — assess network exposure; check if publicly routable or in a DM
   <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="#EBEBEB" stroke-width="16" stroke-linecap="round"/>
   <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="{{ gc }}" stroke-width="22" stroke-linecap="round" stroke-dasharray="{{ _af }} 1000" opacity="0.18"/>
   <path d="M 35,118 A 75,75 0 0,1 185,118" fill="none" stroke="{{ gc }}" stroke-width="16" stroke-linecap="round" stroke-dasharray="{{ _af }} 1000"/>
-  <text x="110" y="99" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="36" font-weight="800" letter-spacing="-1" fill="{{ gc }}">{{ _risk | round(1) }}</text>
-  <text x="110" y="114" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="9" fill="#AAAAAA">risk score</text>
+  <text x="110" y="99" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="36" font-weight="800" letter-spacing="-1" fill="{{ gc }}">{{ score | round(1) }}</text>
+  <text x="110" y="114" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="9" fill="#AAAAAA">/ 10</text>
   <text x="110" y="133" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" font-weight="700" letter-spacing="1.5" fill="{{ gc }}">{{ gl }}</text>
   <text x="27"  y="130" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" fill="#C0C0C0">0</text>
   <text x="193" y="130" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="8" fill="#C0C0C0">10</text>
@@ -1164,11 +1161,11 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {% set _score_gcp   = [10.0 - (([_gcp_cc   / 10.0, 1.0] | min) * 6.0) - (([_gcp_ac   / 30.0, 1.0] | min) * 4.0), 0.0] | max %}
 {% set _avg_csp_score = (_score_aws + _score_azure + _score_gcp) / 3.0 %}
 
-{# Global gauge colours — risk score (lower = better) #}
-{% if _risk_score < 2 %}{% set _g_color = '#22c55e' %}{% set _g_label = 'Strong Security Posture' %}
-{% elif _risk_score < 5 %}{% set _g_color = '#3b82f6' %}{% set _g_label = 'Stable Security Posture' %}
-{% elif _risk_score < 8 %}{% set _g_color = '#CC7A00' %}{% set _g_label = 'Improvement Opportunities Identified' %}
-{% else %}{% set _g_color = '#DA291C' %}{% set _g_label = 'Priority Attention Recommended' %}{% endif %}
+{# Global gauge colours — posture score (higher = better) #}
+{% if posture_score >= 8 %}{% set _g_color = '#22c55e' %}{% set _g_label = 'Strong Security Posture' %}
+{% elif posture_score >= 5 %}{% set _g_color = '#3b82f6' %}{% set _g_label = 'Stable Security Posture' %}
+{% elif posture_score >= 2 %}{% set _g_color = '#f59e0b' %}{% set _g_label = 'Improvement Opportunities Identified' %}
+{% else %}{% set _g_color = '#ef4444' %}{% set _g_label = 'Priority Attention Recommended' %}{% endif %}
 
 {% set _pi = 3.14159 %}
 {% set _gr = 140 %}
@@ -1194,8 +1191,8 @@ Host workload — assess network exposure; check if publicly routable or in a DM
     <div style="display:flex; align-items:center; justify-content:center; gap:4rem; flex:1; margin:2rem 0; flex-wrap:wrap;">
         <div style="display:flex; flex-direction:column; align-items:center; gap:0.8rem; flex-shrink:0;">
             <div style="width:160px; height:160px; border-radius:50%; background:rgba(255,255,255,0.08); border:3px solid {{ _g_color }}; display:flex; flex-direction:column; align-items:center; justify-content:center; box-shadow:0 0 40px {{ _g_color }}44, inset 0 1px 0 rgba(255,255,255,0.1);">
-                <span style="font-size:3.6rem; font-weight:800; color:{{ _g_color }}; letter-spacing:-2px; line-height:1;">{{_risk_score | round(1)}}</span>
-                <span style="font-size:0.62rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase; color:white;">risk score</span>
+                <span style="font-size:3.6rem; font-weight:800; color:{{ _g_color }}; letter-spacing:-2px; line-height:1;">{{posture_score | round(1)}}</span>
+                <span style="font-size:0.62rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase; color:white;">/ 10</span>
             </div>
             <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center; color:white;">
                 {% if aws_compliance_data and azure_compliance_data and gcp_compliance_data %}MultiCloud{% elif aws_compliance_data and azure_compliance_data %}AWS &amp; Azure{% elif aws_compliance_data and gcp_compliance_data %}AWS &amp; GCP{% elif azure_compliance_data and gcp_compliance_data %}Azure &amp; GCP{% elif aws_compliance_data %}Amazon Web Services{% elif azure_compliance_data %}Microsoft Azure{% elif gcp_compliance_data %}Google Cloud Platform{% else %}Cloud{% endif %}<br>Cloud Security Posture Score</div>
@@ -1280,10 +1277,10 @@ Host workload — assess network exposure; check if publicly routable or in a DM
         </tr>
       </thead>
       <tbody>
-        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">0.0 – 1.9</td><td style="padding:5px 14px 5px 0;">Strong Security Posture</td><td><span style="background:#22c55e22; color:#16a34a; border:1px solid #22c55e55; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Green</span></td></tr>
-        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">2.0 – 4.9</td><td style="padding:5px 14px 5px 0;">Stable Security Posture</td><td><span style="background:#3b82f622; color:#1d4ed8; border:1px solid #3b82f655; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Blue</span></td></tr>
-        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">5.0 – 7.9</td><td style="padding:5px 14px 5px 0;">Improvement Opportunities Identified</td><td><span style="background:#f59e0b22; color:#b45309; border:1px solid #f59e0b55; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Orange</span></td></tr>
-        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">8.0 – 10.0</td><td style="padding:5px 14px 5px 0;">Priority Attention Recommended</td><td><span style="background:#ef444422; color:#b91c1c; border:1px solid #ef444455; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Red</span></td></tr>
+        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">0.0 – 1.9</td><td style="padding:5px 14px 5px 0;">Priority Attention Recommended</td><td><span style="background:#ef444422; color:#b91c1c; border:1px solid #ef444455; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Red</span></td></tr>
+        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">2.0 – 4.9</td><td style="padding:5px 14px 5px 0;">Improvement Opportunities Identified</td><td><span style="background:#f59e0b22; color:#b45309; border:1px solid #f59e0b55; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Orange</span></td></tr>
+        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">5.0 – 7.9</td><td style="padding:5px 14px 5px 0;">Stable Security Posture</td><td><span style="background:#3b82f622; color:#1d4ed8; border:1px solid #3b82f655; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Blue</span></td></tr>
+        <tr><td style="padding:5px 14px 5px 0; white-space:nowrap; color:#555;">8.0 – 10.0</td><td style="padding:5px 14px 5px 0;">Strong Security Posture</td><td><span style="background:#22c55e22; color:#16a34a; border:1px solid #22c55e55; border-radius:4px; padding:2px 8px; font-size:0.68rem; font-weight:700;">● Green</span></td></tr>
       </tbody>
     </table>
   </div>
