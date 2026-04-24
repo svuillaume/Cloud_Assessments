@@ -97,6 +97,18 @@ async function post(path, body) {
   return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
 }
 
+async function get(path) {
+  const tok = await ensureToken();
+  const { status, body: resp } = await request(
+    'GET', LW_ACCOUNT, `/api/v2/${path}`,
+    { Authorization: `Bearer ${tok}` }, null,
+  );
+  if (status === 204) return null;
+  if (status !== 200 && status !== 201)
+    throw new Error(`GET ${path} → HTTP ${status}: ${JSON.stringify(resp).slice(0, 200)}`);
+  return resp;
+}
+
 
 function timeFmt(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
 
@@ -138,8 +150,10 @@ async function fetchVulns() {
 
 // ── 3. Top Critical Non-Compliance ───────────────────────────────────────────
 // Policies API returns LQL queryText per policy. Execute the top Critical
-function policyCloud(s) {
-  const u = (s || '').toUpperCase();
+// compliance policies and count returned rows as violations.
+
+function policyCloud(id) {
+  const u = (id || '').toUpperCase();
   if (u.includes('AWS')) return 'aws';
   if (u.includes('AZURE') || u.includes('AZ_')) return 'azure';
   if (u.includes('GCP') || u.includes('GOOGLE')) return 'gcp';
@@ -147,38 +161,58 @@ function policyCloud(s) {
 }
 
 async function fetchCompliance() {
-  // Fetch open critical/high alerts that are policy or compliance type
-  let rows = [];
+  // Step 1 — get Critical compliance policy definitions
+  let policies = [];
   try {
-    rows = await post('Alerts/search', {
-      timeFilter: timeFilter(),
-      filters: [{ field: 'severity', expression: 'in', value: ['Critical', 'High'] }],
-      paging: { rows: 100 },
-    });
+    const resp = await get('Policies');
+    const all  = Array.isArray(resp?.data) ? resp.data : [];
+    const sevOk = s => ['critical','high'].includes((s||'').toLowerCase());
+    policies = all.filter(p =>
+      p.policyType === 'Compliance' && sevOk(p.severity) &&
+      p.enabled !== false && p.queryText,
+    )
+    // Critical first, then High; cap at 15
+    .sort((a, b) => {
+      const rank = s => s?.toLowerCase() === 'critical' ? 0 : 1;
+      return rank(a.severity) - rank(b.severity);
+    })
+    .slice(0, 15);
+    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, evaluating ${policies.length} critical`);
   } catch (e) {
-    console.log(`  [compliance/Alerts] ${e.message.slice(0, 120)}`);
+    console.log(`  [compliance/Policies] ${e.message.slice(0,120)}`);
     return [];
   }
 
-  const findings = rows
-    .filter(r => {
-      if ((r.status || '').toLowerCase() === 'closed') return false;
-      const type = (r.alertType || '').toLowerCase();
-      return type.includes('policy') || type.includes('compliance');
-    })
-    .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
-    .slice(0, 10)
-    .map(r => ({
-      alertId:     r.alertId,
-      cloud:       policyCloud(r.alertName || r.alertType || ''),
-      policyId:    r.policyId || '—',
-      title:       r.alertName || '—',
-      description: (r.alertInfo?.description || '').replace(/\s+/g, ' ').trim(),
-      severity:    r.severity || 'Critical',
-    }));
+  // Step 2 — execute sequentially to stay within rate limits
+  const findings = [];
+  const tf2 = timeFilter();
+  for (const p of policies) {
+    try {
+      const rows = await post('Queries/execute', {
+        query: { queryText: p.queryText },
+        arguments: [
+          { name: 'StartTimeRange', value: tf2.startTime },
+          { name: 'EndTimeRange',   value: tf2.endTime   },
+        ],
+      });
+      console.log(`  [compliance] ${p.policyId} → ${rows.length} rows`);
+      if (rows.length) findings.push({
+        cloud:      policyCloud(p.queryId || p.policyId),
+        id:         p.policyId,
+        title:      p.title || p.policyId,
+        severity:   'Critical',
+        violations: rows.length,
+      });
+    } catch (e) {
+      console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
+      if (e.message.includes('429')) await new Promise(r => setTimeout(r, 5000));
+    }
+    if (findings.length >= 10) break;
+    await new Promise(r => setTimeout(r, 1200)); // throttle: 1.2s between queries
+  }
 
-  console.log(`  [compliance] ${findings.length} policy/compliance alerts`);
-  return findings;
+  console.log(`  [compliance] ${findings.length} policies with violations`);
+  return findings.sort((a, b) => b.violations - a.violations);
 }
 
 // ── 4. Identities — POST /api/v2/Queries/execute (LQL) ───────────────────────
@@ -681,11 +715,42 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
   <div class="pie-section">
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;width:100%;background:var(--border);border-radius:12px;overflow:hidden;border:1px solid var(--border)">
-      <div style="background:#fff;padding:18px 20px;cursor:pointer" onclick="nav('alerts')"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#ef4444;margin-bottom:6px">Critical Alerts</div><div style="font-size:32px;font-weight:900;color:#0f172a;line-height:1" id="ov-a">—</div></div>
-      <div style="background:#fff;padding:18px 20px;cursor:pointer" onclick="nav('vulns')"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#f97316;margin-bottom:6px">Critical CVEs</div><div style="font-size:32px;font-weight:900;color:#0f172a;line-height:1" id="ov-v">—</div></div>
-      <div style="background:#fff;padding:18px 20px;cursor:pointer" onclick="nav('identities')"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#8b5cf6;margin-bottom:6px">Risky Identities</div><div style="font-size:32px;font-weight:900;color:#0f172a;line-height:1" id="ov-i">—</div></div>
-      <div style="background:#fff;padding:18px 20px;cursor:pointer" onclick="nav('compliance')"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#d97706;margin-bottom:6px">Non-Compliance</div><div style="font-size:32px;font-weight:900;color:#0f172a;line-height:1" id="ov-c">—</div></div>
+    <div style="text-align:center;line-height:1.3">
+      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
+    </div>
+    <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
+      <defs>
+        <!-- Gradient: Red→Orange→Green (higher score = better posture)
+             Band boundaries: p=50→50%  p=80→90.5% of gradient width -->
+        <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
+          <stop offset="0%"    stop-color="#ef4444"/>
+          <stop offset="50%"   stop-color="#ef4444"/>
+          <stop offset="50%"   stop-color="#f59e0b"/>
+          <stop offset="90.5%" stop-color="#f59e0b"/>
+          <stop offset="90.5%" stop-color="#22c55e"/>
+          <stop offset="100%"  stop-color="#22c55e"/>
+        </linearGradient>
+      </defs>
+      <!-- Grey background track -->
+      <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+            d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <!-- Coloured fill arc (gradient, grows with score) -->
+      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
+            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <!-- White divider ticks at band boundaries 50 / 80 -->
+      <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <!-- Band description label -->
+      <text id="gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
+            letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+    </svg>
+    <div class="rs-band" id="rs-band" style="display:none">—</div>
+    <!-- Findings summary below gauge -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-top:4px;font-size:12px;min-width:200px">
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="color:#475569">Alerts</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-a">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#f97316;flex-shrink:0"></div><span style="color:#475569">CVEs</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-v">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#8b5cf6;flex-shrink:0"></div><span style="color:#475569">Identities</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-i">—</span></div>
+      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#d97706;flex-shrink:0"></div><span style="color:#475569">Compliance</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-c">—</span></div>
     </div>
   </div>
   <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#94a3b8;font-style:italic">Aiming towards a better, more secure cloud posture</div>
@@ -748,9 +813,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="view" id="view-risk">
   <div style="text-align:center;padding:20px 32px 8px;background:#fff;border-bottom:1px solid var(--border)">
     <div style="font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Fortinet Cloud Risk IQ</div>
-    <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:400px;overflow:visible;margin:0 auto">
+    <svg id="rf-gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:400px;overflow:visible;margin:0 auto">
       <defs>
-        <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
+        <linearGradient id="rf-band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
           <stop offset="50%"   stop-color="#ef4444"/>
           <stop offset="50%"   stop-color="#f59e0b"/>
@@ -761,11 +826,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </defs>
       <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
             d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
+      <path id="rf-gauge-arc" fill="none" stroke="url(#rf-band-grad)" stroke-width="34" stroke-linecap="round"
             stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
       <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
       <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <text id="gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
+      <text id="rf-gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
             letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
     </svg>
   </div>
@@ -893,19 +958,16 @@ function renderVulns(rows,err){
 function renderCompliance(rows,err){
   if(err){state('body-c','',err);return}
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
-  if(!rows.length){state('body-c','','No critical compliance alerts');return}
-  const baseC='https://'+(_lastData?.account||'');
-  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Cloud</th><th>Alert</th><th>Description</th><th>Severity</th></tr></thead><tbody>'
-    +rows.map(r=>{
-      const href=baseC+'/ui/investigation/alerts/'+r.alertId;
-      return '<tr class="'+strip(r.severity)+'">'
-        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'—')+'</a></td>'
-        +'<td>'+cloud(r.cloud)+'</td>'
-        +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
-        +'<td class="p" title="'+e(r.description)+'">'+e(r.description||'—')+'</td>'
-        +'<td>'+sev(r.severity)+'</td>'
-      +'</tr>';
-    }).join('')+'</tbody></table></div>');
+  if(!rows.length){state('body-c','','No critical compliance violations');return}
+  const baseC='https://'+(_lastData?.account||'')+'/ui/compliance';
+  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Cloud</th><th>Title</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
+    +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
+      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.id||'—')+'</a></td>'
+      +'<td>'+cloud(r.cloud)+'</td>'
+      +'<td class="p" title="'+e(r.title)+'"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
+      +'<td>'+sev(r.severity)+'</td>'
+      +'<td class="r">'+e(r.violations||0)+'</td>'
+    +'</tr>').join('')+'</tbody></table></div>');
 }
 
 function renderIdentities(rows,err){
@@ -1041,6 +1103,10 @@ function updateRiskScore(p){
   if(arc){arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
   const gb=document.getElementById('gauge-band');
   if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
+  const rfa=document.getElementById('rf-gauge-arc');
+  if(rfa){rfa.setAttribute('stroke-dasharray',fill+' '+arcLen);}
+  const rfb=document.getElementById('rf-gauge-band');
+  if(rfb){rfb.textContent=band;rfb.setAttribute('fill',color);}
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────

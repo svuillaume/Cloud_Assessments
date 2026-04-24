@@ -1871,60 +1871,53 @@
     ],
     "compliance": [
         {
-            "alertId": 3110487,
-            "cloud": "azure",
-            "policyId": "fortinetcanadademo-default-15",
+            "cloud": "cloud",
+            "id": "fortinetcanadademo-default-15",
             "title": "Azure Resource Out of Canada",
-            "description": "Alert on which Virtual Machines are deployed outside of Canadian Regions",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 155
         },
         {
-            "alertId": 3110341,
             "cloud": "cloud",
-            "policyId": "fortinetcanadademo-default-14",
+            "id": "fortinetcanadademo-default-14",
             "title": "Data Residency based on Country of Origin",
-            "description": "Detects resources storing or processing data outside the approved country-of-origin region",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 96
         },
         {
-            "alertId": 3108992,
             "cloud": "azure",
-            "policyId": "lacework-global-1085",
-            "title": "Use locked immutability policies for Storage Accounts Blobs",
-            "description": "Ensure Storage Account Blob containers have time-based retention policies in locked immutable state",
-            "severity": "Critical"
+            "id": "lacework-global-1085",
+            "title": "Use locked immutability policies for Storage Accounts Blobs with business critical data",
+            "severity": "Critical",
+            "violations": 84
         },
         {
-            "alertId": 3108847,
             "cloud": "cloud",
-            "policyId": "fortinetcanadademo-default-13",
+            "id": "fortinetcanadademo-default-13",
             "title": "Samv Resource Out of Canada",
-            "description": "Identifies resources allocated outside of permitted Canadian geographic boundaries",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 59
         },
         {
-            "alertId": 3107102,
             "cloud": "cloud",
-            "policyId": "fortinetcanadademo-default-5",
+            "id": "fortinetcanadademo-default-5",
             "title": "Ensure no security groups allow ingress from 0.0.0.0/0 to web servers",
-            "description": "Security groups should not allow unrestricted inbound access on web server ports (80/443) from any IP address",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 12
         },
         {
-            "alertId": 3106833,
             "cloud": "azure",
-            "policyId": "lacework-global-1069",
+            "id": "lacework-global-1069",
             "title": "Enable immutability for Recovery Services vaults",
-            "description": "Recovery Services vaults should have immutability enabled to protect backup data from deletion or modification",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 4
         },
         {
-            "alertId": 3104571,
             "cloud": "aws",
-            "policyId": "lacework-global-1168",
+            "id": "lacework-global-1168",
             "title": "Security groups should not allow unrestricted access to Telnet (port 23)",
-            "description": "Ensure AWS security groups do not allow inbound traffic from 0.0.0.0/0 on TCP port 23 (Telnet)",
-            "severity": "Critical"
+            "severity": "Critical",
+            "violations": 2
         }
     ],
     "identities": [
