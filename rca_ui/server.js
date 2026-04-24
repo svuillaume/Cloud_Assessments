@@ -814,7 +814,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
     <div class="rf-pos-meta">
       <div class="rf-pos-lbl">RiskIQ Score</div>
       <div class="rf-pos-band" id="rf-band">—</div>
-      <div class="rf-pos-sub">Higher is better &nbsp;·&nbsp; 0–100 scale</div>
+      <div class="rf-pos-sub">Lower is better &nbsp;·&nbsp; 0–100 risk scale</div>
     </div>
   </div>
   <div class="rf-kpis">
@@ -994,8 +994,8 @@ function nav(name){
 
 let _lastData=null;
 
-// RiskIQ Score: 0–100, higher = better. Max combined penalty = 9.0.
-// Formula: posture = round((1 − penalty/9) × 100)
+// RiskIQ Score: 0–100, lower = better (risk score — more findings → higher score).
+// Formula: score = round((penalty / 9) × 100)
 function calcPostureScore(d){
   const nVulns  =(d.vulns||[]).length;
   const nCvss10 =(d.vulns||[]).filter(v=>parseFloat(v.riskScore||0)>=9.95).length;
@@ -1007,11 +1007,11 @@ function calcPostureScore(d){
                 +Math.min(nAdmin/30, 1)*2.5
                 +Math.min(nAlerts/10,1)*1.5
                 +Math.min(nComp/10,  1)*1.0;
-  return Math.round(Math.max(0,(1-penalty/9)*100));
+  return Math.round(Math.min(100,(penalty/9)*100));
 }
-// 0–19 Red · 20–49 Orange · 50–79 Blue · 80–100 Green  (0–100 scale, higher=better)
-function scoreColor(p){return p>=80?'#22c55e':p>=50?'#3b82f6':p>=20?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=80?'Proactive Security':p>=50?'Progressing Security':p>=20?'Some Attention Needed':'Immediate Attention Needed';}
+// 0–19 Green · 20–49 Blue · 50–79 Orange · 80–100 Red  (lower = less risk = better)
+function scoreColor(p){return p<20?'#22c55e':p<50?'#3b82f6':p<80?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p<20?'Proactive Security':p<50?'Progressing Security':p<80?'Some Attention Needed':'Immediate Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
@@ -1111,8 +1111,8 @@ async function load(){
   var bg=document.createElementNS(NS,'path');
   bg.setAttribute('d',arc(START,START+SWEEP,RO,RI));bg.setAttribute('fill','#e5e7eb');
   document.getElementById('gauge-bands').appendChild(bg);
-  // colored bands: 0-19 Red, 20-49 Orange, 50-79 Blue, 80-100 Green
-  [{lo:0,hi:20,c:'#ef4444'},{lo:20,hi:50,c:'#f59e0b'},{lo:50,hi:80,c:'#3b82f6'},{lo:80,hi:100,c:'#22c55e'}].forEach(function(b){
+  // colored bands: 0-19 Green (low risk), 20-49 Blue, 50-79 Orange, 80-100 Red (high risk)
+  [{lo:0,hi:20,c:'#22c55e'},{lo:20,hi:50,c:'#3b82f6'},{lo:50,hi:80,c:'#f59e0b'},{lo:80,hi:100,c:'#ef4444'}].forEach(function(b){
     var sd=START+(b.lo/100)*SWEEP,ed=START+(b.hi/100)*SWEEP;
     var el=document.createElementNS(NS,'path');
     el.setAttribute('d',arc(sd,ed,RO,RI));el.setAttribute('fill',b.c);el.setAttribute('opacity','0.88');
