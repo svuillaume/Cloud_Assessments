@@ -12,9 +12,9 @@ Both tools (Live Dashboard and CSA Report) share the same **Fortinet Cloud Risk 
 
 | Score (0–100) | Security Posture | Color |
 |:-------------:|------------------|:-----:|
-| 0 – 49 | Proactive Security | 🟢 Green |
+| 80 – 100 | Proactive Security | 🟢 Green |
 | 50 - 79 | Ongoing Security Posture  | 🟠 Orange |
-|79 – 100 |  Attention Needed | 🔴 Red |
+|0 – 49 |  Attention Needed | 🔴 Red |
 
 ### Guidance
 
