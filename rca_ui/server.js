@@ -724,11 +724,32 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
     </div>
     <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
-      <path id="gauge-track" fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+      <defs>
+        <!-- Gradient stops derived from arc x-positions: position(p)=(1−cos(p·π/100))/2
+             p=20→9.5%  p=50→50%  p=80→90.5% -->
+        <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
+          <stop offset="0%"    stop-color="#22c55e"/>
+          <stop offset="9.5%"  stop-color="#22c55e"/>
+          <stop offset="9.5%"  stop-color="#3b82f6"/>
+          <stop offset="50%"   stop-color="#3b82f6"/>
+          <stop offset="50%"   stop-color="#f59e0b"/>
+          <stop offset="90.5%" stop-color="#f59e0b"/>
+          <stop offset="90.5%" stop-color="#ef4444"/>
+          <stop offset="100%"  stop-color="#ef4444"/>
+        </linearGradient>
+      </defs>
+      <!-- Grey background track -->
+      <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
             d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <path id="gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+      <!-- Coloured fill arc (gradient, grows with score) -->
+      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
             stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <text id="gauge-band" x="200" y="175" text-anchor="middle" font-size="15" font-weight="700"
+      <!-- White divider ticks at band boundaries 20 / 50 / 80 -->
+      <line x1="72" y1="112" x2="45" y2="92"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <!-- Band description label -->
+      <text id="gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
             letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
     </svg>
     <div class="rs-band" id="rs-band" style="display:none">—</div>
@@ -798,16 +819,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
-  <div class="rf-posture" style="justify-content:center;padding:14px 28px 8px">
-    <div style="text-align:center">
-      <div style="font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#DA291C;margin-bottom:2px">Fortinet Cloud Risk IQ</div>
-      <svg viewBox="0 0 220 128" width="220" height="128" style="display:block;overflow:visible;margin:0 auto">
-        <path fill="none" stroke="#e2e8f0" stroke-width="22" stroke-linecap="round" d="M 25,112 A 87,87 0 0,1 195,112"/>
-        <path id="rf-gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="22" stroke-linecap="round" stroke-dasharray="0 273" d="M 25,112 A 87,87 0 0,1 195,112"/>
-        <text id="rf-gauge-band" x="110" y="84" text-anchor="middle" font-size="10" font-weight="700" letter-spacing="1.2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-        <text id="rf-gauge-score" x="110" y="110" text-anchor="middle" font-size="40" font-weight="800" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-        <text x="110" y="124" text-anchor="middle" font-size="9" fill="#94a3b8" font-family="-apple-system,Inter,sans-serif">/100</text>
-      </svg>
+  <div class="rf-posture" style="padding:16px 28px 12px;gap:16px">
+    <div>
+      <div style="font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
+      <div id="rf-num" style="font-size:48px;font-weight:900;line-height:1.1;letter-spacing:-2px;transition:color .4s">—</div>
+      <div id="rf-band" style="font-size:13px;font-weight:700;letter-spacing:.04em;transition:color .4s">—</div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:2px">Lower is better · 0–100 risk scale</div>
     </div>
   </div>
   <div class="rf-kpis">
@@ -1010,13 +1027,8 @@ function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const arcLen=273,fill=(p/100)*arcLen;
-  const ra=document.getElementById('rf-gauge-arc');
-  if(ra){ra.setAttribute('stroke',color);ra.setAttribute('stroke-dasharray',fill+' '+arcLen);}
-  const rgb=document.getElementById('rf-gauge-band');
-  if(rgb){rgb.textContent=band;rgb.setAttribute('fill',color);}
-  const rgs=document.getElementById('rf-gauge-score');
-  if(rgs){rgs.textContent=p;rgs.setAttribute('fill',color);}
+  const rn=document.getElementById('rf-num');if(rn){rn.textContent=p;rn.style.color=color;}
+  const rb=document.getElementById('rf-band');if(rb){rb.textContent=band;rb.style.color=color;}
   const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
@@ -1102,7 +1114,7 @@ function updateRiskScore(p){
   const arcLen=550;
   const fill=(p/100)*arcLen;
   const arc=document.getElementById('gauge-arc');
-  if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
+  if(arc){arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
   const gb=document.getElementById('gauge-band');
   if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
 }
