@@ -8,7 +8,7 @@ Both tools (Live Dashboard and CSA Report) share the same **Fortinet Cloud Risk 
 
 ---
 
-c
+## Rick Score
 
 | Score (0–100) | Security Posture | Color |
 |:-------------:|------------------|:-----:|
