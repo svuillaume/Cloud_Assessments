@@ -1006,10 +1006,10 @@ function nav(name){
 let _lastData=null;
 
 function renderRiskFindings(d){
-  const p=Math.max(0,100-(d.riskScore??0));
-  const color=p>=90?'var(--ok)':p>=50?'var(--me)':'var(--cr)';
-  const band=p>=90?'OPTIMIZING':p>=50?'MATURING':'BUILDING';
-  const rn=document.getElementById('rf-num');rn.textContent=p;rn.style.color=color;
+  const p=Math.max(0,(100-(d.riskScore??0))/10);
+  const color=p>=9?'var(--ok)':p>=5?'var(--me)':'var(--cr)';
+  const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
+  const rn=document.getElementById('rf-num');rn.textContent=p.toFixed(1);rn.style.color=color;
   const rb=document.getElementById('rf-band');rb.textContent=band;rb.style.color=color;
   document.getElementById('rf-k-a').textContent=d.alerts?.length??0;
   document.getElementById('rf-k-v').textContent=d.vulns?.length??0;
@@ -1033,17 +1033,17 @@ function renderRiskFindings(d){
 }
 
 function renderLab(d){
-  const p=Math.max(0,100-(d.riskScore??0));
-  const color=p>=90?'var(--ok)':p>=50?'var(--me)':'var(--cr)';
-  const band=p>=90?'OPTIMIZING':p>=50?'MATURING':'BUILDING';
-  const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
+  const p=Math.max(0,(100-(d.riskScore??0))/10);
+  const color=p>=9?'var(--ok)':p>=5?'var(--me)':'var(--cr)';
+  const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
+  const ls=document.getElementById('lab-score');ls.textContent=p.toFixed(1);ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
   const actions=[];
   if((d.identities||[]).length) actions.push({cls:'p1',n:1,tab:'identities',text:'Fix '+d.identities.length+' risky identit'+(d.identities.length===1?'y':'ies')+' — enable MFA &amp; remove over-provisioned access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
   if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Posture score: '+p+'/100'});
+  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Posture score: '+p.toFixed(1)+'/10'});
   const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
   document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
   const tv=d.vulns||[];
@@ -1109,12 +1109,12 @@ async function load(){
 })();
 
 function updateRiskScore(riskScore){
-  const p=Math.max(0,100-riskScore);
+  const p=Math.max(0,(100-riskScore)/10);
   // green=great → red=poor
-  const color=p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';
-  const band=p>=90?'OPTIMIZING':p>=50?'MATURING':'BUILDING';
+  const color=p>=9?'#22c55e':p>=5?'#f59e0b':'#ef4444';
+  const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
   document.getElementById('rs-band').textContent=band+' POSTURE';
-  const t=document.getElementById('gauge-txt');t.textContent=band;t.setAttribute('fill',color);
+  const t=document.getElementById('gauge-txt');t.textContent=p.toFixed(1);t.setAttribute('fill',color);
   const N=36,fill=Math.round(p/100*N);
   document.querySelectorAll('.gtick').forEach((tk,i)=>{
     const lit=i<=fill;

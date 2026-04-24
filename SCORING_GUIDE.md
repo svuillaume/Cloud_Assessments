@@ -1,12 +1,12 @@
 <div align="center">
 
-Both tools share the same three-stage maturity model. The Dashboard works on a 0–100 posture scale; the CSA Report works on a 0–10 scale. The bands map 1:1.
+Both tools share the same three-stage maturity model on a unified **0–10 scale**.
 
-| Stage      | Dashboard Posture (0–100) | CSA Score (0–10) | Color  |
-|------------|--------------------------|-----------------|--------|
-| BUILDING   | 0 – 49                   | 0.0 – 4.9       | Red    |
-| MATURING   | 50 – 89                  | 5.0 – 8.9       | Orange |
-| OPTIMIZING | 90 – 100                 | 9.0 – 10.0      | Green  |
+| Stage      | Score (0–10) | Color  |
+|------------|-------------|--------|
+| BUILDING   | 0.0 – 4.9   | Red    |
+| MATURING   | 5.0 – 8.9   | Orange |
+| OPTIMIZING | 9.0 – 10.0  | Green  |
 
 ---
 
