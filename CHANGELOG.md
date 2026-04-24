@@ -42,6 +42,38 @@ Changes on `main` that haven't shipped in a tagged release yet.
 
 ---
 
+## [1.3.0] — 2026-04-24
+
+### ✨ Added
+- **RiskIQ Score** — new branded name for the posture gauge, displayed on the overview panel and the Risk Findings view.
+- **NPS-style multi-band arc gauge** replacing the tick-mark gauge — colored arcs (Red / Orange / Blue / Green) with a triangular needle pointer and boundary labels at 0 / 20 / 50 / 80 / 100.
+- **Findings summary grid** below the gauge on the overview panel — Alerts, CVEs, Identities, Compliance counts are now clickable shortcuts to their respective views.
+- **New RiskIQ scoring formula** (5 inputs, 0–100 output, max combined penalty = 9.0):
+
+  | Metric | Input | Formula | Saturates at |
+  |--------|-------|---------|-------------|
+  | Vulnerabilities | Critical vulns | min(count/15, 1) × 2.5 | 15 CVEs |
+  | CVSS 10 | Critical CVSS 10.0 | min(count/10, 1) × 1.5 | 10 CVEs |
+  | Identities | Admin no MFA | min(count/30, 1) × 2.5 | 30 admins |
+  | Alerts | Critical alerts | min(count/10, 1) × 1.5 | 10 alerts |
+  | Non-Compliance | Critical findings | min(count/10, 1) × 1.0 | 10 findings |
+
+  `score = round((1 − penalty / 9) × 100)`
+
+### 🔧 Changed
+- **White + Fortinet brand theme** — dashboard redesigned from dark to light: white main area, dark navy sidebar, Fortinet red (`#DA291C`) as the primary accent and active-nav color.
+- **Risk score bands** updated to a 0–100 scale with new labels:
+  - 🔴 0–19 — Immediate Attention Needed
+  - 🟠 20–49 — Some Attention Needed
+  - 🔵 50–79 — Progressing Security
+  - 🟢 80–100 — Proactive Security
+- **Login screen** restyled to white card on dark gradient background using Fortinet red call-to-action button.
+- **Sidebar nav** active item now uses Fortinet red highlight instead of navy blue.
+- **Generate Report button** and modal updated to Fortinet red palette.
+- Score display throughout (Risk Findings view, Recommended Next Steps) updated to 0–100 integer.
+
+---
+
 ## [1.2.0] — 2026-04-24
 
 ### 📚 Docs
