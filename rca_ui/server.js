@@ -528,17 +528,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .rf-kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
 .rf-body{padding:16px 20px}
 /* ── Recommended Next Steps view ── */
-.lab-steps{padding:0 28px}
-.lab-step{display:flex;align-items:flex-start;gap:16px;padding:18px 0;border-bottom:1px solid var(--border)}
-.lab-step:last-child{border-bottom:none}
-.lab-step-bar{width:3px;border-radius:2px;flex-shrink:0;align-self:stretch;min-height:36px}
-.lab-step-n{font-size:12px;font-weight:700;color:var(--muted);min-width:18px;padding-top:2px}
-.lab-step-title{font-size:13.5px;font-weight:600;color:var(--text);line-height:1.4}
-.lab-step-sub{font-size:11px;color:var(--muted);margin-top:4px}
-.lab-split{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border)}
-.lab-pane{padding:22px 26px}
-.lab-pane+.lab-pane{border-left:1px solid var(--border)}
-.lab-pane-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.13em;color:var(--muted);margin-bottom:14px}
+.lab-steps{padding:16px 32px}
+.lab-step{display:flex;align-items:flex-start;gap:18px;padding:20px 24px;margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 1px 3px rgba(15,23,42,.04)}
+.lab-step-bar{width:4px;border-radius:3px;flex-shrink:0;align-self:stretch;min-height:40px}
+.lab-step-n{font-size:13px;font-weight:700;color:var(--muted);min-width:20px;padding-top:1px}
+.lab-step-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.5}
+.lab-step-sub{font-size:12px;color:var(--muted);margin-top:5px}
 
 /* ── Report button + modal ── */
 .rpt-btn{display:flex;align-items:center;gap:8px;margin:8px 10px 0;padding:10px 13px;border-radius:8px;cursor:pointer;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;border:none;width:calc(100% - 20px);transition:filter .15s}
@@ -844,16 +839,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     </div>
   </div>
   <div class="lab-steps" id="lab-actions"></div>
-  <div class="lab-split">
-    <div class="lab-pane">
-      <div class="lab-pane-title">Top Critical CVEs</div>
-      <div id="lab-vulns"><div class="state"><div class="spinner"></div></div></div>
-    </div>
-    <div class="lab-pane">
-      <div class="lab-pane-title">Top Risky Identities</div>
-      <div id="lab-idents"><div class="state"><div class="spinner"></div></div></div>
-    </div>
-  </div>
 </div>
 
 </div><!-- /main -->
@@ -1063,14 +1048,6 @@ function renderLab(d){
   if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Fortinet Cloud Risk IQ: '+p+'/100'});
   const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
   document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
-  const tv=d.vulns||[];
-  document.getElementById('lab-vulns').innerHTML=tv.length?'<div class="tbl-wrap"><table><thead><tr><th>CVE</th><th>Host</th><th>Risk</th></tr></thead><tbody>'
-    +tv.slice(0,6).map(r=>'<tr><td class="m">'+e(tr(r.vulnId,20))+'</td><td class="p">'+e(tr(r.evalCtx?.hostname||'\\u2014',18))+'</td><td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td></tr>').join('')
-    +'</tbody></table></div>':'<div class="state"><span>No critical CVEs</span></div>';
-  const ti=d.identities||[];
-  document.getElementById('lab-idents').innerHTML=ti.length?'<div class="tbl-wrap"><table><thead><tr><th>Identity</th><th>Cloud</th><th>MFA</th></tr></thead><tbody>'
-    +ti.slice(0,6).map(r=>'<tr><td class="p">'+e(tr(r.NAME||r.PRINCIPAL_ID,22))+'</td><td class="m">'+e(r.PROVIDER_TYPE||'\\u2014')+'</td><td><span class="tag-nomfa">NO MFA</span></td></tr>').join('')
-    +'</tbody></table></div>':'<div class="state"><span>No risky identities</span></div>';
 }
 
 async function load(){
