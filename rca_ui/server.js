@@ -423,6 +423,7 @@ tbody tr:hover{background:rgba(99,102,241,.04)}
 tbody tr:last-child{border-bottom:none}
 td{padding:5px 10px;vertical-align:middle;color:var(--sub)}
 td.p{color:var(--text);font-weight:500;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.desc{color:var(--sub);max-width:420px;white-space:normal;word-break:break-word;line-height:1.4}
 td.m{font-family:'SFMono-Regular',Consolas,monospace;font-size:10px;color:var(--muted);white-space:nowrap}
 td.r{text-align:right;padding-right:10px;white-space:nowrap;width:1%}
 
@@ -963,8 +964,8 @@ function renderCompliance(rows,err){
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
       +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
-      +'<td class="p"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
-      +'<td class="p" title="'+e(r.description||'')+'">'+e(r.description||'—')+'</td>'
+      +'<td class="desc"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
+      +'<td class="desc">'+e(r.description||'—')+'</td>'
       +'<td>'+sev(r.severity)+'</td>'
       +'<td class="r">'+e(r.violations||0)+'</td>'
     +'</tr>').join('')+'</tbody></table></div>');
