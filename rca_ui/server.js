@@ -672,7 +672,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   </div>
   <div class="sb-item" id="nav-lab" onclick="nav('lab')">
     <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-    Recommended Next Steps
+    Next Steps
   </div>
   <!-- Generate Report button -->
   <div style="padding:0 0 6px">
