@@ -1,47 +1,69 @@
-FortiCNAPP Rapid Cloud Assessment
-
-A simple tool to review your cloud security posture using FortiCNAPP (Lacework CNAPP).
-
-It provides:
-
-* Live dashboard for risks and alerts
-* PDF / HTML assessment reports
-* Risk scoring for cloud maturity
-* Compliance visibility
-
-View Sample Report￼
-
-⸻
-
-What This Project Does
-
-This project helps beginners and security teams understand:
-
-* Current cloud risks
-* Vulnerabilities that need attention
-* Identity and permission exposure
-* Compliance gaps
-* Overall security maturity
-
-⸻
-
-Requirements
-
-Install:
-
-* Docker (for dashboard)
-* Python 3 (for reports)
-* FortiCNAPP API key
-
-⸻
-
-Step 1 — Create API Key
-
+# FortiCNAPP Rapid Cloud Assessment
+Modern and beginner-friendly cloud security posture review tool for **FortiCNAPP (Lacework CNAPP)**.
+Use this project to quickly generate dashboards, security findings, maturity scores, and customer-ready reports.
+[View Sample Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
+---
+## Contents
+- Overview
+- Features
+- Requirements
+- Quick Start
+- Dashboard
+- Report Generator
+- Risk Score Model
+- Export Contacts
+- Common Use Cases
+- License
+---
+## Overview
+FortiCNAPP Rapid Cloud Assessment helps you understand the security state of your cloud environment in minutes.
+It is designed for:
+- Beginners learning CNAPP tools  
+- Security Engineers  
+- Cloud Architects  
+- Sales Engineers  
+- Consultants  
+- Customer assessments  
+---
+## Features
+### Live Dashboard
+Monitor your environment with:
+- Alerts and incidents  
+- Vulnerabilities and CVEs  
+- Identity exposure  
+- Compliance findings  
+- Risk score summary  
+### Automated Reports
+Generate professional reports in:
+- PDF  
+- HTML  
+Includes:
+- Executive summary  
+- Risk heatmaps  
+- Security posture summary  
+- Customer branding  
+### Supported Frameworks
+- CIS  
+- PCI DSS  
+- NIST  
+- SOC 2  
+- HIPAA  
+- ISO 27001  
+- CSA CCM  
+---
+## Requirements
+Before starting, install:
+- Docker  
+- Python 3.10+  
+- FortiCNAPP API credentials  
+---
+# Quick Start
+## Step 1 — Create API Credentials
 In FortiCNAPP:
-
+```text
 Settings > API Keys > Create New
 
-Set your credentials:
+Set variables:
 
 export LW_ACCOUNT=your-account.lacework.net
 export LW_KEY_ID=your_key_id
@@ -49,7 +71,7 @@ export LW_SECRET=your_secret
 
 ⸻
 
-Step 2 — Start Dashboard
+Step 2 — Launch Dashboard
 
 cd rca_ui
 docker build -t forticnapp-dashboard .
@@ -59,13 +81,15 @@ docker run -d -p 8080:8080 \
 -e LW_SECRET=$LW_SECRET \
 forticnapp-dashboard
 
-Open in browser:
+Open:
 
 http://localhost:8080
 
 ⸻
 
-Step 3 — Run Without Credentials (Demo Mode)
+Step 3 — Demo Mode (No Credentials)
+
+Use sample data:
 
 docker run -d -p 8080:8080 \
 -e MOCK_FILE=/app/mock_data.json \
@@ -75,78 +99,94 @@ forticnapp-dashboard
 
 Step 4 — Generate Report
 
+Install dependencies:
+
 pip install -r requirements.txt
+
+Run:
+
 python lw_report_gen.py \
 --author "Your Name" \
 --customer "Acme Corp"
 
 ⸻
 
-Dashboard Features
+Dashboard
 
-* Live alerts
-* Vulnerability tracking
-* Identity risk visibility
-* Compliance findings
-* Risk score summary
+The dashboard gives a quick overview of:
 
-⸻
+* Active alerts
+* Critical vulnerabilities
+* Identity risks
+* Compliance gaps
+* Overall posture score
 
-Report Features
-
-* PDF reports
-* HTML reports
-* Executive summaries
-* Risk heatmaps
-* Customer branding
-
-Supported frameworks:
-
-* CIS
-* PCI DSS
-* NIST
-* SOC 2
-* HIPAA
-* ISO 27001
-* CSA CCM
+Ideal for demos, workshops, and fast reviews.
 
 ⸻
 
-Risk Score Guide
+Report Generator
+
+Create professional reports for customers or leadership teams.
+
+Output formats:
+
+* PDF
+* HTML
+
+Best for:
+
+* Executive reviews
+* Customer assessments
+* Internal audits
+* Security summaries
+
+⸻
+
+Risk Score Model
 
 Score	Level	Meaning
-7–10	Building	Basic controls need improvement
-4–6	Maturing	Good progress with room to improve
-0–3	Optimizing	Strong mature security posture
+7 - 10	Building	Security basics need improvement
+4 - 6	Maturing	Good progress with some gaps
+0 - 3	Optimizing	Strong mature security posture
 
 ⸻
 
 Export Contacts
 
-Create file:
+Create local file:
 
 touch rca_ui/contacts.csv
 
-Copy from container:
+Copy contacts from container:
 
 docker cp rca:/app/contacts.csv rca_ui/contacts.csv
 
-View:
+View file:
 
 cat rca_ui/contacts.csv
 
 ⸻
 
-Best Uses
+Common Use Cases
 
-* Rapid cloud assessments
-* Customer security reviews
-* Compliance checks
-* CNAPP demonstrations
+* Rapid Cloud Security Assessments
+* FortiCNAPP demonstrations
+* Customer posture reviews
+* Compliance readiness checks
 * Executive reporting
+* Internal security audits
 
 ⸻
 
-License
+Beginner Tips
 
-Internal / Custom Use
+If you are new:
+
+1. Start with Demo Mode
+2. Explore the dashboard
+3. Connect real credentials later
+4. Generate your first report
+5. Review findings and score
+
+
