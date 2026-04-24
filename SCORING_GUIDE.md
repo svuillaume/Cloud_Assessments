@@ -6,14 +6,15 @@ This repository contains two scoring systems: the **Live Dashboard risk score** 
 
 ## Part 1 — Dashboard Risk Score (server.js)
 
-### Score Bands
+### Score Bands (Maturity Model)
 
-| Band            | Range | Color  |
-|-----------------|-------|--------|
-| EMERGING        | < 40  | Red    |
-| STEADY          | 40–59 | Orange |
-| HIGH PERFORMING | 60–79 | Yellow |
-| OUTSTANDING     | ≥ 80  | Green  |
+| Stage      | Maturity % | Risk (0–10) | Color  |
+|------------|------------|-------------|--------|
+| BUILDING   | 0–49       | 7–10        | Red    |
+| MATURING   | 50–89      | 4–6         | Orange |
+| OPTIMIZING | 90–100     | 0–3         | Green  |
+
+Posture % = `100 − riskScore`. Stage is derived from posture %.
 
 ### Formula
 
