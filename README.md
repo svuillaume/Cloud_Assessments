@@ -226,7 +226,8 @@ The minimum command you need:
 ```bash
 python lw_report_gen.py \
   --author "John Smith" \
-  --customer "Acme Corp"
+  --customer "Acme Corp" \
+  --api-key-file "lw_foo.json"
 ```
 
 This produces an HTML report in the current folder. Open it in any browser.
