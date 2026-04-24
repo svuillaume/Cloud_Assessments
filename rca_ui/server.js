@@ -1004,20 +1004,16 @@ function nav(name){
 
 let _lastData=null;
 
-// Fortinet Cloud Risk IQ: 0–100, lower = better (risk score — more findings → higher score).
-// Formula: score = round((penalty / 9) × 100)
+// Fortinet Cloud Risk IQ: mean of all critical-finding risk scores (0–100 each).
+// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
 function calcPostureScore(d){
-  const nVulns  =(d.vulns||[]).length;
-  const nCvss10 =(d.vulns||[]).filter(v=>parseFloat(v.riskScore||0)>=9.95).length;
-  const nAdmin  =(d.identities||[]).length;
-  const nAlerts =(d.alerts||[]).length;
-  const nComp   =(d.compliance||[]).length;
-  const penalty =Math.min(nVulns/15, 1)*2.5
-                +Math.min(nCvss10/10,1)*1.5
-                +Math.min(nAdmin/30, 1)*2.5
-                +Math.min(nAlerts/10,1)*1.5
-                +Math.min(nComp/10,  1)*1.0;
-  return Math.round(Math.min(100,(penalty/9)*100));
+  const scores=[];
+  (d.alerts||[]).forEach(()=>scores.push(95));
+  (d.vulns||[]).forEach(r=>scores.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
+  (d.compliance||[]).forEach(()=>scores.push(80));
+  (d.identities||[]).forEach(r=>scores.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
+  if(!scores.length) return 0;
+  return Math.round(scores.reduce((s,v)=>s+v,0)/scores.length);
 }
 // 0–19 Green · 20–49 Blue · 50–79 Orange · 80–100 Red  (lower = less risk = better)
 function scoreColor(p){return p<20?'#22c55e':p<50?'#3b82f6':p<80?'#f59e0b':'#ef4444';}
