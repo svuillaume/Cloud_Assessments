@@ -998,10 +998,10 @@ function calcPostureScore(d){
   const nVulns =(d.vulns ||[]).length;
   const nComp  =(d.compliance||[]).length;
   const nAdmin =(d.identities||[]).length;
-  const penalty=Math.min(nAlerts/8, 1)*2.5
-               +Math.min(nVulns /5, 1)*2.5
-               +Math.min(nComp  /3, 1)*2.5
-               +Math.min(nAdmin /8, 1)*2.5;
+  const penalty=Math.min(nAlerts/20, 1)*2.5
+               +Math.min(nVulns /20, 1)*2.5
+               +Math.min(nComp  /20, 1)*2.5
+               +Math.min(nAdmin /20, 1)*2.5;
   return parseFloat(Math.max(0, 10-penalty).toFixed(1));
 }
 // 0–1.9 Red · 2–4.9 Orange · 5–7.9 Blue · 8–10 Green

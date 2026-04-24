@@ -38,17 +38,17 @@ Each category contributes equally (max 2.5 pts). Total max penalty = 10 → mini
 
 | Input | Saturates at | Max deduction |
 |-------|:------------:|:-------------:|
-| Critical alerts | 8 | −2.5 |
-| Critical CVEs (risk ≥ 9) | 5 | −2.5 |
-| Compliance violations | 3 | −2.5 |
-| Admins without MFA | 8 | −2.5 |
+| Critical alerts | 20 | −2.5 |
+| Critical CVEs (risk ≥ 9) | 20 | −2.5 |
+| Compliance violations | 20 | −2.5 |
+| Admins without MFA | 20 | −2.5 |
 
 **Per-CSP gauge** (AWS / Azure / GCP) uses only the two signals available per provider:
 
 ```
 score_csp = 10
-          − min(violations / 3, 1) × 5.0
-          − min(admins_noMFA / 8, 1) × 5.0
+          − min(violations / 20, 1) × 5.0
+          − min(admins_noMFA / 20, 1) × 5.0
 ```
 
 ---

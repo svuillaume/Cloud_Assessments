@@ -1140,10 +1140,10 @@ Host workload — assess network exposure; check if publicly routable or in a DM
    chmod-600 secure-default paths (home, etc, root, key files) are excluded.
    Graceful fallback to 0 when key is absent (e.g. stale cache). #}
 {% set _sc = (secrets_data.risky_secrets_count if (secrets_data and secrets_data.risky_secrets_count is defined and secrets_data.risky_secrets_count != None) else 0) %}
-{% set _p_alerts    = ([critical_alert_count      / 8.0, 1.0] | min) * 2.5 %}
-{% set _p_vuln      = ([total_vuln_critical       / 5.0, 1.0] | min) * 2.5 %}
-{% set _p_comp      = ([total_compliance_critical / 3.0, 1.0] | min) * 2.5 %}
-{% set _p_admin     = ([total_admin.val           / 8.0, 1.0] | min) * 2.5 %}
+{% set _p_alerts    = ([critical_alert_count      / 20.0, 1.0] | min) * 2.5 %}
+{% set _p_vuln      = ([total_vuln_critical       / 20.0, 1.0] | min) * 2.5 %}
+{% set _p_comp      = ([total_compliance_critical / 20.0, 1.0] | min) * 2.5 %}
+{% set _p_admin     = ([total_admin.val           / 20.0, 1.0] | min) * 2.5 %}
 {% set posture_score = [10.0 - (_p_alerts + _p_vuln + _p_comp + _p_admin), 0.0] | max %}
 
 {# Per-CSP scores (compliance + CIEM — the only signals available per-provider) #}
@@ -1154,9 +1154,9 @@ Host workload — assess network exposure; check if publicly routable or in a DM
 {% set _azure_ac = (ciem_data['AZURE'].root_count if ciem_data and ciem_data['AZURE'] else 0) %}
 {% set _gcp_ac   = (ciem_data['GCP'].root_count   if ciem_data and ciem_data['GCP']   else 0) %}
 
-{% set _score_aws   = [10.0 - (([_aws_cc   / 3.0, 1.0] | min) * 5.0) - (([_aws_ac   / 8.0, 1.0] | min) * 5.0), 0.0] | max %}
-{% set _score_azure = [10.0 - (([_azure_cc / 3.0, 1.0] | min) * 5.0) - (([_azure_ac / 8.0, 1.0] | min) * 5.0), 0.0] | max %}
-{% set _score_gcp   = [10.0 - (([_gcp_cc   / 3.0, 1.0] | min) * 5.0) - (([_gcp_ac   / 8.0, 1.0] | min) * 5.0), 0.0] | max %}
+{% set _score_aws   = [10.0 - (([_aws_cc   / 20.0, 1.0] | min) * 5.0) - (([_aws_ac   / 20.0, 1.0] | min) * 5.0), 0.0] | max %}
+{% set _score_azure = [10.0 - (([_azure_cc / 20.0, 1.0] | min) * 5.0) - (([_azure_ac / 20.0, 1.0] | min) * 5.0), 0.0] | max %}
+{% set _score_gcp   = [10.0 - (([_gcp_cc   / 20.0, 1.0] | min) * 5.0) - (([_gcp_ac   / 20.0, 1.0] | min) * 5.0), 0.0] | max %}
 {% set _avg_csp_score = (_score_aws + _score_azure + _score_gcp) / 3.0 %}
 
 {# Global gauge colours — posture score (higher = better) #}
