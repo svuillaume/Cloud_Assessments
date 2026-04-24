@@ -1014,7 +1014,7 @@ function calcPostureScore(d){
 }
 // 0–19 Green · 20–49 Blue · 50–79 Orange · 80–100 Red  (lower = less risk = better)
 function scoreColor(p){return p<20?'#22c55e':p<50?'#3b82f6':p<80?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p<20?'Proactive Security':p<50?'Progressing Security':p<80?'Some Attention Needed':'Immediate Attention Needed';}
+function scoreBand(p){return p<20?'Proactive Security':p<50?'Progressing Cloud Security Posture':p<80?'Some Attention Needed':'Immediate Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
