@@ -97,17 +97,6 @@ async function post(path, body) {
   return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
 }
 
-async function get(path) {
-  const tok = await ensureToken();
-  const { status, body: resp } = await request(
-    'GET', LW_ACCOUNT, `/api/v2/${path}`,
-    { Authorization: `Bearer ${tok}` }, null,
-  );
-  if (status === 204) return null;
-  if (status !== 200 && status !== 201)
-    throw new Error(`GET ${path} → HTTP ${status}: ${JSON.stringify(resp).slice(0, 200)}`);
-  return resp;
-}
 
 
 function timeFmt(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
@@ -150,68 +139,54 @@ async function fetchVulns() {
 
 // ── 3. Top Critical Non-Compliance ───────────────────────────────────────────
 // Policies API returns LQL queryText per policy. Execute the top Critical
-// compliance policies and count returned rows as violations.
-
-function policyCloud(id) {
-  const u = (id || '').toUpperCase();
+function policyCloud(s) {
+  const u = (s || '').toUpperCase();
   if (u.includes('AWS')) return 'aws';
   if (u.includes('AZURE') || u.includes('AZ_')) return 'azure';
   if (u.includes('GCP') || u.includes('GOOGLE')) return 'gcp';
   return 'cloud';
 }
 
+// Severity: Lacework uses integers 1=Critical 2=High 3=Medium 4=Low 5=Info
+function sevLabel(s) {
+  if (typeof s === 'number') return ['', 'Critical', 'High', 'Medium', 'Low', 'Info'][s] || 'Medium';
+  return s || 'Medium';
+}
+
 async function fetchCompliance() {
-  // Step 1 — get Critical compliance policy definitions
-  let policies = [];
+  // Use ComplianceEvaluations/search to get recId (proper alert ID) + description
+  let evals = [];
   try {
-    const resp = await get('Policies');
-    const all  = Array.isArray(resp?.data) ? resp.data : [];
-    const sevOk = s => ['critical','high'].includes((s||'').toLowerCase());
-    policies = all.filter(p =>
-      p.policyType === 'Compliance' && sevOk(p.severity) &&
-      p.enabled !== false && p.queryText,
-    )
-    // Critical first, then High; cap at 15
-    .sort((a, b) => {
-      const rank = s => s?.toLowerCase() === 'critical' ? 0 : 1;
-      return rank(a.severity) - rank(b.severity);
-    })
-    .slice(0, 15);
-    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, evaluating ${policies.length} critical`);
+    evals = await post('Configs/ComplianceEvaluations/search', {
+      timeFilter: timeFilter(),
+      paging: { rows: 10 },
+    });
   } catch (e) {
-    console.log(`  [compliance/Policies] ${e.message.slice(0,120)}`);
+    console.log(`  [compliance] ${e.message.slice(0, 120)}`);
     return [];
   }
 
-  // Step 2 — execute sequentially to stay within rate limits
   const findings = [];
-  const tf2 = timeFilter();
-  for (const p of policies) {
-    try {
-      const rows = await post('Queries/execute', {
-        query: { queryText: p.queryText },
-        arguments: [
-          { name: 'StartTimeRange', value: tf2.startTime },
-          { name: 'EndTimeRange',   value: tf2.endTime   },
-        ],
+  for (const ev of evals) {
+    for (const rec of (ev.recommendations || [])) {
+      const status = (rec.status || '').toLowerCase();
+      if (status !== 'noncompliant') continue;
+      const sev = sevLabel(rec.severity);
+      if (!['Critical', 'High'].includes(sev)) continue;
+      findings.push({
+        alertId:     rec.recId || '—',
+        cloud:       policyCloud(rec.recId || ev.reportType || ''),
+        title:       rec.title || '—',
+        description: rec.info || rec.description || '—',
+        severity:    sev,
+        violations:  rec.numNonCompliant || (rec.violations || []).length || 0,
       });
-      console.log(`  [compliance] ${p.policyId} → ${rows.length} rows`);
-      if (rows.length) findings.push({
-        cloud:      policyCloud(p.queryId || p.policyId),
-        id:         p.policyId,
-        title:      p.title || p.policyId,
-        severity:   'Critical',
-        violations: rows.length,
-      });
-    } catch (e) {
-      console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
-      if (e.message.includes('429')) await new Promise(r => setTimeout(r, 5000));
+      if (findings.length >= 10) break;
     }
     if (findings.length >= 10) break;
-    await new Promise(r => setTimeout(r, 1200)); // throttle: 1.2s between queries
   }
 
-  console.log(`  [compliance] ${findings.length} policies with violations`);
+  console.log(`  [compliance] ${findings.length} non-compliant recommendations`);
   return findings.sort((a, b) => b.violations - a.violations);
 }
 
@@ -960,11 +935,12 @@ function renderCompliance(rows,err){
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
   const baseC='https://'+(_lastData?.account||'')+'/ui/compliance';
-  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Cloud</th><th>Title</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
+  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
-      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.id||'—')+'</a></td>'
+      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
-      +'<td class="p" title="'+e(r.title)+'"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
+      +'<td class="p"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
+      +'<td class="p" title="'+e(r.description||'')+'">'+e(r.description||'—')+'</td>'
       +'<td>'+sev(r.severity)+'</td>'
       +'<td class="r">'+e(r.violations||0)+'</td>'
     +'</tr>').join('')+'</tbody></table></div>');
