@@ -100,3 +100,145 @@ Then export them in your shell:
 export LW_ACCOUNT=your-account.lacework.net
 export LW_KEY_ID=your_key_id
 export LW_SECRET=your_secret
+```
+
+> 💡 **Tip:** Add these to a `.env` file (and `.gitignore` it) to avoid re-exporting each session.
+
+### 2️⃣ Launch the Dashboard
+
+```bash
+cd rca_ui
+docker build -t forticnapp-dashboard .
+docker run -d -p 8080:8080 \
+  -e LW_ACCOUNT=$LW_ACCOUNT \
+  -e LW_KEY_ID=$LW_KEY_ID \
+  -e LW_SECRET=$LW_SECRET \
+  forticnapp-dashboard
+```
+
+Open **[http://localhost:8080](http://localhost:8080)** in your browser.
+
+### 3️⃣ Demo Mode (No Credentials Needed)
+
+Want to try it first? Run with sample data:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e MOCK_FILE=/app/mock_data.json \
+  forticnapp-dashboard
+```
+
+### 4️⃣ Generate a Report
+
+```bash
+pip install -r requirements.txt
+
+python lw_report_gen.py \
+  --author "Your Name" \
+  --customer "Acme Corp"
+```
+
+---
+
+## Dashboard
+
+A unified view of your cloud posture — built for demos, workshops, and fast reviews.
+
+- 🚨 Active alerts
+- 🐛 Critical vulnerabilities
+- 👤 Identity risks
+- 📋 Compliance gaps
+- 🎯 Overall posture score
+
+---
+
+## Report Generator
+
+Create polished reports for customers and leadership teams.
+
+**Output formats:** `PDF` · `HTML`
+
+**Best for:**
+
+- Executive reviews
+- Customer assessments
+- Internal audits
+- Security summaries
+
+---
+
+## Risk Score Model
+
+| Score | Level | Meaning |
+| :---: | :--- | :--- |
+| **7 – 10** | 🔴 Building | Security basics need improvement |
+| **4 – 6** | 🟡 Maturing | Good progress with some gaps |
+| **0 – 3** | 🟢 Optimizing | Strong, mature security posture |
+
+---
+
+## Export Contacts
+
+Create a local file and copy contacts from the container:
+
+```bash
+# Create an empty file
+touch rca_ui/contacts.csv
+
+# Copy from the running container
+docker cp rca:/app/contacts.csv rca_ui/contacts.csv
+
+# View
+cat rca_ui/contacts.csv
+```
+
+---
+
+## Common Use Cases
+
+- ⚡ Rapid cloud security assessments
+- 🎬 FortiCNAPP demonstrations
+- 👥 Customer posture reviews
+- 📜 Compliance readiness checks
+- 📈 Executive reporting
+- 🔍 Internal security audits
+
+---
+
+## Beginner Tips
+
+New to CNAPP? Follow this path:
+
+1. **Start in Demo Mode** — no credentials required
+2. **Explore the dashboard** — click around, break nothing
+3. **Connect real credentials** when ready
+4. **Generate your first report**
+5. **Review findings** and interpret your score
+
+---
+
+## Contributing
+
+Contributions, issues, and feature requests are welcome!
+
+1. Fork the repo
+2. Create a branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+Please open an [issue](../../issues) to discuss major changes first.
+
+---
+
+## License
+
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+
+---
+
+<div align="center">
+
+Made with ❤️ for the FortiCNAPP community
+
+</div>
