@@ -1192,8 +1192,7 @@ Host workload — assess network exposure; check if publicly routable or in a DM
                 <span style="font-size:3.6rem; font-weight:800; color:#ffffff; letter-spacing:-2px; line-height:1;">{{posture_score | round(1)}}</span>
                 <span style="font-size:0.62rem; opacity:0.7; letter-spacing:1px; text-transform:uppercase; color:white;">/ 10</span>
             </div>
-            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center; color:white;">
-                {% if aws_compliance_data and azure_compliance_data and gcp_compliance_data %}MultiCloud{% elif aws_compliance_data and azure_compliance_data %}AWS &amp; Azure{% elif aws_compliance_data and gcp_compliance_data %}AWS &amp; GCP{% elif azure_compliance_data and gcp_compliance_data %}Azure &amp; GCP{% elif aws_compliance_data %}Amazon Web Services{% elif azure_compliance_data %}Microsoft Azure{% elif gcp_compliance_data %}Google Cloud Platform{% else %}Cloud{% endif %}<br>Cloud Security Posture Score</div>
+            <div style="font-size:0.72rem; opacity:0.8; letter-spacing:1.5px; text-transform:uppercase; text-align:center; color:white;">Fortinet Cloud Risk IQ</div>
             <div style="font-size:0.7rem; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#ffffff; text-align:center; background:rgba(255,255,255,0.13); border:1px solid rgba(255,255,255,0.35); border-radius:6px; padding:4px 14px;">{{ _g_label }}</div>
         </div>
     </div>
