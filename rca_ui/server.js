@@ -686,22 +686,28 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       Generate Report
     </a>
   </div>
-  <!-- Sidebar gauge + meta -->
+  <!-- Sidebar mini pie + meta -->
   <div style="padding:16px 14px;border-top:1px solid #172540;margin-top:auto">
-    <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-      <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#243b56">Security Posture</div>
-      <svg id="gauge-svg" viewBox="0 0 200 168" width="160" height="134" style="overflow:visible;display:block">
-        <defs>
-          <filter id="glow-f" x="-80%" y="-80%" width="260%" height="260%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
-            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <g id="gauge-ticks"></g>
-        <text id="gauge-txt" x="100" y="112" text-anchor="middle" font-size="14" font-weight="800" letter-spacing="2" fill="white" font-family="-apple-system,Inter,sans-serif">—</text>
-        <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">POSTURE</text>
+    <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#243b56;text-align:center;margin-bottom:6px">Critical Risk Findings</div>
+    <div style="display:flex;justify-content:center">
+      <svg viewBox="0 0 220 220" width="160" height="160">
+        <circle cx="110" cy="110" r="80" fill="none" stroke="#162438" stroke-width="32"/>
+        <g transform="rotate(-90,110,110)">
+          <circle id="pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#b85555" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,85,85,.45))"/>
+          <circle id="pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#b87030" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,112,48,.45))"/>
+          <circle id="pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#7b65c0" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(123,101,192,.45))"/>
+          <circle id="pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#a07818" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(160,120,24,.45))"/>
+        </g>
+        <text id="pie-total" x="110" y="100" text-anchor="middle" dominant-baseline="middle" fill="#d0dce8" font-size="40" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
+        <text x="110" y="127" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
+        <text x="110" y="139" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">FINDINGS</text>
       </svg>
-      <div class="rs-band" id="rs-band" style="display:none">—</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 6px;margin-top:8px;font-size:9px;padding:0 4px">
+      <div style="display:flex;align-items:center;gap:4px;cursor:pointer" onclick="nav('alerts')"><div style="width:7px;height:7px;border-radius:50%;background:#b85555;flex-shrink:0"></div><span style="color:#5a7ea0">Alerts</span><span style="margin-left:auto;color:#d0dce8;font-weight:700" id="kpi-a">—</span></div>
+      <div style="display:flex;align-items:center;gap:4px;cursor:pointer" onclick="nav('vulns')"><div style="width:7px;height:7px;border-radius:50%;background:#b87030;flex-shrink:0"></div><span style="color:#5a7ea0">CVEs</span><span style="margin-left:auto;color:#d0dce8;font-weight:700" id="kpi-v">—</span></div>
+      <div style="display:flex;align-items:center;gap:4px;cursor:pointer" onclick="nav('identities')"><div style="width:7px;height:7px;border-radius:50%;background:#7b65c0;flex-shrink:0"></div><span style="color:#5a7ea0">Identities</span><span style="margin-left:auto;color:#d0dce8;font-weight:700" id="kpi-i">—</span></div>
+      <div style="display:flex;align-items:center;gap:4px;cursor:pointer" onclick="nav('compliance')"><div style="width:7px;height:7px;border-radius:50%;background:#a07818;flex-shrink:0"></div><span style="color:#5a7ea0">Compliance</span><span style="margin-left:auto;color:#d0dce8;font-weight:700" id="kpi-c">—</span></div>
     </div>
     <div style="margin-top:12px;font-size:10px;color:#2e4d6e;line-height:1.8;text-align:center">
       <div><b id="acct-lbl" style="color:#5a7ea0">${account}</b></div>
@@ -719,48 +725,22 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
   <div class="pie-section">
-    <!-- Single large centered donut chart -->
-    <div class="pie-donut">
-      <svg viewBox="0 0 220 220" width="360" height="360">
-        <circle cx="110" cy="110" r="80" fill="none" stroke="#162438" stroke-width="32"/>
-        <g transform="rotate(-90,110,110)">
-          <circle id="pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#b85555" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,85,85,.45))"/>
-          <circle id="pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#b87030" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,112,48,.45))"/>
-          <circle id="pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#7b65c0" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(123,101,192,.45))"/>
-          <circle id="pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#a07818" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(160,120,24,.45))"/>
-        </g>
-        <text id="pie-total" x="110" y="100" text-anchor="middle" dominant-baseline="middle" fill="#d0dce8" font-size="40" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
-        <text x="110" y="127" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
-        <text x="110" y="139" text-anchor="middle" fill="#2a4260" font-size="8.5" font-weight="700" letter-spacing=".12em">FINDINGS</text>
-      </svg>
+    <div style="text-align:center;line-height:1.3">
+      <div style="font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#4a7fa8">MultiCloud</div>
+      <div style="font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#2e4d6e">Cloud Security Posture Score</div>
     </div>
-    <!-- 4-column legend grid below -->
-    <div class="pie-legend">
-      <div class="pi-row" onclick="nav('alerts')">
-        <div class="pi-topbar" style="background:#b85555"></div>
-        <div class="pi-cnt" style="color:#b85555"><span id="kpi-a">—</span></div>
-        <div class="pi-name">Critical Alerts</div>
-        <div class="pi-desc">Active threats &amp; policy violations requiring immediate action</div>
-      </div>
-      <div class="pi-row" onclick="nav('vulns')">
-        <div class="pi-topbar" style="background:#b87030"></div>
-        <div class="pi-cnt" style="color:#b87030"><span id="kpi-v">—</span></div>
-        <div class="pi-name">Critical CVEs</div>
-        <div class="pi-desc">Known exploitable weaknesses on running hosts</div>
-      </div>
-      <div class="pi-row" onclick="nav('identities')">
-        <div class="pi-topbar" style="background:#7b65c0"></div>
-        <div class="pi-cnt" style="color:#7b65c0"><span id="kpi-i">—</span></div>
-        <div class="pi-name">Risky Identities</div>
-        <div class="pi-desc">Overprivileged roles &amp; lateral movement exposure</div>
-      </div>
-      <div class="pi-row" onclick="nav('compliance')">
-        <div class="pi-topbar" style="background:#a07818"></div>
-        <div class="pi-cnt" style="color:#a07818"><span id="kpi-c">—</span></div>
-        <div class="pi-name">Compliance Violations</div>
-        <div class="pi-desc">Governance gaps &amp; audit exposure across cloud policies</div>
-      </div>
-    </div>
+    <svg id="gauge-svg" viewBox="0 0 200 168" width="280" height="235" style="overflow:visible;display:block">
+      <defs>
+        <filter id="glow-f" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <g id="gauge-ticks"></g>
+      <text id="gauge-txt" x="100" y="112" text-anchor="middle" font-size="14" font-weight="800" letter-spacing="2" fill="white" font-family="-apple-system,Inter,sans-serif">—</text>
+      <text x="100" y="128" text-anchor="middle" font-size="9" font-weight="600" letter-spacing="2.5" fill="rgba(255,255,255,0.28)" font-family="-apple-system,Inter,sans-serif">POSTURE</text>
+    </svg>
+    <div class="rs-band" id="rs-band">—</div>
   </div>
   <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#2e4d6e;font-style:italic">Aiming towards a better, more secure cloud posture</div>
   <div class="footer">FortiCNAPP Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
@@ -823,9 +803,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
   <div class="rf-posture">
     <div class="rf-pos-num" id="rf-num">—</div>
     <div class="rf-pos-meta">
-      <div class="rf-pos-lbl">Security Posture Score</div>
+      <div class="rf-pos-lbl">MultiCloud Cloud Security Posture Score</div>
       <div class="rf-pos-band" id="rf-band">—</div>
-      <div class="rf-pos-sub">Higher is better &nbsp;·&nbsp; 0–100 scale</div>
+      <div class="rf-pos-sub">Higher is better &nbsp;·&nbsp; 0–10 scale</div>
     </div>
   </div>
   <div class="rf-kpis">
@@ -1125,7 +1105,7 @@ function updateRiskScore(p){
   // green=great → red=poor
   const color=p>=9?'#22c55e':p>=5?'#f59e0b':'#ef4444';
   const band=p>=9?'OPTIMIZING':p>=5?'MATURING':'BUILDING';
-  document.getElementById('rs-band').textContent=band+' POSTURE';
+  document.getElementById('rs-band').textContent=band;
   const t=document.getElementById('gauge-txt');t.textContent=p.toFixed(1);t.setAttribute('fill',color);
   const N=36,fill=Math.round(p/10*N);
   document.querySelectorAll('.gtick').forEach((tk,i)=>{
