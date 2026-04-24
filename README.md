@@ -49,8 +49,8 @@ The dashboard computes a **0–100 risk score** — lower is better — from fiv
 | Critical alerts | 10 | 1.5 |
 | Critical non-compliance | 10 | 1.0 |
 
-| Score | Band | |
-|:-----:|------|-|
+| Score | Band | Color |
+|:-----:|------|:-----:|
 | 0–19 | Proactive Security | 🟢 |
 | 20–49 | Progressing Cloud Security Posture | 🔵 |
 | 50–79 | Some Attention Needed | 🟠 |
