@@ -415,17 +415,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',Bl
 .sec-count.ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-bd)}
 
 /* ── Table ── */
-.tbl-wrap{overflow-x:auto;max-height:380px;overflow-y:auto}
-table{width:100%;border-collapse:collapse;font-size:11.5px}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:11px}
 thead{position:sticky;top:0;z-index:2}
-thead th{text-align:left;padding:7px 14px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--card);border-bottom:1px solid var(--border);white-space:nowrap}
+thead th{text-align:left;padding:5px 10px;font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--card);border-bottom:1px solid var(--border);white-space:nowrap}
 tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
 tbody tr:hover{background:rgba(99,102,241,.04)}
 tbody tr:last-child{border-bottom:none}
-td{padding:8px 14px;vertical-align:middle;color:var(--sub)}
-td.p{color:var(--text);font-weight:500;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-td.m{font-family:'SFMono-Regular',Consolas,monospace;font-size:10.5px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-td.r{text-align:right;padding-right:16px}
+td{padding:5px 10px;vertical-align:middle;color:var(--sub)}
+td.p{color:var(--text);font-weight:500;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.m{font-family:'SFMono-Regular',Consolas,monospace;font-size:10px;color:var(--muted);white-space:nowrap}
+td.r{text-align:right;padding-right:10px;white-space:nowrap;width:1%}
 
 /* ── Badges ── */
 .b{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;white-space:nowrap;border:1px solid transparent}
@@ -435,7 +435,7 @@ td.r{text-align:right;padding-right:16px}
 .b-me{color:var(--me);background:var(--me-bg)}
 .b-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-bd)}
 .b-nt{color:var(--muted);background:rgba(78,100,128,.15)}
-.risk-score{font-size:13px;font-weight:800;color:var(--cr)}
+.risk-score{font-size:12px;font-weight:800;color:var(--cr)}
 .tag-admin{font-size:10px;font-weight:700;color:var(--cr);background:var(--cr-bg);border:1px solid var(--cr-bd);padding:1px 6px;border-radius:3px;letter-spacing:.03em}
 .tag-nomfa{font-size:10px;font-weight:700;color:var(--hi);background:var(--hi-bg);border:1px solid var(--hi-bd);padding:1px 6px;border-radius:3px}
 
@@ -455,7 +455,7 @@ td.r{text-align:right;padding-right:16px}
 .rf-link:hover{color:var(--accent-l);text-decoration:underline}
 
 /* ── Dashboard pie section ── */
-.pie-section{display:flex;flex-direction:column;align-items:center;gap:28px;padding:36px 40px 28px;background:#ffffff;border-bottom:1px solid var(--border)}
+.pie-section{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px 32px 16px;background:#ffffff;border-bottom:1px solid var(--border)}
 .pie-donut{flex-shrink:0;display:flex;justify-content:center}
 .pie-legend{display:grid;grid-template-columns:repeat(4,1fr);width:100%;max-width:860px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
 .pi-row{display:flex;flex-direction:column;gap:6px;padding:20px 22px;cursor:pointer;transition:background .15s;border-right:1px solid var(--border)}
@@ -948,8 +948,8 @@ function renderVulns(rows,err){
       return'<tr class="strip-cr">'
         +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a></td>'
         +'<td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td>'
-        +'<td class="p" title="'+e(r.featureKey?.name)+'">'+e(tr(r.featureKey?.name,22))+'</td>'
-        +'<td class="m">'+e(tr(r.evalCtx?.hostname||r.mid||'\\u2014',20))+'</td>'
+        +'<td class="p">'+e(r.featureKey?.name||'—')+'</td>'
+        +'<td class="m">'+e(r.evalCtx?.hostname||r.mid||'—')+'</td>'
         +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,18)||'Fix \\u2713')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
       +'</tr>';
     }).join('')+'</tbody></table></div>');
