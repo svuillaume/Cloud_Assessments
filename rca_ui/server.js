@@ -726,7 +726,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 <div class="view active" id="view-overview">
   <div class="pie-section">
     <div style="text-align:center;line-height:1.3">
-      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">RiskIQ Score</div>
+      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
     </div>
     <svg id="gauge-svg" viewBox="0 0 300 210" width="320" height="224" style="overflow:visible;display:block">
       <defs>
@@ -739,8 +739,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       <path id="gauge-needle" d="M0,0" fill="#374151" filter="url(#needle-drop)"/>
       <circle cx="150" cy="130" r="9" fill="#374151"/>
       <circle cx="150" cy="130" r="4" fill="#e5e7eb"/>
-      <text id="gauge-txt" x="150" y="121" text-anchor="middle" font-size="54" font-weight="900" fill="#1a1f2e" font-family="-apple-system,Inter,BlinkMacSystemFont,sans-serif" style="transition:fill .4s">—</text>
-      <text x="150" y="144" text-anchor="middle" font-size="10" font-weight="600" letter-spacing="2" fill="#9aa5b4" font-family="-apple-system,Inter,sans-serif">/ 100</text>
+      <text id="gauge-txt" x="150" y="121" text-anchor="middle" font-size="0" fill="transparent">—</text>
     </svg>
     <div class="rs-band" id="rs-band">—</div>
     <!-- Findings summary below gauge -->
@@ -812,7 +811,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
   <div class="rf-posture">
     <div class="rf-pos-num" id="rf-num">—</div>
     <div class="rf-pos-meta">
-      <div class="rf-pos-lbl">RiskIQ Score</div>
+      <div class="rf-pos-lbl">Fortinet Cloud Risk IQ</div>
       <div class="rf-pos-band" id="rf-band">—</div>
       <div class="rf-pos-sub">Lower is better &nbsp;·&nbsp; 0–100 risk scale</div>
     </div>
@@ -994,7 +993,7 @@ function nav(name){
 
 let _lastData=null;
 
-// RiskIQ Score: 0–100, lower = better (risk score — more findings → higher score).
+// Fortinet Cloud Risk IQ: 0–100, lower = better (risk score — more findings → higher score).
 // Formula: score = round((penalty / 9) × 100)
 function calcPostureScore(d){
   const nVulns  =(d.vulns||[]).length;
@@ -1056,7 +1055,7 @@ function renderLab(d){
   if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'RiskIQ Score: '+p+'/100'});
+  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Fortinet Cloud Risk IQ: '+p+'/100'});
   const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
   document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
   const tv=d.vulns||[];
