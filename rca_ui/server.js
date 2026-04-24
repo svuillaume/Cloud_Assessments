@@ -986,18 +986,17 @@ function nav(name){
 let _lastData=null;
 
 // Posture score: 10 = best, 0 = worst (higher is better)
-// Penalty-based, normalized to 0–10
+// Each category saturates independently; total max penalty = 10
 function calcPostureScore(d){
   const nAlerts=(d.alerts||[]).length;
   const nVulns =(d.vulns ||[]).length;
   const nComp  =(d.compliance||[]).length;
   const nAdmin =(d.identities||[]).length;
-  const pAlerts=Math.min(nAlerts/10,1)*1.5;
-  const pVuln  =Math.min(nVulns /15,1)*2.5;
-  const pComp  =Math.min(nComp  /10,1)*1.5;
-  const pAdmin =Math.min(nAdmin /30,1)*2.5;
-  // max penalty without secrets = 8; normalize to 0–10
-  return parseFloat(Math.max(0, 10-(pAlerts+pVuln+pComp+pAdmin)/8*10).toFixed(1));
+  const penalty=Math.min(nAlerts/8, 1)*2.5
+               +Math.min(nVulns /5, 1)*2.5
+               +Math.min(nComp  /3, 1)*2.5
+               +Math.min(nAdmin /8, 1)*2.5;
+  return parseFloat(Math.max(0, 10-penalty).toFixed(1));
 }
 // 0–1.9 Red · 2–4.9 Orange · 5–7.9 Blue · 8–10 Green
 function scoreColor(p){return p>=8?'#22c55e':p>=5?'#3b82f6':p>=2?'#f59e0b':'#ef4444';}

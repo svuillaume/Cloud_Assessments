@@ -24,28 +24,32 @@ Both tools share the **same risk score model** on a unified **0–10 scale** —
 
 ---
 
-## Shared Penalty Formula
-
-Both the dashboard gauge and the CSA report MultiCloud gauge derive the risk score from the same penalty inputs:
+## Formula
 
 ```
-risk_score = p_comp + p_vuln + p_admin + p_alerts  [+ p_secrets in CSA report]
+posture = 10
+        − min(alerts      / 8, 1) × 2.5
+        − min(CVEs        / 5, 1) × 2.5
+        − min(violations  / 3, 1) × 2.5
+        − min(admins_noMFA/ 8, 1) × 2.5
 ```
 
-| Variable | Formula | Max penalty | Saturates at | What it measures |
-|----------|---------|:-----------:|:------------:|------------------|
-| `p_comp`    | `min(critical_compliance / 10, 1) × 1.5` | 1.5 pts | 10 critical findings | Compliance violations |
-| `p_vuln`    | `min(critical_vulns / 15, 1) × 2.5`      | 2.5 pts | 15 critical CVEs     | Vulnerability exposure |
-| `p_admin`   | `min(admin_no_mfa / 30, 1) × 2.5`        | 2.5 pts | 30 admin w/o MFA     | Identity hygiene |
-| `p_alerts`  | `min(critical_alerts / 10, 1) × 1.5`     | 1.5 pts | 10 critical alerts   | Active threats |
-| `p_secrets` | `min(_sc / 3, 1) × 2.0` *(CSA only)*    | 2.0 pts | 3 risky secrets      | Secret sprawl |
+Each category contributes equally (max 2.5 pts). Total max penalty = 10 → minimum score = 0.
 
-The dashboard normalizes the 0–8 penalty sum to a 0–10 scale:
-```
-dashboard_risk = min(10, penalty_total / 8 × 10)
-```
+| Input | Saturates at | Max deduction |
+|-------|:------------:|:-------------:|
+| Critical alerts | 8 | −2.5 |
+| Critical CVEs (risk ≥ 9) | 5 | −2.5 |
+| Compliance violations | 3 | −2.5 |
+| Admins without MFA | 8 | −2.5 |
 
-The CSA report uses the penalty total directly (max 10 with all five terms).
+**Per-CSP gauge** (AWS / Azure / GCP) uses only the two signals available per provider:
+
+```
+score_csp = 10
+          − min(violations / 3, 1) × 5.0
+          − min(admins_noMFA / 8, 1) × 5.0
+```
 
 ---
 
