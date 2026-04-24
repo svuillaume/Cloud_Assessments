@@ -681,25 +681,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       Generate Report
     </a>
   </div>
-  <!-- Sidebar mini pie + meta -->
+  <!-- Sidebar meta -->
   <div style="padding:16px 14px;border-top:1px solid #1f2937;margin-top:auto">
-    <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#4b5563;text-align:center;margin-bottom:6px">Critical Risk Findings</div>
-    <div style="display:flex;justify-content:center">
-      <svg viewBox="0 0 220 220" width="160" height="160">
-        <circle cx="110" cy="110" r="80" fill="none" stroke="#374151" stroke-width="32"/>
-        <g transform="rotate(-90,110,110)">
-          <circle id="pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#b85555" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,85,85,.45))"/>
-          <circle id="pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#b87030" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(184,112,48,.45))"/>
-          <circle id="pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#7b65c0" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(123,101,192,.45))"/>
-          <circle id="pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#a07818" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1);filter:drop-shadow(0 0 4px rgba(160,120,24,.45))"/>
-        </g>
-        <text id="pie-total" x="110" y="100" text-anchor="middle" dominant-baseline="middle" fill="#f9fafb" font-size="40" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
-        <text x="110" y="127" text-anchor="middle" fill="#6b7280" font-size="8.5" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
-        <text x="110" y="139" text-anchor="middle" fill="#6b7280" font-size="8.5" font-weight="700" letter-spacing=".12em">FINDINGS</text>
-      </svg>
-    </div>
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
-    <div style="margin-top:12px;font-size:10px;color:#6b7280;line-height:1.8;text-align:center">
+    <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center">
       <div><b id="acct-lbl" style="color:#9ca3af">${account}</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
@@ -888,10 +873,10 @@ function setKpi(id,n){document.getElementById(id).textContent=n;}
 function setCount(id,n,bad){const el=document.getElementById(id);el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
 function buildPie(d){
   var segs=[
-    {id:'pseg-a',rfid:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
-    {id:'pseg-v',rfid:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
-    {id:'pseg-i',rfid:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
-    {id:'pseg-c',rfid:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
+    {id:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
+    {id:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
+    {id:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
+    {id:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
   ];
   var total=segs.reduce(function(s,c){return s+c.n;},0);
   var C=502.65,GAP=7;
@@ -900,21 +885,16 @@ function buildPie(d){
   var cum=0;
   segs.forEach(function(seg){
     var el=document.getElementById(seg.id);
-    var rfEl=document.getElementById(seg.rfid);
     var len=total===0?0:(seg.n/total)*usable;
-    (function(e,rfe,l,o){
+    (function(e,l,o){
       requestAnimationFrame(function(){
-        var da=l.toFixed(1)+' '+(C-l).toFixed(1),doff=(-o).toFixed(1);
-        if(e){e.setAttribute('stroke-dasharray',da);e.setAttribute('stroke-dashoffset',doff);}
-        if(rfe){rfe.setAttribute('stroke-dasharray',da);rfe.setAttribute('stroke-dashoffset',doff);}
+        if(e){e.setAttribute('stroke-dasharray',l.toFixed(1)+' '+(C-l).toFixed(1));e.setAttribute('stroke-dashoffset',(-o).toFixed(1));}
       });
-    })(el,rfEl,len,cum);
+    })(el,len,cum);
     var nl=document.getElementById('rf-n-'+seg.key);
     if(nl)nl.textContent=seg.n||'0';
     if(seg.n>0)cum+=len+GAP;
   });
-  var ct=document.getElementById('pie-total');
-  if(ct)ct.textContent=total||'0';
   var rft=document.getElementById('rf-pie-total');
   if(rft)rft.textContent=total||'0';
 }
