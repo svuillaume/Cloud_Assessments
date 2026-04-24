@@ -725,17 +725,15 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
     </div>
     <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
       <defs>
-        <!-- Gradient stops derived from arc x-positions: position(p)=(1−cos(p·π/100))/2
-             p=20→9.5%  p=50→50%  p=80→90.5% -->
+        <!-- Gradient: Red→Orange→Green (higher score = better posture)
+             Band boundaries: p=50→50%  p=80→90.5% of gradient width -->
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
-          <stop offset="0%"    stop-color="#22c55e"/>
-          <stop offset="9.5%"  stop-color="#22c55e"/>
-          <stop offset="9.5%"  stop-color="#3b82f6"/>
-          <stop offset="50%"   stop-color="#3b82f6"/>
+          <stop offset="0%"    stop-color="#ef4444"/>
+          <stop offset="50%"   stop-color="#ef4444"/>
           <stop offset="50%"   stop-color="#f59e0b"/>
           <stop offset="90.5%" stop-color="#f59e0b"/>
-          <stop offset="90.5%" stop-color="#ef4444"/>
-          <stop offset="100%"  stop-color="#ef4444"/>
+          <stop offset="90.5%" stop-color="#22c55e"/>
+          <stop offset="100%"  stop-color="#22c55e"/>
         </linearGradient>
       </defs>
       <!-- Grey background track -->
@@ -744,8 +742,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
       <!-- Coloured fill arc (gradient, grows with score) -->
       <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
             stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- White divider ticks at band boundaries 20 / 50 / 80 -->
-      <line x1="72" y1="112" x2="45" y2="92"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <!-- White divider ticks at band boundaries 50 / 80 -->
       <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
       <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
       <!-- Band description label -->
@@ -1004,20 +1001,21 @@ function nav(name){
 
 let _lastData=null;
 
-// Fortinet Cloud Risk IQ: mean of all critical-finding risk scores (0–100 each).
+// Fortinet Cloud Risk IQ (Rick Score): higher = better posture (0–100).
+// postureScore = 100 − mean(findingRiskScores).  No findings → 100 (perfect).
 // CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
 function calcPostureScore(d){
-  const scores=[];
-  (d.alerts||[]).forEach(()=>scores.push(95));
-  (d.vulns||[]).forEach(r=>scores.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
-  (d.compliance||[]).forEach(()=>scores.push(80));
-  (d.identities||[]).forEach(r=>scores.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
-  if(!scores.length) return 0;
-  return Math.round(scores.reduce((s,v)=>s+v,0)/scores.length);
+  const risks=[];
+  (d.alerts||[]).forEach(()=>risks.push(95));
+  (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
+  (d.compliance||[]).forEach(()=>risks.push(80));
+  (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
+  if(!risks.length) return 100;
+  return Math.round(100 - risks.reduce((s,v)=>s+v,0)/risks.length);
 }
-// 0–19 Green · 20–49 Blue · 50–79 Orange · 80–100 Red  (lower = less risk = better)
-function scoreColor(p){return p<20?'#22c55e':p<50?'#3b82f6':p<80?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p<20?'Proactive Security':p<50?'Progressing Cloud Security Posture':p<80?'Some Attention Needed':'Immediate Attention Needed';}
+// 80–100 Green · 50–79 Orange · 0–49 Red  (higher = better posture)
+function scoreColor(p){return p>=80?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=80?'Proactive Security':p>=50?'Ongoing Security Posture':'Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
