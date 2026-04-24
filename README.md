@@ -1,105 +1,152 @@
-# FortiCNAPP Rapid Cloud Assessment
+FortiCNAPP Rapid Cloud Assessment
 
-[![View Sample RCA Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
+A simple tool to review your cloud security posture using FortiCNAPP (Lacework CNAPP).
 
-Live dashboard for real-time cloud security posture + automated CSA report generator for FortiCNAPP (Lacework CNAPP).
+It provides:
 
-## ðŸŽ¯ Quick Demo
+* Live dashboard for risks and alerts
+* PDF / HTML assessment reports
+* Risk scoring for cloud maturity
+* Compliance visibility
 
-| Tool | Description | Run Command |
-|------|-------------|-------------|
-| **Live Dashboard** | Real-time alerts, CVEs, identities, compliance | `docker run -p 8080:8080 ...` |
-| **CSA Report Gen** | PDF/HTML Cloud Security Assessment reports | `python lw_report_gen.py ...` |
+View Sample Report￼
 
-## ðŸš€ Quick Start
+⸻
 
-### 1. Get FortiCNAPP API Key
-```
-https://<account>.lacework.net â†’ Settings â†’ API Keys â†’ Create New â†’ Download JSON
-```
+What This Project Does
 
-**Env vars needed:**
-```
-LW_ACCOUNT=your-account.lacework.net
-LW_KEY_ID=your_key_id
-LW_SECRET=your_secret
-```
+This project helps beginners and security teams understand:
 
-### 2. Live Dashboard (Docker)
-```bash
+* Current cloud risks
+* Vulnerabilities that need attention
+* Identity and permission exposure
+* Compliance gaps
+* Overall security maturity
+
+⸻
+
+Requirements
+
+Install:
+
+* Docker (for dashboard)
+* Python 3 (for reports)
+* FortiCNAPP API key
+
+⸻
+
+Step 1 — Create API Key
+
+In FortiCNAPP:
+
+Settings > API Keys > Create New
+
+Set your credentials:
+
+export LW_ACCOUNT=your-account.lacework.net
+export LW_KEY_ID=your_key_id
+export LW_SECRET=your_secret
+
+⸻
+
+Step 2 — Start Dashboard
+
 cd rca_ui
 docker build -t forticnapp-dashboard .
 docker run -d -p 8080:8080 \
-  -e LW_ACCOUNT=your-account.lacework.net \
-  -e LW_KEY_ID=your_key_id \
-  -e LW_SECRET=your_secret \
-  forticnapp-dashboard
-```
-**Open:** http://localhost:8080
+-e LW_ACCOUNT=$LW_ACCOUNT \
+-e LW_KEY_ID=$LW_KEY_ID \
+-e LW_SECRET=$LW_SECRET \
+forticnapp-dashboard
 
-**Mock mode (no creds):**
-```bash
-docker run -d -p 8080:8080 -e MOCK_FILE=/app/mock_data.json forticnapp-dashboard
-```
+Open in browser:
 
-### 3. Generate Report
-```bash
+http://localhost:8080
+
+⸻
+
+Step 3 — Run Without Credentials (Demo Mode)
+
+docker run -d -p 8080:8080 \
+-e MOCK_FILE=/app/mock_data.json \
+forticnapp-dashboard
+
+⸻
+
+Step 4 — Generate Report
+
 pip install -r requirements.txt
-python lw_report_gen.py --author "Your Name" --customer "Acme Corp"
-```
+python lw_report_gen.py \
+--author "Your Name" \
+--customer "Acme Corp"
 
----
+⸻
 
-## ðŸ“Š Features
+Dashboard Features
 
-### Live Dashboard (`rca_ui/`)
-- **Real-time alerts** & compliance violations
-- **CVE prioritization** (runtime context)
-- **Identity exposure** & privilege risks  
-- **Custom risk scoring** (0-10, Building/Maturing/Optimizing)
-- **Export contacts** for customer reports
+* Live alerts
+* Vulnerability tracking
+* Identity risk visibility
+* Compliance findings
+* Risk score summary
 
-### Report Generator (`lw_report_gen.py`)
-- **Full PDF/HTML** CSA reports
-- **Compliance frameworks**: CIS, PCI, NIST, SOC2, HIPAA, ISO27001, CSA CCM
-- **Custom scoring** & risk heatmaps
-- **Author/customer branding**
+⸻
 
----
+Report Features
 
-## ðŸ“ˆ Risk Scoring (0-10)
+* PDF reports
+* HTML reports
+* Executive summaries
+* Risk heatmaps
+* Customer branding
 
-Maps maturity stages:
+Supported frameworks:
 
-| Stage | Maturity % | Risk (0-10) | Color | Focus |
-|-------|------------|-------------|-------|-------|
-| **BUILDING** | 0-49 | 7-10 | ðŸ”´ Red | Inventory, MFA, patching |
-| **MATURING** | 50-89 | 4-6 | ðŸŸ  Orange | Policies, automation, DevSecOps |
-| **OPTIMIZING** | 90-100 | 0-3 | ðŸŸ¢ Green | AI triage, zero-trust, runtime |
+* CIS
+* PCI DSS
+* NIST
+* SOC 2
+* HIPAA
+* ISO 27001
+* CSA CCM
 
-**Gauge visualization** included in both tools.
+⸻
 
----
+Risk Score Guide
 
-## ðŸ“± Fetch Contacts for Reports
+Score	Level	Meaning
+7–10	Building	Basic controls need improvement
+4–6	Maturing	Good progress with room to improve
+0–3	Optimizing	Strong mature security posture
 
-1. **Create empty file:**
-   ```bash
-   touch rca_ui/contacts.csv
-   ```
+⸻
 
-2. **Start dashboard** (container `rca` in your example)
+Export Contacts
 
-3. **Copy generated contacts:**
-   ```bash
-   sudo docker cp rca:/app/contacts.csv rca_ui/contacts.csv
-   ```
+Create file:
 
-4. **View:**
-   ```bash
-   cat rca_ui/contacts.csv
-   ```
+touch rca_ui/contacts.csv
 
-**Use:** Add customer contacts to personalize reports.
+Copy from container:
 
----
+docker cp rca:/app/contacts.csv rca_ui/contacts.csv
+
+View:
+
+cat rca_ui/contacts.csv
+
+⸻
+
+Best Uses
+
+* Rapid cloud assessments
+* Customer security reviews
+* Compliance checks
+* CNAPP demonstrations
+* Executive reporting
+
+⸻
+
+License
+
+Internal / Custom Use
