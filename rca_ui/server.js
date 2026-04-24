@@ -723,17 +723,13 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
     <div style="text-align:center;line-height:1.3">
       <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
     </div>
-    <svg id="gauge-svg" viewBox="0 0 300 196" width="300" height="196" style="display:block;overflow:visible;margin:4px auto 0">
-      <path id="gauge-track" fill="none" stroke="#e2e8f0" stroke-width="28" stroke-linecap="round"
-            d="M 22,172 A 128,128 0 0,1 278,172"/>
-      <path id="gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="28" stroke-linecap="round"
-            stroke-dasharray="0 402" d="M 22,172 A 128,128 0 0,1 278,172"/>
-      <text id="gauge-band" x="150" y="128" text-anchor="middle" font-size="10.5" font-weight="700"
-            letter-spacing="0.6" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-      <text id="gauge-score" x="150" y="168" text-anchor="middle" font-size="58" font-weight="800"
-            font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-      <text x="150" y="188" text-anchor="middle" font-size="11" fill="#94a3b8"
-            font-family="-apple-system,Inter,sans-serif">/100</text>
+    <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
+      <path id="gauge-track" fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+            d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <path id="gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <text id="gauge-band" x="200" y="175" text-anchor="middle" font-size="15" font-weight="700"
+            letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
     </svg>
     <div class="rs-band" id="rs-band" style="display:none">—</div>
     <!-- Findings summary below gauge -->
@@ -1103,14 +1099,12 @@ async function load(){
 function updateRiskScore(p){
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const arcLen=402;
+  const arcLen=550;
   const fill=(p/100)*arcLen;
   const arc=document.getElementById('gauge-arc');
   if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
   const gb=document.getElementById('gauge-band');
   if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
-  const gs=document.getElementById('gauge-score');
-  if(gs){gs.textContent=p;gs.setAttribute('fill',color);}
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
