@@ -960,11 +960,11 @@ function renderCompliance(rows,err){
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
   const baseC='https://'+(_lastData?.account||'')+'/ui/compliance';
-  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Rule ID</th><th>Title</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
+  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Cloud</th><th>Title</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
+      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.id||'—')+'</a></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
-      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(tr(r.id,18))+'</a></td>'
-      +'<td class="p" title="'+e(r.title)+'"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(tr(r.title,38))+'</a></td>'
+      +'<td class="p" title="'+e(r.title)+'"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
       +'<td>'+sev(r.severity)+'</td>'
       +'<td class="r">'+e(r.violations||0)+'</td>'
     +'</tr>').join('')+'</tbody></table></div>');
