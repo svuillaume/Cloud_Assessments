@@ -802,12 +802,16 @@ td.desc{font-size:11px;color:var(--sub);max-width:340px;white-space:normal;line-
 
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
-  <div class="rf-posture">
-    <div class="rf-pos-num" id="rf-num">—</div>
-    <div class="rf-pos-meta">
-      <div class="rf-pos-lbl">Fortinet Cloud Risk IQ</div>
-      <div class="rf-pos-band" id="rf-band">—</div>
-      <div class="rf-pos-sub">Lower is better &nbsp;·&nbsp; 0–100 risk scale</div>
+  <div class="rf-posture" style="justify-content:center;padding:14px 28px 8px">
+    <div style="text-align:center">
+      <div style="font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#DA291C;margin-bottom:2px">Fortinet Cloud Risk IQ</div>
+      <svg viewBox="0 0 220 128" width="220" height="128" style="display:block;overflow:visible;margin:0 auto">
+        <path fill="none" stroke="#e2e8f0" stroke-width="22" stroke-linecap="round" d="M 25,112 A 87,87 0 0,1 195,112"/>
+        <path id="rf-gauge-arc" fill="none" stroke="#e2e8f0" stroke-width="22" stroke-linecap="round" stroke-dasharray="0 273" d="M 25,112 A 87,87 0 0,1 195,112"/>
+        <text id="rf-gauge-band" x="110" y="84" text-anchor="middle" font-size="10" font-weight="700" letter-spacing="1.2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+        <text id="rf-gauge-score" x="110" y="110" text-anchor="middle" font-size="40" font-weight="800" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+        <text x="110" y="124" text-anchor="middle" font-size="9" fill="#94a3b8" font-family="-apple-system,Inter,sans-serif">/100</text>
+      </svg>
     </div>
   </div>
   <div class="rf-kpis">
@@ -1010,8 +1014,13 @@ function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const rn=document.getElementById('rf-num');rn.textContent=p;rn.style.color=color;
-  const rb=document.getElementById('rf-band');rb.textContent=band;rb.style.color=color;
+  const arcLen=273,fill=(p/100)*arcLen;
+  const ra=document.getElementById('rf-gauge-arc');
+  if(ra){ra.setAttribute('stroke',color);ra.setAttribute('stroke-dasharray',fill+' '+arcLen);}
+  const rgb=document.getElementById('rf-gauge-band');
+  if(rgb){rgb.textContent=band;rgb.setAttribute('fill',color);}
+  const rgs=document.getElementById('rf-gauge-score');
+  if(rgs){rgs.textContent=p;rgs.setAttribute('fill',color);}
   const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
