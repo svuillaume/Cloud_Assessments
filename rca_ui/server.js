@@ -1041,7 +1041,7 @@ function renderLab(d){
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
   const actions=[];
-  if((d.identities||[]).length) actions.push({cls:'p1',n:1,tab:'identities',text:'Fix '+d.identities.length+' risky identit'+(d.identities.length===1?'y':'ies')+' — enable MFA &amp; remove over-provisioned access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
+  if((d.identities||[]).length) actions.push({cls:'p1',n:1,tab:'identities',text:'Fix '+d.identities.length+' HighPermissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA &amp; Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
   if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
