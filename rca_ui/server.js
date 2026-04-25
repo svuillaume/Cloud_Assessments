@@ -1144,29 +1144,38 @@ const MOBILE_HTML = `<!DOCTYPE html>
 <title>Fortinet Cloud Risk IQ</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:32px 20px 40px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 16px 48px}
 .logo{font-size:11px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:#DA291C;margin-bottom:4px;text-align:center}
-.subtitle{font-size:22px;font-weight:800;color:#0f172a;text-align:center;line-height:1.3;margin-bottom:24px;max-width:320px}
-.gauge-wrap{width:100%;max-width:360px;margin:0 auto}
-.band{font-size:16px;font-weight:700;text-align:center;margin-top:4px;min-height:24px;transition:color .4s}
-.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;max-width:360px;margin-top:28px}
-.tile{background:#fff;border-radius:14px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);cursor:pointer;text-align:center}
-.tile-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
-.tile-val{font-size:36px;font-weight:900;color:#0f172a;line-height:1}
+.subtitle{font-size:20px;font-weight:800;color:#0f172a;text-align:center;line-height:1.3;margin-bottom:20px;max-width:320px}
+.gauge-wrap{width:100%;max-width:340px;margin:0 auto}
+.band{font-size:15px;font-weight:700;text-align:center;margin-top:2px;min-height:22px;transition:color .4s}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;max-width:340px;margin-top:20px}
+.tile{background:#fff;border-radius:12px;padding:14px 12px;box-shadow:0 1px 4px rgba(0,0,0,.07);text-align:center}
+.tile-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
+.tile-val{font-size:32px;font-weight:900;color:#0f172a;line-height:1}
 .tile-a .tile-lbl{color:#ef4444}
 .tile-v .tile-lbl{color:#f97316}
 .tile-i .tile-lbl{color:#8b5cf6}
 .tile-c .tile-lbl{color:#f59e0b}
+.divider{width:100%;max-width:340px;border:none;border-top:1px solid #e2e8f0;margin:28px 0 20px}
+.sec-title{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#64748b;width:100%;max-width:340px;margin-bottom:12px}
+.steps{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px}
+.step{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.07);display:flex;gap:12px;align-items:flex-start}
+.step-bar{width:4px;border-radius:4px;flex-shrink:0;align-self:stretch;min-height:36px}
+.step-n{font-size:13px;font-weight:900;color:#94a3b8;flex-shrink:0;padding-top:1px}
+.step-body{}
+.step-title{font-size:13px;font-weight:700;color:#0f172a;line-height:1.4}
+.step-sub{font-size:11px;color:#94a3b8;margin-top:3px;line-height:1.4}
 .meta{margin-top:28px;font-size:11px;color:#94a3b8;text-align:center;line-height:2}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#94a3b8;margin-right:4px;vertical-align:middle}
-.dot.ok{background:#22c55e} .dot.err{background:#ef4444}
+.dot.ok{background:#22c55e}.dot.err{background:#ef4444}
 </style>
 </head>
 <body>
 <div class="logo">Fortinet</div>
 <div class="subtitle">Your current Fortinet Cloud Risk IQ</div>
 <div class="gauge-wrap">
-  <svg id="gsv" viewBox="0 0 400 230" style="display:block;width:100%;overflow:visible">
+  <svg viewBox="0 0 400 230" style="display:block;width:100%;overflow:visible">
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
         <stop offset="0%"    stop-color="#ef4444"/>
@@ -1190,6 +1199,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
   <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
 </div>
+<hr class="divider">
+<div class="sec-title">Recommended Next Steps</div>
+<div class="steps" id="steps"></div>
 <div class="meta">
   <span class="dot" id="ldot"></span><span id="lacct"></span><br>
   Last refresh: <span id="ltime">—</span>
@@ -1206,20 +1218,30 @@ function calcScore(d){
   if(!risks.length)return 100;
   return Math.round(100-risks.reduce(function(s,v){return s+v;},0)/risks.length);
 }
+function buildSteps(d,p){
+  var items=[];
+  if((d.identities||[]).length) items.push({color:'#ef4444',title:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA & Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
+  if((d.alerts||[]).length)     items.push({color:'#f97316',title:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
+  if((d.vulns||[]).length)      items.push({color:'#f59e0b',title:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
+  if((d.compliance||[]).length) items.push({color:'#3b82f6',title:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
+  if(!items.length) items.push({color:'#22c55e',title:'Security posture is excellent — keep monitoring',sub:'Fortinet Cloud Risk IQ: '+p+'/100'});
+  document.getElementById('steps').innerHTML=items.map(function(a,i){
+    return '<div class="step"><div class="step-bar" style="background:'+a.color+'"></div><div class="step-n">'+(i+1)+'</div><div class="step-body"><div class="step-title">'+a.title+'</div><div class="step-sub">'+a.sub+'</div></div></div>';
+  }).join('');
+}
 function refresh(){
   fetch('/api/data').then(function(r){return r.json();}).then(function(d){
     var p=calcScore(d);
     var color=scoreColor(p);
-    var arc=document.getElementById('garc');
-    arc.setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
+    document.getElementById('garc').setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
     var band=document.getElementById('band');
     band.textContent=scoreBand(p);band.style.color=color;
     document.getElementById('t-a').textContent=(d.alerts||[]).length;
     document.getElementById('t-v').textContent=(d.vulns||[]).length;
     document.getElementById('t-i').textContent=(d.identities||[]).length;
     document.getElementById('t-c').textContent=(d.compliance||[]).length;
-    var dot=document.getElementById('ldot');
-    dot.className='dot ok';
+    buildSteps(d,p);
+    document.getElementById('ldot').className='dot ok';
     document.getElementById('lacct').textContent=d.account||'';
     document.getElementById('ltime').textContent=new Date().toLocaleTimeString();
   }).catch(function(){document.getElementById('ldot').className='dot err';});
