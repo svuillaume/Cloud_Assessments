@@ -1287,6 +1287,9 @@ http.createServer((req, res) => {
     });
     return;
   }
+  const ua = req.headers['user-agent'] || '';
+  const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+
   if (req.url === '/api/data') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...CORS });
     res.end(JSON.stringify(cache));
@@ -1296,6 +1299,12 @@ http.createServer((req, res) => {
   } else if (req.url === '/mobile') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(MOBILE_HTML);
+  } else if (req.url === '/desktop') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.end(HTML);
+  } else if (isMobile && req.url === '/') {
+    res.writeHead(302, { Location: '/mobile', ...CORS });
+    res.end();
   } else {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
