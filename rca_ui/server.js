@@ -1135,6 +1135,101 @@ setInterval(()=>{
 
 const HTML = buildHtml(LW_ACCOUNT, INTERVAL);
 
+const MOBILE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Fortinet Cloud Risk IQ</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:32px 20px 40px}
+.logo{font-size:11px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:#DA291C;margin-bottom:4px;text-align:center}
+.subtitle{font-size:22px;font-weight:800;color:#0f172a;text-align:center;line-height:1.3;margin-bottom:24px;max-width:320px}
+.gauge-wrap{width:100%;max-width:360px;margin:0 auto}
+.band{font-size:16px;font-weight:700;text-align:center;margin-top:4px;min-height:24px;transition:color .4s}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;max-width:360px;margin-top:28px}
+.tile{background:#fff;border-radius:14px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);cursor:pointer;text-align:center}
+.tile-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
+.tile-val{font-size:36px;font-weight:900;color:#0f172a;line-height:1}
+.tile-a .tile-lbl{color:#ef4444}
+.tile-v .tile-lbl{color:#f97316}
+.tile-i .tile-lbl{color:#8b5cf6}
+.tile-c .tile-lbl{color:#f59e0b}
+.meta{margin-top:28px;font-size:11px;color:#94a3b8;text-align:center;line-height:2}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#94a3b8;margin-right:4px;vertical-align:middle}
+.dot.ok{background:#22c55e} .dot.err{background:#ef4444}
+</style>
+</head>
+<body>
+<div class="logo">Fortinet</div>
+<div class="subtitle">Your current Fortinet Cloud Risk IQ</div>
+<div class="gauge-wrap">
+  <svg id="gsv" viewBox="0 0 400 230" style="display:block;width:100%;overflow:visible">
+    <defs>
+      <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
+        <stop offset="0%"    stop-color="#ef4444"/>
+        <stop offset="50%"   stop-color="#ef4444"/>
+        <stop offset="50%"   stop-color="#f59e0b"/>
+        <stop offset="90.5%" stop-color="#f59e0b"/>
+        <stop offset="90.5%" stop-color="#22c55e"/>
+        <stop offset="100%"  stop-color="#22c55e"/>
+      </linearGradient>
+    </defs>
+    <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>
+    <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
+    <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+  </svg>
+</div>
+<div class="band" id="band">—</div>
+<div class="tiles">
+  <div class="tile tile-a"><div class="tile-lbl">Critical Alerts</div><div class="tile-val" id="t-a">—</div></div>
+  <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
+  <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
+  <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
+</div>
+<div class="meta">
+  <span class="dot" id="ldot"></span><span id="lacct"></span><br>
+  Last refresh: <span id="ltime">—</span>
+</div>
+<script>
+function scoreColor(p){return p>=80?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=80?'Proactive Security':p>=50?'Ongoing Security Posture':'Attention Needed';}
+function calcScore(d){
+  var risks=[];
+  (d.alerts||[]).forEach(function(){risks.push(95);});
+  (d.vulns||[]).forEach(function(r){risks.push(Math.min(100,parseFloat(r.riskScore||0)*10));});
+  (d.compliance||[]).forEach(function(){risks.push(80);});
+  (d.identities||[]).forEach(function(r){risks.push(Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100));});
+  if(!risks.length)return 100;
+  return Math.round(100-risks.reduce(function(s,v){return s+v;},0)/risks.length);
+}
+function refresh(){
+  fetch('/api/data').then(function(r){return r.json();}).then(function(d){
+    var p=calcScore(d);
+    var color=scoreColor(p);
+    var arc=document.getElementById('garc');
+    arc.setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
+    var band=document.getElementById('band');
+    band.textContent=scoreBand(p);band.style.color=color;
+    document.getElementById('t-a').textContent=(d.alerts||[]).length;
+    document.getElementById('t-v').textContent=(d.vulns||[]).length;
+    document.getElementById('t-i').textContent=(d.identities||[]).length;
+    document.getElementById('t-c').textContent=(d.compliance||[]).length;
+    var dot=document.getElementById('ldot');
+    dot.className='dot ok';
+    document.getElementById('lacct').textContent=d.account||'';
+    document.getElementById('ltime').textContent=new Date().toLocaleTimeString();
+  }).catch(function(){document.getElementById('ldot').className='dot err';});
+}
+refresh();
+setInterval(refresh,60000);
+</script>
+</body>
+</html>`;
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 const CORS = {
@@ -1176,6 +1271,9 @@ http.createServer((req, res) => {
   } else if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain', ...CORS });
     res.end('OK');
+  } else if (req.url === '/mobile') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.end(MOBILE_HTML);
   } else {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
