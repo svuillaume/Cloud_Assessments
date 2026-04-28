@@ -727,6 +727,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
       <text id="gauge-score" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900"
             letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+      <!-- Scale labels at arc endpoints -->
+      <text x="14" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">0</text>
+      <text x="386" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">100</text>
     </svg>
     <div class="rs-band" id="rs-band" style="display:none">—</div>
     <!-- Findings summary below gauge -->
@@ -1187,6 +1190,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
     <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
+    <text x="14" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
+    <text x="386" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">100</text>
   </svg>
 </div>
 <div class="tiles">
