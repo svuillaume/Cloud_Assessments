@@ -152,6 +152,79 @@ docker cp rca_ui/server.js rca:/app/server.js && docker restart rca
 
 ---
 
+### run-rca.sh — Quick start script
+
+`run-rca.sh` assumes the image is already built. It stops any existing `rca` container and starts a fresh one from the `rca-dashboard` image using your `.env` file.
+
+```bash
+#!/usr/bin/env bash
+#
+# run-rca.sh - Manage RCA Dashboard Docker container
+#
+# Logic:
+#   1. Check if 'rca-dashboard' image exists locally.
+#   2. If a container named 'rca' already exists, stop and remove it.
+#   3. Run 'rca-dashboard' as container 'rca' on port 8080 with .env file.
+#
+
+set -euo pipefail
+
+# ---- Configuration ----------------------------------------------------------
+IMAGE_NAME="rca-dashboard"
+CONTAINER_NAME="rca"
+HOST_PORT=8080
+CONTAINER_PORT=8080
+ENV_FILE=".env"
+
+# ---- Helpers ----------------------------------------------------------------
+log()  { printf '[%s] %s\n' "$(date +'%H:%M:%S')" "$*"; }
+fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+
+image_exists() {
+    sudo docker images --format '{{.Repository}}' | grep -Fxq "$1"
+}
+
+container_exists() {
+    sudo docker ps -a --format '{{.Names}}' | grep -Fxq "$1"
+}
+
+# ---- Pre-flight checks ------------------------------------------------------
+command -v docker >/dev/null 2>&1 || fail "docker is not installed or not in PATH"
+[[ -f "${ENV_FILE}" ]] || fail "Env file '${ENV_FILE}' not found in $(pwd)"
+
+# ---- Main logic -------------------------------------------------------------
+if ! image_exists "${IMAGE_NAME}"; then
+    fail "Image '${IMAGE_NAME}' not found locally. Build it first (e.g. 'sudo docker build -t ${IMAGE_NAME} .') or pull it."
+fi
+
+log "Image '${IMAGE_NAME}' is present."
+
+if container_exists "${CONTAINER_NAME}"; then
+    log "Existing container '${CONTAINER_NAME}' found - stopping and removing..."
+    sudo docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    sudo docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    log "Container '${CONTAINER_NAME}' removed."
+fi
+
+log "Starting container '${CONTAINER_NAME}' from image '${IMAGE_NAME}'..."
+sudo docker run --rm -d \
+    --name "${CONTAINER_NAME}" \
+    -p "${HOST_PORT}:${CONTAINER_PORT}" \
+    --env-file "${ENV_FILE}" \
+    "${IMAGE_NAME}"
+
+log "Container '${CONTAINER_NAME}' started. Listening on http://localhost:${HOST_PORT}"
+```
+
+Save as `run-rca.sh` in `rca_ui/`, then:
+
+```bash
+chmod +x run-rca.sh
+./run-rca.sh
+```
+
+---
+
 ## Generating a CSA Report
 
 ### 1. Set up Python environment
