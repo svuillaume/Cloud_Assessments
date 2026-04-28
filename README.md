@@ -41,7 +41,7 @@ The container handles TLS automatically via `entrypoint.sh`. When `DOMAIN` is se
 **Requirements:**
 - A public domain pointing to your server's IP
 - Port **80** publicly reachable (for the ACME HTTP-01 challenge)
-- Port **8443** open for HTTPS traffic
+- Port **443** open for HTTPS traffic
 
 **`.env` file on your server:**
 ```bash
@@ -63,7 +63,7 @@ sudo docker build -t rca-dashboard .
 sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
-    -p 8443:8443 \
+    -p 443:8443 \
     --env-file .env \
     -v letsencrypt:/etc/letsencrypt \
     rca-dashboard
@@ -83,7 +83,7 @@ Expected output:
 │  Open     : https://domain.yourdomain.com:8443
 ```
 
-Dashboard will be available at **https://domain.yourdomain.com:8443**.
+Dashboard will be available at **https://domain.yourdomain.com**.
 
 **Supply your own existing certificate** (skip certbot):
 ```bash
