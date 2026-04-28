@@ -1753,6 +1753,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .step-body{}
 .step-title{font-size:13px;font-weight:700;color:#0f172a;line-height:1.4}
 .step-sub{font-size:11px;color:#94a3b8;margin-top:3px;line-height:1.4}
+.assets{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px}
+.asset-card{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+.asset-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.asset-rank{font-size:17px;font-weight:900;width:28px;flex-shrink:0}
+.asset-name{font-size:12px;font-weight:700;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.asset-score{font-size:20px;font-weight:900;flex-shrink:0}
+.asset-bar-bg{height:6px;background:#f1f5f9;border-radius:4px;margin-bottom:8px}
+.asset-bar{height:6px;border-radius:4px;transition:width .8s}
+.asset-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;border:1px solid;margin-right:4px}
 .meta{margin-top:28px;font-size:11px;color:#94a3b8;text-align:center;line-height:2}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#94a3b8;margin-right:4px;vertical-align:middle}
 .dot.ok{background:#22c55e}.dot.err{background:#ef4444}
@@ -1762,7 +1771,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div class="logo">Fortinet</div>
 <div class="subtitle">Your current Cloud Security Posture Score</div>
 <div class="gauge-wrap">
-  <svg viewBox="0 0 400 230" style="display:block;width:100%;overflow:visible">
+  <svg viewBox="0 0 400 245" style="display:block;width:100%;overflow:visible">
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
         <stop offset="0%"    stop-color="#ef4444"/>
@@ -1778,27 +1787,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <line x1="200" y1="10" x2="200" y2="44"  stroke="white" stroke-width="3" stroke-linecap="round"/>
     <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
-    <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
-    <text x="408" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">100</text>
+    <text x="25"  y="232" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+    <text x="375" y="232" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
   </svg>
 </div>
+<div id="m-band" class="band" style="font-size:13px;font-weight:800;text-align:center;margin-top:-4px;margin-bottom:8px;letter-spacing:.04em">—</div>
 <div class="tiles">
-  <div class="tile tile-a"><div class="tile-lbl">Critical Alerts</div><div class="tile-val" id="t-a">—</div></div>
+  <div class="tile tile-a"><div class="tile-lbl">High Fidelity Alerts</div><div class="tile-val" id="t-a">—</div></div>
   <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
   <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
   <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
   <div class="tile tile-i" onclick="nav('secrets-all')" style="cursor:pointer"><div class="tile-lbl">Secrets</div><div class="tile-val" id="t-sa">—</div></div>
 </div>
 <hr class="divider">
+<div class="sec-title">Correlated Risk Findings per Asset</div>
+<div class="assets" id="m-assets"><div style="font-size:12px;color:#94a3b8;text-align:center;padding:8px 0">Loading…</div></div>
+<hr class="divider">
 <div class="sec-title">Recommended Next Steps</div>
 <div class="steps" id="steps"></div>
 <div class="meta">
-  <span class="dot" id="ldot"></span><span id="lacct"></span><br>
+  <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment<br>
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
-function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Proactive Security':p>=60?'Some Attention Needed':'URGENT – Attention Needed';}
+function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=90?'Proactive Security':p>=50?'Some Attention Needed':'URGENT – Attention Needed';}
 function calcScore(d){
   var risks=[];
   (d.alerts||[]).forEach(function(){risks.push(95);});
@@ -1808,12 +1821,49 @@ function calcScore(d){
   (d.secretsAll||[]).forEach(function(){risks.push(75);});
   return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
+function buildAssets(d){
+  var map={};
+  function get(host,mid){var k=host||mid||'?';if(!map[k])map[k]={name:host||mid||'?',vulns:[],secrets:[],risk:0};return map[k];}
+  (d.vulns||[]).forEach(function(r){
+    var host=r.evalCtx&&(r.evalCtx.hostname||r.evalCtx.mid)||'';if(!host)return;
+    var w=Math.min(100,parseFloat(r.riskScore||0)*10);
+    get(host).vulns.push(r.vulnId||'');get(host).risk+=w;
+  });
+  (d.secretsAll||[]).forEach(function(r){
+    var host=r.HOSTNAME||r.MID||'';if(!host)return;
+    get(host).secrets.push(r.SECRET_TYPE||'');get(host).risk+=50;
+  });
+  var all=Object.values(map).filter(function(a){return a.risk>0;}).sort(function(a,b){return b.risk-a.risk;});
+  var maxRisk=all.length?all[0].risk:1;
+  var sorted=all.filter(function(a){return Math.round(a.risk/maxRisk*100)>20;}).slice(0,6);
+  var el=document.getElementById('m-assets');if(!el)return;
+  if(!sorted.length){el.innerHTML='<div style="font-size:12px;color:#94a3b8;text-align:center;padding:8px 0">No significant asset risk detected</div>';return;}
+  var medalColor=['#ef4444','#f97316','#f59e0b','#94a3b8'];
+  el.innerHTML=sorted.map(function(a,i){
+    var score=Math.round(a.risk/maxRisk*100);
+    var col=score>=60?'#ef4444':score>=30?'#f59e0b':'#22c55e';
+    var rank=medalColor[Math.min(i,3)];
+    var badges='';
+    if(a.vulns.length)badges+='<span class="asset-badge" style="color:#f97316;border-color:#fed7aa">'+a.vulns.length+' CVE</span>';
+    if(a.secrets.length)badges+='<span class="asset-badge" style="color:#0ea5e9;border-color:#bae6fd">'+a.secrets.length+' Secret'+(a.secrets.length>1?'s':'')+'</span>';
+    return'<div class="asset-card">'
+      +'<div class="asset-row">'
+        +'<div class="asset-rank" style="color:'+rank+'">#'+(i+1)+'</div>'
+        +'<div class="asset-name" title="'+a.name+'">'+a.name+'</div>'
+        +'<div class="asset-score" style="color:'+col+'">'+score+'</div>'
+      +'</div>'
+      +'<div class="asset-bar-bg"><div class="asset-bar" style="width:'+score+'%;background:'+col+'"></div></div>'
+      +(badges?'<div style="margin-top:4px">'+badges+'</div>':'')
+    +'</div>';
+  }).join('');
+}
 function buildSteps(d,p){
   var items=[];
   if((d.identities||[]).length) items.push({color:'#ef4444',title:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA & Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
   if((d.alerts||[]).length)     items.push({color:'#f97316',title:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length)      items.push({color:'#f59e0b',title:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) items.push({color:'#3b82f6',title:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
+  if((d.secretsAll||[]).length) items.push({color:'#0ea5e9',title:'Rotate '+d.secretsAll.length+' exposed secret'+(d.secretsAll.length===1?'':'s')+' detected on hosts',sub:'API keys, tokens & credentials — revoke and re-issue immediately'});
   if(!items.length) items.push({color:'#22c55e',title:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
   document.getElementById('steps').innerHTML=items.map(function(a,i){
     return '<div class="step"><div class="step-bar" style="background:'+a.color+'"></div><div class="step-n">'+(i+1)+'</div><div class="step-body"><div class="step-title">'+a.title+'</div><div class="step-sub">'+a.sub+'</div></div></div>';
@@ -1825,13 +1875,15 @@ function refresh(){
     var color=scoreColor(p);
     document.getElementById('garc').setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
     var ms=document.getElementById('mscore');if(ms){ms.textContent=p;ms.setAttribute('fill',color);}
+    var mb=document.getElementById('m-band');if(mb){mb.textContent=scoreBand(p);mb.style.color=color;}
     document.getElementById('t-a').textContent=(d.alerts||[]).length;
     document.getElementById('t-v').textContent=(d.vulns||[]).length;
     document.getElementById('t-i').textContent=(d.identities||[]).length;
     document.getElementById('t-c').textContent=(d.compliance||[]).length;
+    var tsa=document.getElementById('t-sa');if(tsa)tsa.textContent=(d.secretsAll||[]).length;
+    buildAssets(d);
     buildSteps(d,p);
     document.getElementById('ldot').className='dot ok';
-    document.getElementById('lacct').textContent=d.account||'';
     document.getElementById('ltime').textContent=new Date().toLocaleTimeString();
   }).catch(function(){document.getElementById('ldot').className='dot err';});
 }
