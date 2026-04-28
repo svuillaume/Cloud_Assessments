@@ -709,6 +709,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
   </div>
+  <div class="sb-item" id="nav-secrets-ssh" onclick="nav('secrets-ssh')">
+    <svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+    SSH Key Types
+  </div>
   <div class="sb-sect">Risk Center</div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
@@ -874,6 +878,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
+<!-- ═══ View: SSH Key Types ═══ -->
+<div class="view" id="view-secrets-ssh">
+  <div class="view-hdr vha-purple">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Discovered SSH Key Type</div>
+      <div class="vh-sub">LW_HE_SECRETS_SSH_PRIVATE_KEYS · SSH private keys by algorithm — legacy ssh-rsa should be rotated</div>
+    </div>
+    <span class="vh-badge" id="cnt-ssh">—</span>
+  </div>
+  <div id="body-ssh"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
   <div style="text-align:center;padding:24px 32px 16px;background:#fff;border-bottom:1px solid var(--border)">
@@ -885,6 +902,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <circle id="rf-pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#f97316" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
         <circle id="rf-pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#8b5cf6" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
         <circle id="rf-pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#f59e0b" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-s" cx="110" cy="110" r="80" fill="none" stroke="#0ea5e9" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
       </g>
       <text id="rf-pie-total" x="110" y="102" text-anchor="middle" dominant-baseline="middle" fill="#0f172a" font-size="42" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
       <text x="110" y="128" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
@@ -895,6 +913,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">CVEs</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:9px;height:9px;border-radius:50%;background:#8b5cf6"></div><span style="color:#475569">Identities</span><b id="rf-n-i" style="margin-left:3px;color:#0f172a">—</b></div>
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Compliance</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('secrets-all')"><div style="width:9px;height:9px;border-radius:50%;background:#0ea5e9"></div><span style="color:#475569">Secrets</span><b id="rf-n-s" style="margin-left:3px;color:#0f172a">—</b></div>
     </div>
   </div>
   <div class="rf-kpis">
@@ -902,6 +921,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div class="rf-kpi"><div class="rf-kpi-lbl">CVEs Risk ≥ 9</div><div class="rf-kpi-val" id="rf-k-v">—</div><div class="rf-kpi-sub">Critical host CVEs</div></div>
     <div class="rf-kpi"><div class="rf-kpi-lbl">Non-Compliance</div><div class="rf-kpi-val" id="rf-k-c">—</div><div class="rf-kpi-sub">Critical controls violated</div></div>
     <div class="rf-kpi"><div class="rf-kpi-lbl">Risky Identities</div><div class="rf-kpi-val" id="rf-k-i">—</div><div class="rf-kpi-sub">No MFA · Admin/over-privileged</div></div>
+    <div class="rf-kpi"><div class="rf-kpi-lbl">Secrets Detected</div><div class="rf-kpi-val" id="rf-k-s">—</div><div class="rf-kpi-sub">Verify &amp; deprecate all</div></div>
   </div>
   <div class="rf-body">
     <div id="rf-table"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
@@ -957,6 +977,7 @@ function buildPie(d){
     {id:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
     {id:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
     {id:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
+    {id:'rf-pseg-s',key:'s',n:(d.secretsAll||[]).length},
   ];
   var total=segs.reduce(function(s,c){return s+c.n;},0);
   var C=502.65,GAP=7;
@@ -1076,6 +1097,22 @@ function renderSecretsAll(rows,err){
     }).join('')+'</tbody></table></div>');
 }
 
+function renderSecretsSsh(rows,err){
+  setCount('cnt-ssh',rows?rows.length:0,true);
+  if(err){state('body-ssh','',err);return}
+  if(!rows||!rows.length){state('body-ssh','','No SSH private keys detected');return}
+  setBody('body-ssh','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>File Path</th><th>SSH Key Type</th><th>Risk</th></tr></thead><tbody>'
+    +rows.map((r,i)=>{
+      const isRsa=(r.SSH_KEY_TYPE||'').toLowerCase()==='ssh-rsa';
+      return'<tr class="'+(isRsa?'strip-cr':'')+(i%2&&!isRsa?'':'')+('">')
+        +'<td class="p">'+e(r.HOSTNAME||'—')+'</td>'
+        +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code></td>'
+        +'<td><span class="b '+(isRsa?'b-cr':'b-ok')+'">'+e(r.SSH_KEY_TYPE||'—')+'</span></td>'
+        +'<td>'+(isRsa?'<span class="tag-nomfa">ROTATE NOW</span>':'<span class="b b-ok">OK</span>')+'</td>'
+      +'</tr>';
+    }).join('')+'</tbody></table></div>');
+}
+
 function nav(name){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('active'));
@@ -1107,11 +1144,13 @@ function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
+  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0,ns=(d.secretsAll||[]).length;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
   document.getElementById('rf-k-c').textContent=nc;
   document.getElementById('rf-k-i').textContent=ni;
+  document.getElementById('rf-k-s').textContent=ns;
+  document.getElementById('rf-n-s').textContent=ns||'0';
   document.getElementById('ov-a').textContent=na;
   document.getElementById('ov-v').textContent=nv;
   document.getElementById('ov-i').textContent=ni;
@@ -1122,6 +1161,7 @@ function renderRiskFindings(d){
   (d.vulns||[]).forEach(r=>items.push({cat:'CVE',title:r.vulnId,detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10,href:base+'/ui/investigation/vulnerabilities/hosts'}));
   (d.compliance||[]).forEach(r=>items.push({cat:'Compliance',title:r.title,detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80,href:base+'/ui/compliance'}));
   (d.identities||[]).forEach(r=>items.push({cat:'Identity',title:r.NAME||r.PRINCIPAL_ID,detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100,href:base+'/ui/insights'}));
+  (d.secretsAll||[]).forEach(r=>items.push({cat:'Secret',title:r.SECRET_TYPE||'Secret',detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',30),score:90,href:base+'/ui/investigation'}));
   items.sort((a,b)=>b.score-a.score);
   if(!items.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
   setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th>Category</th><th>Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'
@@ -1144,6 +1184,7 @@ function renderLab(d){
   if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
+  if((d.secretsAll||[]).length) actions.push({cls:'p1',n:actions.length+1,tab:'secrets-all',text:'Verify &amp; Deprecate '+d.secretsAll.length+' discovered secret'+(d.secretsAll.length===1?'':'s')+' — rotate or revoke immediately',sub:'Secrets · SSH keys, API tokens &amp; credentials detected on hosts'});
   if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
   const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
   document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
@@ -1158,6 +1199,7 @@ async function load(){
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
+    renderSecretsSsh(d.secrets,d.errors?.secrets);
     updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
