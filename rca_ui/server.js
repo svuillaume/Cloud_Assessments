@@ -1156,21 +1156,27 @@ function renderRiskFindings(d){
   document.getElementById('ov-i').textContent=ni;
   document.getElementById('ov-c').textContent=nc;
   const base='https://'+d.account;
-  const items=[];
-  (d.alerts||[]).forEach(r=>items.push({cat:'Alert',title:r.alertName,detail:r.alertType,score:95,href:base+'/ui/investigation/alerts/'+r.alertId}));
-  (d.vulns||[]).forEach(r=>items.push({cat:'CVE',title:r.vulnId,detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10,href:base+'/ui/investigation/vulnerabilities/hosts'}));
-  (d.compliance||[]).forEach(r=>items.push({cat:'Compliance',title:r.title,detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80,href:base+'/ui/compliance'}));
-  (d.identities||[]).forEach(r=>items.push({cat:'Identity',title:r.NAME||r.PRINCIPAL_ID,detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100,href:base+'/ui/insights'}));
-  (d.secretsAll||[]).forEach(r=>items.push({cat:'Secret',title:r.SECRET_TYPE||'Secret',detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',30),score:90,href:base+'/ui/investigation'}));
-  items.sort((a,b)=>b.score-a.score);
-  if(!items.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
-  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th>Category</th><th>Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'
-    +items.slice(0,25).map(r=>'<tr>'
-      +'<td><span class="b b-nt">'+e(r.cat)+'</span></td>'
-      +'<td class="p"><a class="rf-link" href="'+e(r.href)+'" target="_blank" title="Open in FortiCNAPP">'+e(tr(r.title,42))+' &#8599;</a></td>'
-      +'<td class="m">'+e(tr(r.detail,38))+'</td>'
+  const groups=[
+    {key:'Alert',     label:'Critical Alerts',      color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,detail:r.alertType,score:95,href:base+'/ui/investigation/alerts/'+r.alertId}))},
+    {key:'CVE',       label:'Critical CVEs',         color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId,detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10,href:base+'/ui/investigation/vulnerabilities/hosts'}))},
+    {key:'Identity',  label:'Identity Risk',         color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID,detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100,href:base+'/ui/insights'}))},
+    {key:'Compliance',label:'Non-Compliance',        color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80,href:base+'/ui/compliance'}))},
+    {key:'Secret',    label:'Secrets Detected',      color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret',detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90,href:base+'/ui/investigation'}))},
+  ].filter(g=>g.items.length);
+  if(!groups.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
+  const rows=groups.map(g=>{
+    const hdr='<tr style="background:#f8fafc;border-top:2px solid '+g.color+'">'
+      +'<td colspan="3" style="padding:7px 12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:'+g.color+'"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)+'</td>'
+      +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" onclick="nav(\''+g.tab+'\');return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
+      +'</tr>';
+    const detail=g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
+      +'<td class="p" colspan="2"><a class="rf-link" href="'+e(r.href)+'" target="_blank">'+e(tr(r.title,48))+' &#8599;</a></td>'
+      +'<td class="m">'+e(tr(r.detail,36))+'</td>'
       +'<td class="r"><span class="risk-score">'+Math.round(r.score)+'</span></td>'
-    +'</tr>').join('')+'</tbody></table></div>');
+    +'</tr>').join('');
+    return hdr+detail;
+  }).join('');
+  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th colspan="2">Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 }
 
 function renderLab(d){
