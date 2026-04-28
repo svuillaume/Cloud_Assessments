@@ -17,8 +17,6 @@ Two tools that work together:
 | Tool | File | What it does |
 |------|------|--------------|
 | **Live Dashboard** | `rca_ui/server.js` | Real-time web UI — Cloud Security Posture Management Score, alerts, CVEs, secrets, identities, compliance | 
-| **CSA Report Generator** | `lw_report_gen.py` | Generates a PDF/HTML Cloud Security Assessment report |
-
 ---
 
 ## Running the Dashboard
