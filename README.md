@@ -172,8 +172,8 @@ set -euo pipefail
 # ---- Configuration ----------------------------------------------------------
 IMAGE_NAME="rca-dashboard"
 CONTAINER_NAME="rca"
-HOST_PORT=8080
-CONTAINER_PORT=8080
+HOST_PORT=80
+CONTAINER_PORT=80
 ENV_FILE=".env"
 
 # ---- Helpers ----------------------------------------------------------------
@@ -215,6 +215,8 @@ sudo docker run --rm -d \
 
 log "Container '${CONTAINER_NAME}' started. Listening on http://localhost:${HOST_PORT}"
 ```
+
+> **`.env` must include `PORT=80`** so Node binds inside the container on port 80.
 
 Save as `run-rca.sh` in `rca_ui/`, then:
 
