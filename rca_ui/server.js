@@ -11,15 +11,24 @@ const path  = require('path');
 
 const CONTACTS_CSV = path.join(__dirname, 'contacts.csv');
 if (!fs.existsSync(CONTACTS_CSV)) {
-  fs.writeFileSync(CONTACTS_CSV, 'Timestamp,FirstName,LastName,Company,Role,Email\n');
+  fs.writeFileSync(CONTACTS_CSV, 'Timestamp,FirstName,LastName,Company,Handle\n');
 }
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const LW_ACCOUNT = process.env.LW_ACCOUNT || 'partner-demo.lacework.net';
 const LW_KEY_ID  = process.env.LW_KEY_ID  || 'YOUR_KEY_ID';
 const LW_SECRET  = process.env.LW_SECRET  || 'YOUR_SECRET_KEY';
-const PORT       = Number(process.env.PORT) || 8080;
-const INTERVAL   = 3600; // refresh interval (seconds) — 60 min
+const PORT       = Number(process.env.PORT)     || 8080;
+const PORT_TLS   = Number(process.env.PORT_TLS) || 8443;
+const TLS_CERT   = process.env.TLS_CERT || '';  // path to fullchain.pem
+const TLS_KEY    = process.env.TLS_KEY  || '';  // path to privkey.pem
+const INTERVAL   = 86400; // refresh interval (seconds) — 24 hrs
+let dynamicInterval = INTERVAL;
+let _refreshTimer = null;
+function startRefreshTimer() {
+  if (_refreshTimer) clearInterval(_refreshTimer);
+  _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
+}
 const DAYS_BACK  = 7;    // look-back window
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,6 +41,8 @@ let cache = {
   riskScore: 0,
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
 };
+
+
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -201,6 +212,7 @@ async function fetchCompliance() {
         description: p.description || '—',
         severity:    'Critical',
         violations:  rows.length,
+        resources:   rows.slice(0, 100), // up to 100 violating resources per policy
       });
     } catch (e) {
       console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
@@ -258,6 +270,69 @@ async function fetchIdentities() {
     .slice(0, 10);
 }
 
+// ── 5. Secrets All — POST /api/v2/Queries/execute (LQL) ──────────────────────
+// LW_HE_SECRETS_ALL dataset — all discovered secrets across hosts
+
+async function fetchSecretsAll() {
+  const tf = timeFilter();
+  const queryText = `{source { LW_HE_SECRETS_ALL } return distinct {BATCH_START_TIME, BATCH_END_TIME, BATCH_ID, RECORD_CREATED_TIME, MID, HOSTNAME, IS_IN_CONTAINER, CONTAINER_KEY, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
+  const tok = await ensureToken();
+  const all = [];
+
+  // First page
+  const { status: s1, body: r1 } = await request(
+    'POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+    { Authorization: `Bearer ${tok}` },
+    { query: { queryText }, arguments: [
+      { name: 'StartTimeRange', value: tf.startTime },
+      { name: 'EndTimeRange',   value: tf.endTime   },
+    ] },
+  );
+  if (s1 !== 200 && s1 !== 201) throw new Error(`Queries/execute → HTTP ${s1}`);
+  if (Array.isArray(r1?.data)) all.push(...r1.data);
+
+  // Follow pages
+  let nextUrl = r1?.paging?.urls?.nextPage || null;
+  while (nextUrl) {
+    const u = new URL(nextUrl);
+    const { status: sN, body: rN } = await request(
+      'GET', LW_ACCOUNT, u.pathname + u.search,
+      { Authorization: `Bearer ${tok}` }, null,
+    );
+    if (sN !== 200) break;
+    if (Array.isArray(rN?.data)) all.push(...rN.data);
+    nextUrl = rN?.paging?.urls?.nextPage || null;
+  }
+
+  // Exclude system SSH host keys (etc/ssh/ssh_host_*) with chmod 600 (file_permissions=33152=0o100600)
+  const filtered = all.filter(r => {
+    const path = (r.FILE_PATH || '');
+    const meta = (typeof r.SECRET_METADATA === 'object' && r.SECRET_METADATA) ? r.SECRET_METADATA : {};
+    const isHostKey = /etc\/ssh\/ssh_host_/i.test(path);
+    const isChmod600 = meta.file_permissions === 33152;
+    return !(isHostKey && isChmod600);
+  });
+  console.log(`  [secrets-all] total: ${all.length}, after exclusions: ${filtered.length}`);
+  return filtered;
+}
+
+// ── 6. Secrets SSH Keys — POST /api/v2/Queries/execute (LQL) ─────────────────
+// LW_HE_SECRETS_SSH_PRIVATE_KEYS dataset — SSH private keys detected on hosts
+
+async function fetchSecrets() {
+  const tf = timeFilter();
+  const queryText = `{source { LW_HE_SECRETS_SSH_PRIVATE_KEYS } return {HOSTNAME, FILE_PATH, SSH_KEY_TYPE}}`;
+  const rows = await post('Queries/execute', {
+    query: { queryText },
+    arguments: [
+      { name: 'StartTimeRange', value: tf.startTime },
+      { name: 'EndTimeRange',   value: tf.endTime   },
+    ],
+  });
+  console.log(`  [secrets-ssh] total returned: ${rows.length}`);
+  return rows;
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 
 function calcRiskScore(alerts, vulns, identities) {
@@ -272,10 +347,12 @@ async function refreshData() {
   const errors = {};
 
   // Phase 1: fast parallel fetch — update cache immediately so UI is responsive
-  const [a, v, i] = await Promise.allSettled([
+  const [a, v, i, s, sa] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
+    fetchSecrets(),
+    fetchSecretsAll(),
   ]);
 
   function unwrap(res, key) {
@@ -285,19 +362,21 @@ async function refreshData() {
     return [];
   }
 
-  const alerts     = unwrap(a, 'alerts');
-  const vulns      = unwrap(v, 'vulns');
-  const identities = unwrap(i, 'identities');
+  const alerts     = unwrap(a,  'alerts');
+  const vulns      = unwrap(v,  'vulns');
+  const identities = unwrap(i,  'identities');
+  const secrets    = unwrap(s,  'secrets');
+  const secretsAll = unwrap(sa, 'secretsAll');
 
   // Publish fast data right away; compliance will update the cache when ready
   cache = {
     ...cache,
-    alerts, vulns, identities,
+    alerts, vulns, identities, secrets, secretsAll,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
     riskScore: calcRiskScore(alerts, vulns, identities),
-    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length },
+    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: secretsAll.length },
   };
 
   // Phase 2: compliance runs after (avoids rate-limit collision with identities LQL)
@@ -315,6 +394,8 @@ async function refreshData() {
       vulns:      vulns.length,
       compliance: compliance.length,
       identities: identities.length,
+      secrets:    secrets.length,
+      secretsAll: secretsAll.length,
     },
   };
 
@@ -453,6 +534,9 @@ td.r{text-align:right;padding-right:10px;white-space:nowrap;width:1%}
 /* ── Risk Findings links ── */
 .rf-link{color:var(--text);text-decoration:none;font-weight:500}
 .rf-link:hover{color:var(--accent-l);text-decoration:underline}
+.cp-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:none;background:transparent;color:#94a3b8;cursor:pointer;border-radius:3px;padding:0;margin-left:5px;vertical-align:middle;flex-shrink:0;transition:color .15s,background .15s}
+.cp-btn:hover{color:#DA291C;background:#fee2e2}
+.cp-btn.ok{color:#22c55e}
 
 /* ── Dashboard pie section ── */
 .pie-section{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px 32px 16px;background:#ffffff;border-bottom:1px solid var(--border)}
@@ -497,6 +581,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .app-layout{display:flex;min-height:100vh}
 .sidebar{width:214px;background:#111827;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
 .main{flex:1;min-width:0}
+.top-bar{display:flex;align-items:center;justify-content:flex-end;padding:8px 20px;background:#fff;border-bottom:1px solid var(--border);gap:12px;position:sticky;top:0;z-index:100}
+.tb-user{display:flex;align-items:center;gap:10px}
+.tb-avatar{width:32px;height:32px;border-radius:50%;background:#DA291C;color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;letter-spacing:.03em;flex-shrink:0}
+.tb-name{font-size:12px;font-weight:700;color:var(--text);line-height:1.2}
+.tb-role-lbl{font-size:10px;color:var(--muted);line-height:1.2}
+.tb-badge{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:5px;padding:2px 7px}
 .sb-brand{display:flex;align-items:center;gap:10px;padding:16px 14px;border-bottom:1px solid #1f2937}
 .sb-logo{width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .sb-logo svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
@@ -527,13 +617,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .rf-kpi-val{font-size:26px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text)}
 .rf-kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
 .rf-body{padding:16px 20px}
-/* ── Recommended Next Steps view ── */
-.lab-steps{padding:16px 32px}
-.lab-step{display:flex;align-items:flex-start;gap:18px;padding:20px 24px;margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 1px 3px rgba(15,23,42,.04)}
-.lab-step-bar{width:4px;border-radius:3px;flex-shrink:0;align-self:stretch;min-height:40px}
-.lab-step-n{font-size:13px;font-weight:700;color:var(--muted);min-width:20px;padding-top:1px}
-.lab-step-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.5}
-.lab-step-sub{font-size:12px;color:var(--muted);margin-top:5px}
+/* ── Journey Snake Map ── */
+.jmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
+.jmap-svg{width:100%;max-width:1000px;overflow:visible}
+@keyframes snake-flow{to{stroke-dashoffset:-26}}
 
 /* ── Report button + modal ── */
 .rpt-btn{display:flex;align-items:center;gap:8px;margin:8px 10px 0;padding:10px 13px;border-radius:8px;cursor:pointer;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;border:none;width:calc(100% - 20px);transition:filter .15s}
@@ -585,11 +672,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="login-overlay" id="login-overlay">
   <div class="login-box">
     <div class="login-logo">
-      <svg viewBox="0 0 100 100" width="36" height="36"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
-      <div class="login-logo-name">FortiCNAPP<br>Rapid Cloud Assessment</div>
+      <svg viewBox="0 0 100 100" width="32" height="32"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
+      <div class="login-logo-name">Fortinet &nbsp;·&nbsp; Rapid Cloud Assessment</div>
     </div>
     <div class="login-title">Welcome</div>
-    <div class="login-sub">Please identify yourself to access the dashboard</div>
+    <div class="login-sub">Enter your details to access the dashboard</div>
     <div class="login-row">
       <div class="login-field">
         <div class="login-label">First Name</div>
@@ -604,23 +691,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div class="login-label">Company</div>
       <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
     </div>
-    <div class="login-field">
-      <div class="login-label">Role</div>
-      <select class="login-select" id="li-role">
-        <option value="" disabled selected>Select your role…</option>
-        <option>CISO / Security Leader</option>
-        <option>Security Architect</option>
-        <option>Cloud Engineer</option>
-        <option>DevSecOps</option>
-        <option>IT Manager</option>
-        <option>Sales / PreSales</option>
-        <option>Other</option>
-      </select>
-    </div>
-    <div class="login-field">
-      <div class="login-label">Email</div>
-      <input class="login-input" id="li-email" type="email" placeholder="jane.smith@acme.com" autocomplete="email"/>
-    </div>
     <button class="login-btn" onclick="submitLogin()">Access Dashboard</button>
     <div class="login-err" id="login-err"></div>
   </div>
@@ -630,143 +700,194 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <!-- Sidebar -->
 <div class="sidebar">
-  <div class="sb-brand">
-    <div class="sb-logo">
-      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
-        <rect x="5" y="5"  width="39" height="28" rx="9" fill="#c93428"/>
+  <div class="sb-brand" style="flex-direction:column;align-items:flex-start;gap:3px;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:0">
+      <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">F</span>
+      <svg viewBox="0 0 100 100" width="17" height="17" style="margin:0 1px;vertical-align:middle">
+        <rect x="5"  y="5"  width="39" height="28" rx="9" fill="#c93428"/>
         <rect x="56" y="5"  width="39" height="28" rx="9" fill="#c93428"/>
-        <rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/>
+        <rect x="5"  y="41" width="39" height="18" rx="5" fill="#c93428"/>
         <rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/>
-        <rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/>
+        <rect x="5"  y="67" width="39" height="28" rx="9" fill="#c93428"/>
         <rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/>
       </svg>
+      <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">RTINET</span>
     </div>
-    <div class="sb-name" style="font-size:12px;line-height:1.3">Rapid Cloud<br>Assessment</div>
+    <div style="font-size:9px;font-weight:600;color:#6b7280;letter-spacing:.08em;text-transform:uppercase;margin-left:1px">Rapid Cloud Assessment</div>
   </div>
-  <div class="sb-sect">Overview</div>
+  <div class="sb-sect">Dashboard</div>
   <div class="sb-item active" id="nav-overview" onclick="nav('overview')">
     <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-    Dashboard
+    CSPM Score
   </div>
   <div class="sb-sect">Threat Center</div>
   <div class="sb-item" id="nav-alerts" onclick="nav('alerts')">
     <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-    Critical Alerts
+    High Fidelity Alerts
   </div>
+  <div class="sb-sect">Risk Findings</div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Vulnerabilities
-  </div>
-  <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
-    <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-    Compliance
+    Internet Threat Exposure
   </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Identities
   </div>
-  <div class="sb-sect">Risk Center</div>
+  <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
+    <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+    Critical Misconfigurations
+  </div>
+  <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
+    <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    Secrets
+  </div>
+  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
+    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
+    Most Critical per Asset
+  </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
     Critical Risk Findings
   </div>
+  <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-lab" onclick="nav('lab')">
     <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
     Next Steps
   </div>
-  <!-- Generate Report button -->
+  <div class="sb-item" id="nav-admin-settings" onclick="nav('admin-settings')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    Admin Settings
+  </div>
+  <!-- Generate Report button (alpha: live from cache) -->
   <div style="padding:0 0 6px">
-    <a href="https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html" target="_blank" rel="noopener" class="rpt-btn" style="display:flex;text-decoration:none">
+    <a id="rpt-btn-link" href="/report" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Report
     </a>
   </div>
   <!-- Sidebar meta -->
-  <div style="padding:16px 14px;border-top:1px solid #1f2937;margin-top:auto">
+  <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
-    <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center">
+    <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center;margin-bottom:8px">
       <div><b id="acct-lbl" style="color:#9ca3af">${account}</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
     </div>
+
   </div>
 </div>
 
 <!-- Main content -->
 <div class="main">
 
+<div class="top-bar" id="top-bar" style="display:none">
+  <div class="tb-user">
+    <div>
+      <div class="tb-name" id="tb-name">—</div>
+      <div class="tb-role-lbl" id="tb-role">—</div>
+    </div>
+    <div class="tb-avatar" id="tb-avatar">?</div>
+    <span class="tb-badge" id="tb-admin-badge" style="display:none">Admin</span>
+  </div>
+  <button onclick="logout()" style="margin-left:8px;padding:5px 12px;font-size:11px;font-weight:600;color:#64748b;background:transparent;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;letter-spacing:.03em" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">Sign out</button>
+</div>
+
 <div class="err-notice" id="err-bar"></div>
 
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
-  <div class="pie-section">
-    <div style="text-align:center;line-height:1.3">
-      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Cloud Security Posture Score</div>
-    </div>
-    <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 120px);padding:32px 24px 24px;gap:0">
+
+    <!-- Title -->
+    <div style="font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:2px">Cloud Security Posture Management Score</div>
+    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:16px">Fortinet Rapid Cloud Assessment · last ${DAYS_BACK} days</div>
+
+    <!-- Gauge -->
+    <svg id="gauge-svg" viewBox="0 0 400 240" style="display:block;width:100%;max-width:460px;overflow:visible">
       <defs>
-        <!-- Gradient: Red→Orange→Green (higher score = better posture)
-             Band boundaries: p=60→65.4%  p=90→97.5% of gradient width -->
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
-          <stop offset="65.4%" stop-color="#ef4444"/>
-          <stop offset="65.4%" stop-color="#f59e0b"/>
+          <stop offset="50%"   stop-color="#ef4444"/>
+          <stop offset="50%"   stop-color="#f59e0b"/>
           <stop offset="97.5%" stop-color="#f59e0b"/>
           <stop offset="97.5%" stop-color="#22c55e"/>
           <stop offset="100%"  stop-color="#22c55e"/>
         </linearGradient>
+        <filter id="gauge-glow"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="rgba(0,0,0,.12)"/></filter>
+        <!-- label path: slightly outside arc track (r=198) -->
+        <path id="lp" d="M 2,205 A 198,198 0 0,1 398,205"/>
       </defs>
-      <!-- Grey background track -->
-      <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+      <!-- Outer shadow ring -->
+      <path fill="none" stroke="#f0f4f8" stroke-width="42" stroke-linecap="round"
             d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- Coloured fill arc (gradient, grows with score) -->
-      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
-            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- White divider ticks at band boundaries 60 / 90 -->
-      <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <text id="gauge-score" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900"
-            letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-      <!-- Scale labels at arc endpoints -->
-      <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">0</text>
-      <text x="408" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">100</text>
+      <!-- Grey background track -->
+      <path fill="none" stroke="#e2e8f0" stroke-width="32" stroke-linecap="round"
+            d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <!-- Coloured fill arc -->
+      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="32" stroke-linecap="round"
+            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"
+            filter="url(#gauge-glow)" style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
+      <!-- Band divider ticks -->
+      <line x1="200" y1="12" x2="200" y2="48"  stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="350" y1="156" x2="387" y2="143" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <!-- Band labels curved along arc via textPath -->
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#ef4444">
+        <textPath href="#lp" startOffset="24.5%" text-anchor="middle">URGENT</textPath>
+      </text>
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#f59e0b">
+        <textPath href="#lp" startOffset="69.5%" text-anchor="middle">ATTENTION</textPath>
+      </text>
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#22c55e">
+        <textPath href="#lp" startOffset="96%" text-anchor="end">PROACTIVE</textPath>
+      </text>
+      <!-- Score number -->
+      <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="72" font-weight="900"
+            letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
+      <!-- Scale endpoints -->
+      <text x="10"  y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+      <text x="390" y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
     </svg>
-    <div class="rs-band" id="rs-band" style="display:none">—</div>
-    <!-- Findings summary below gauge -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-top:4px;font-size:12px;min-width:200px">
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="color:#475569">Alerts</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-a">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#f97316;flex-shrink:0"></div><span style="color:#475569">CVEs</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-v">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#8b5cf6;flex-shrink:0"></div><span style="color:#475569">Identities</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-i">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#d97706;flex-shrink:0"></div><span style="color:#475569">Compliance</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-c">—</span></div>
+
+    <!-- hidden ov-* elements so JS updates don't error -->
+    <span id="ov-a" style="display:none"></span>
+    <span id="ov-v" style="display:none"></span>
+    <span id="ov-i" style="display:none"></span>
+    <span id="ov-c" style="display:none"></span>
+
+    <!-- Band legend — mirroring arc geography: left=urgent, center=attention, right=proactive -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:520px;margin-top:4px">
+      <!-- URGENT — left side of arc -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #ef4444;background:#fef2f2;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#ef4444;letter-spacing:.08em;text-transform:uppercase">Urgent</span>
+          <span style="font-size:9px;font-weight:600;color:#fca5a5">0–49</span>
+        </div>
+        <div style="font-size:10px;color:#7f1d1d;line-height:1.55">Critical security gaps require <strong>immediate action</strong> to reduce risk.</div>
+      </div>
+      <!-- ATTENTION — upper arc, center -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#b45309;letter-spacing:.08em;text-transform:uppercase">Attention</span>
+          <span style="font-size:9px;font-weight:600;color:#fcd34d">50–89</span>
+        </div>
+        <div style="font-size:10px;color:#78350f;line-height:1.55">Some security gaps need <strong>prompt action</strong> to maintain protection.</div>
+      </div>
+      <!-- PROACTIVE — right side of arc -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #22c55e;background:#f0fdf4;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#22c55e;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#15803d;letter-spacing:.08em;text-transform:uppercase">Proactive</span>
+          <span style="font-size:9px;font-weight:600;color:#86efac">90–100</span>
+        </div>
+        <div style="font-size:10px;color:#14532d;line-height:1.55">Strong controls actively <strong>prevent threats</strong> and continuously reduce risk.</div>
+      </div>
     </div>
+
   </div>
-  <!-- Score legend — grey area, left-aligned -->
-  <div style="padding:20px 28px 4px">
-    <div style="max-width:360px;border-radius:10px;overflow:hidden;border:1px solid #dde2ea;font-family:-apple-system,Inter,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.05)">
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;background:#eaecf2;padding:5px 12px;border-bottom:1px solid #dde2ea">
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">SCORE</div>
-        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.08em;padding-left:4px">POSTURE</div>
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">COLOR</div>
-      </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">90–100</div>
-        <div style="font-size:12px;color:#334155;padding-left:4px">Proactive Security</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#22c55e">Green</span></div>
-      </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">60–89</div>
-        <div style="font-size:12px;color:#334155;padding-left:4px">Some Attention Needed</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#f59e0b">Orange</span></div>
-      </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">0–59</div>
-        <div style="font-size:12px;color:#334155;padding-left:4px">URGENT – Attention Needed</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#ef4444">Red</span></div>
-      </div>
-    </div>
-  </div>
-  <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#94a3b8;font-style:italic">Aiming towards a better, more secure cloud posture</div>
-  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
 </div><!-- /view-overview -->
 
 <!-- ═══ View: Critical Alerts ═══ -->
@@ -774,7 +895,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-red">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Critical Alerts</div>
+      <div class="vh-title">High Fidelity Alerts</div>
       <div class="vh-sub">Active threats &amp; policy violations · last ${DAYS_BACK} days</div>
     </div>
     <span class="vh-badge" id="cnt-a">—</span>
@@ -787,7 +908,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Critical Vulnerabilities</div>
+      <div class="vh-title">Internet Threat Exposure</div>
       <div class="vh-sub">Host CVEs · Risk Score ≥ 9.0 · Agentless scan &nbsp;<span class="agent-tip" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available</span></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
@@ -800,7 +921,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-amber">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Top Critical Non-Compliance</div>
+      <div class="vh-title">Critical Misconfigurations</div>
       <div class="vh-sub">NonCompliant · Critical severity · sorted by violations</div>
     </div>
     <span class="vh-badge" id="cnt-c">—</span>
@@ -821,6 +942,31 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div id="body-i"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
+<!-- ═══ View: Secrets ═══ -->
+<div class="view" id="view-secrets-all">
+  <div class="view-hdr vha-purple">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Discovered Secrets</div>
+      <div class="vh-sub">LW_HE_SECRETS_ALL · SSH keys, API tokens &amp; credentials detected on hosts</div>
+    </div>
+    <span class="vh-badge" id="cnt-sa">—</span>
+  </div>
+  <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Asset Risk ═══ -->
+<div class="view" id="view-asset-risk">
+  <div class="view-hdr">
+    <div class="vh-text">
+      <div class="vh-title">Most Critical Risk Findings per Asset</div>
+      <div class="vh-sub">Hosts ranked by combined risk — CVEs &amp; secrets correlated per asset</div>
+    </div>
+    <span class="vh-badge" id="cnt-ar">—</span>
+  </div>
+  <div id="body-ar"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
   <div style="text-align:center;padding:24px 32px 16px;background:#fff;border-bottom:1px solid var(--border)">
@@ -832,6 +978,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <circle id="rf-pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#f97316" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
         <circle id="rf-pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#8b5cf6" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
         <circle id="rf-pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#f59e0b" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-s" cx="110" cy="110" r="80" fill="none" stroke="#0ea5e9" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
       </g>
       <text id="rf-pie-total" x="110" y="102" text-anchor="middle" dominant-baseline="middle" fill="#0f172a" font-size="42" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
       <text x="110" y="128" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
@@ -839,31 +986,148 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     </svg>
     <div style="display:flex;gap:20px;justify-content:center;margin-top:14px;flex-wrap:wrap;font-size:11px">
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('alerts')"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444"></div><span style="color:#475569">Alerts</span><b id="rf-n-a" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">CVEs</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">Exposure</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:9px;height:9px;border-radius:50%;background:#8b5cf6"></div><span style="color:#475569">Identities</span><b id="rf-n-i" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Compliance</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Misconfigurations</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('secrets-all')"><div style="width:9px;height:9px;border-radius:50%;background:#0ea5e9"></div><span style="color:#475569">Secrets</span><b id="rf-n-s" style="margin-left:3px;color:#0f172a">—</b></div>
     </div>
   </div>
-  <div class="rf-kpis">
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Critical Alerts</div><div class="rf-kpi-val" id="rf-k-a">—</div><div class="rf-kpi-sub">Open &amp; unresolved</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">CVEs Risk ≥ 9</div><div class="rf-kpi-val" id="rf-k-v">—</div><div class="rf-kpi-sub">Critical host CVEs</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Non-Compliance</div><div class="rf-kpi-val" id="rf-k-c">—</div><div class="rf-kpi-sub">Critical controls violated</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Risky Identities</div><div class="rf-kpi-val" id="rf-k-i">—</div><div class="rf-kpi-sub">No MFA · Admin/over-privileged</div></div>
-  </div>
+  <!-- hidden KPI value holders still updated by JS for internal use -->
+  <span id="rf-k-a" style="display:none"></span><span id="rf-k-v" style="display:none"></span><span id="rf-k-c" style="display:none"></span><span id="rf-k-i" style="display:none"></span><span id="rf-k-s" style="display:none"></span>
   <div class="rf-body">
     <div id="rf-table"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
   </div>
 </div>
 
-<!-- ═══ View: Lab ═══ -->
+<!-- ═══ View: Next Steps ═══ -->
 <div class="view" id="view-lab">
   <div class="view-hdr">
     <div class="vh-text">
       <div class="vh-title">Recommended Next Steps</div>
-      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span></div>
+      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
     </div>
   </div>
-  <div class="lab-steps" id="lab-actions"></div>
+  <!-- Step 0 — shown only when top risk assets exist -->
+  <div id="lab-asset-action" style="display:none;margin:0 16px 16px;padding:14px 18px;background:linear-gradient(135deg,#fef2f2,#fff7ed);border:2px solid #ef4444;border-radius:12px">
+    <div style="display:flex;align-items:flex-start;gap:12px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0">
+        <div style="font-size:9px;font-weight:800;color:#ef4444;letter-spacing:.12em;text-transform:uppercase">STEP</div>
+        <div style="font-size:22px;font-weight:900;color:#ef4444;line-height:1">0</div>
+      </div>
+      <div style="width:2px;background:#fca5a5;border-radius:2px;align-self:stretch;flex-shrink:0;margin:2px 0"></div>
+      <div>
+        <div style="font-size:12px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">&#x1F6A8; &nbsp;Immediate Priority &#8212; Top Risk Assets Detected</div>
+        <div style="font-size:12px;color:#7f1d1d;line-height:1.6">Review and <strong>isolate your highest-risk assets</strong> as soon as possible to contain the blast radius before addressing other findings. See <a href="#" onclick="nav('asset-risk');return false;" style="color:#dc2626;font-weight:700">Most Critical Risk Findings per Asset</a> for the ranked list.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="jmap-outer">
+  <svg class="jmap-svg" viewBox="0 0 1000 480" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <filter id="jnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
+      </filter>
+      <filter id="jph-shadow" x="-5%" y="-30%" width="115%" height="180%">
+        <feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="rgba(0,0,0,.18)"/>
+      </filter>
+    </defs>
+
+    <!-- Phase chevron headers -->
+    <polygon id="jph1" points="0,4 328,4 352,27 328,50 0,50" fill="#ef4444" filter="url(#jph-shadow)"/>
+    <text x="164" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+
+    <polygon id="jph2" points="328,4 672,4 696,27 672,50 328,50 352,27" fill="#f97316" filter="url(#jph-shadow)"/>
+    <text x="500" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">HIGH</text>
+
+    <polygon id="jph3" points="672,4 1000,4 1000,50 672,50 696,27" fill="#94a3b8" filter="url(#jph-shadow)"/>
+    <text id="jph3-txt" x="836" y="32" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">MEDIUM · GOAL</text>
+
+    <!-- Background snake (gray dashed) -->
+    <path d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
+      fill="none" stroke="#e2e8f0" stroke-width="10" stroke-dasharray="16,10" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Colored snake -->
+    <path id="jsnake" d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
+      fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="14,12" stroke-linecap="round" stroke-linejoin="round"
+      style="animation:snake-flow 1.2s linear infinite"/>
+
+    <!-- Direction arrows -->
+    <polygon points="153,258 167,258 160,272" fill="#cbd5e1"/>
+    <polygon points="324,431 338,425 336,439" fill="#cbd5e1"/>
+    <polygon points="493,262 507,262 500,248" fill="#cbd5e1"/>
+    <polygon points="664,79 678,73 676,87"   fill="#cbd5e1"/>
+    <polygon points="833,258 847,258 840,272" fill="#cbd5e1"/>
+
+    <!-- Node 1 — Identities -->
+    <circle id="jnd1" cx="160" cy="155" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+    <text x="160" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 1</text>
+    <text x="160" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+    <text id="jnd1-cnt" x="160" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 2 — Critical Alerts -->
+    <circle id="jnd2" cx="160" cy="365" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+    <text x="160" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
+    <text x="160" y="363" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
+    <text id="jnd2-cnt" x="160" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 3 — Internet Exposure -->
+    <circle id="jnd3" cx="500" cy="365" r="58" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <text x="500" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
+    <text x="500" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
+    <text x="500" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
+    <text id="jnd3-cnt" x="500" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 4 — Compliance -->
+    <circle id="jnd4" cx="500" cy="155" r="58" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+    <text x="500" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 4</text>
+    <text x="500" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+    <text id="jnd4-cnt" x="500" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 5 — Secrets -->
+    <circle id="jnd5" cx="840" cy="155" r="58" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
+    <text x="840" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 5</text>
+    <text x="840" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
+    <text id="jnd5-cnt" x="840" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Goal — Proactive Security -->
+    <circle id="jnd6" cx="840" cy="365" r="58" fill="#22c55e" filter="url(#jnd-shadow)"/>
+    <text x="840" y="343" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
+    <text x="840" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
+    <text x="840" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
+    <text id="jnd6-cnt" x="840" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+  </svg>
+  </div>
+</div>
+
+<div class="view" id="view-admin-settings">
+  <div class="view-hdr">
+    <div class="vh-text">
+      <div class="vh-title">Admin Settings</div>
+      <div class="vh-sub">Configure dashboard behaviour</div>
+    </div>
+  </div>
+  <div style="padding:24px 20px;max-width:520px">
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Data Refresh Interval</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:14px">How often the server re-fetches data from FortiCNAPP. Min 6 h · Max 48 h.</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="settings-refresh-select" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none">
+          <option value="21600">6 hours</option>
+          <option value="43200">12 hours</option>
+          <option value="86400" selected>24 hours (default)</option>
+          <option value="172800">48 hours</option>
+        </select>
+        <button onclick="applySettings()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Apply</button>
+        <span id="settings-saved" style="font-size:12px;color:#22c55e;font-weight:700;opacity:0;transition:opacity .4s">✓ Saved</span>
+      </div>
+      <div style="margin-top:14px;padding:10px 14px;background:#f1f5f9;border-radius:7px;font-size:11px;color:#475569">
+        Current server interval: <b id="settings-cur-interval">—</b>
+      </div>
+    </div>
+    <div style="font-size:10px;color:#94a3b8;padding:0 4px">Changes take effect immediately on the server. The browser page reloads at the same cadence.</div>
+
+  </div>
 </div>
 
 </div><!-- /main -->
@@ -872,6 +1136,15 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <script>
 const REFRESH=${intervalSec};
 let cd=REFRESH;
+function fmtSec(s){
+  if(s>=3600){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+(m>0?' '+m+'m':'');}
+  if(s>=60){const m=Math.floor(s/60),ss=s%60;return m+'m'+(ss>0?' '+ss+'s':'');}
+  return s+'s';
+}
+function setFooterInterval(sec){
+  const fi=document.getElementById('footer-interval');
+  if(fi)fi.textContent=fmtSec(sec);
+}
 
 const e=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const tr=(s,n)=>{s=String(s||'');return s.length>n?s.slice(0,n)+'\\u2026':s||'\\u2014'};
@@ -896,14 +1169,14 @@ function status(s){
 }
 function cloud(c){const m={aws:'b-ok',azure:'b-hi',gcp:'b-cr'};return'<span class="b '+(m[c]||'b-nt')+'">'+(c||'').toUpperCase()+'</span>';}
 function strip(s){return(s||'').toLowerCase()==='critical'?'strip-cr':'strip-hi';}
-function setKpi(id,n){document.getElementById(id).textContent=n;}
-function setCount(id,n,bad){const el=document.getElementById(id);el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
+function setKpi(id,n){const el=document.getElementById(id);if(el)el.textContent=n;}
 function buildPie(d){
   var segs=[
     {id:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
     {id:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
     {id:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
     {id:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
+    {id:'rf-pseg-s',key:'s',n:(d.secretsAll||[]).length},
   ];
   var total=segs.reduce(function(s,c){return s+c.n;},0);
   var C=502.65,GAP=7;
@@ -925,8 +1198,9 @@ function buildPie(d){
   var rft=document.getElementById('rf-pie-total');
   if(rft)rft.textContent=total||'0';
 }
-function setBody(id,h){document.getElementById(id).innerHTML=h;}
+function setBody(id,h){const el=document.getElementById(id);if(el)el.innerHTML=h;}
 function state(id,icon,msg){setBody(id,'<div class="state"><span class="state-icon">'+icon+'</span><span>'+e(msg)+'</span></div>');}
+function setCount(id,n,bad){const el=document.getElementById(id);if(!el)return;el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
 
 function renderAlerts(rows,err){
   if(err){state('body-a','',err);return}
@@ -936,9 +1210,9 @@ function renderAlerts(rows,err){
   setBody('body-a','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Alert</th><th>Description</th><th>Status</th><th>Time</th></tr></thead><tbody>'
     +rows.map(r=>{
       const desc=(r.alertInfo?.description||'').replace(/\s+/g,' ').trim();
-      const href=baseA+'/ui/investigation/alerts/'+r.alertId;
+      const href=baseA;
       return'<tr class="'+strip('critical')+'">'
-        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(String(r.alertId||''))+'">'+cpIcon+'</button></td>'
         +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertName||'—')+'</a></td>'
         +'<td class="desc">'+e(desc||'—')+'</td>'
         +'<td>'+status(r.status)+'</td>'
@@ -951,13 +1225,13 @@ function renderVulns(rows,err){
   if(err){state('body-v','',err);return}
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
   if(!rows.length){state('body-v','','No CVEs with risk score \\u2265 9');return}
-  const baseV='https://'+(_lastData?.account||'')+'/ui/investigation/vulnerabilities/hosts';
+  const baseV='https://'+(_lastData?.account||'');
   setBody('body-v','<div class="tbl-wrap"><table><thead><tr><th>CVE / Vuln ID</th><th>Risk</th><th>Package</th><th>Host</th><th>Fix Version</th></tr></thead><tbody>'
     +rows.map(r=>{
       const fix=r.fixInfo?.fix_available===true||String(r.fixInfo?.fix_available)==='1'||r.fixInfo?.fix_available==='1';
       const fixVer=r.fixInfo?.fixed_version||'';
       return'<tr class="strip-cr">'
-        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(r.vulnId||r.cveId||'')+'">'+cpIcon+'</button></td>'
         +'<td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td>'
         +'<td class="p">'+e(r.featureKey?.name||'—')+'</td>'
         +'<td class="m">'+e(r.evalCtx?.hostname||r.mid||'—')+'</td>'
@@ -970,10 +1244,10 @@ function renderCompliance(rows,err){
   if(err){state('body-c','',err);return}
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
-  const baseC='https://'+(_lastData?.account||'')+'/ui/compliance';
+  const baseC='https://'+(_lastData?.account||'');
   setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Policy ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
-      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a></td>'
+      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a><button class="cp-btn" data-cp="'+e(r.alertId||'')+'">'+cpIcon+'</button></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
       +'<td class="desc"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
       +'<td class="desc">'+e(r.description||'—')+'</td>'
@@ -993,8 +1267,9 @@ function renderIdentities(rows,err){
       const riskSev=(r.METRICS?.risk_severity||'').toLowerCase();
       const unused=r.ENTITLEMENT_COUNTS?.entitlements_unused_count??'\\u2014';
       const iHref='https://'+(_lastData?.account||'')+'/ui/insights';
+      const iName=r.NAME||r.PRINCIPAL_ID||'';
       return'<tr class="'+(isAdmin?'strip-cr':'strip-hi')+'">'
-        +'<td class="p" title="'+e(r.NAME||r.PRINCIPAL_ID)+'"><a class="rf-link" href="'+e(iHref)+'" target="_blank">'+e(tr(r.NAME||r.PRINCIPAL_ID,28))+'</a></td>'
+        +'<td class="p" title="'+e(iName)+'"><a class="rf-link" href="'+e(iHref)+'" target="_blank">'+e(tr(iName,28))+'</a><button class="cp-btn" data-cp="'+e(iName)+'" title="Copy identity">'+cpIcon+'</button></td>'
         +'<td><span class="b b-nt">'+e(r.PROVIDER_TYPE||'\\u2014')+'</span></td>'
         +'<td>'+(isAdmin?'<span class="tag-admin">FULL ADMIN</span>':sev(riskSev))+'</td>'
         +'<td class="r">'+unused+'</td>'
@@ -1002,6 +1277,97 @@ function renderIdentities(rows,err){
         +'<td class="m">'+fmtDate(r.LAST_USED_TIME)+'</td>'
       +'</tr>';
     }).join('')+'</tbody></table></div>');
+}
+
+function renderSecretsAll(rows,err){
+  const el=document.getElementById('t-sa');if(el)el.textContent=rows?rows.length:'—';
+  setCount('cnt-sa',rows?rows.length:0,true);
+  if(err){state('body-sa','',err);return}
+  if(!rows||!rows.length){state('body-sa','','No secrets detected');return}
+  setBody('body-sa','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Instance ID</th><th>Container</th><th>File Path</th><th>Secret Type</th><th>Metadata</th><th>Detected</th></tr></thead><tbody>'
+    +rows.map((r,i)=>{
+      const inContainer=r.IS_IN_CONTAINER===true||r.IS_IN_CONTAINER==='true'||r.IS_IN_CONTAINER===1;
+      const containerLabel=inContainer?'<span class="b b-hi" title="'+e(r.CONTAINER_KEY||'')+'">'+e(r.CONTAINER_KEY?r.CONTAINER_KEY.slice(0,16):'Container')+'</span>':'<span style="color:#94a3b8">—</span>';
+      const detectedAt=r.RECORD_CREATED_TIME?fmtDate(r.RECORD_CREATED_TIME):r.BATCH_END_TIME?fmtDate(r.BATCH_END_TIME):'—';
+      const isHigh=r.SECRET_TYPE?.toLowerCase().includes('key')||r.SECRET_TYPE?.toLowerCase().includes('token')||r.SECRET_TYPE?.toLowerCase().includes('password')||r.SECRET_TYPE?.toLowerCase().includes('credential');
+      return'<tr class="'+(isHigh?'strip-cr':'strip-hi')+'">'
+        +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
+        +'<td class="m"><small>'+e(r.MID||'—')+'</small></td>'
+        +'<td>'+containerLabel+'</td>'
+        +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
+        +'<td><span class="b b-cr">'+e(r.SECRET_TYPE||'—')+'</span></td>'
+        +'<td class="p"><small>'+e(r.SECRET_METADATA||'—')+'</small><button class="cp-btn" data-cp="'+e(r.SECRET_METADATA||'')+'">'+cpIcon+'</button></td>'
+        +'<td class="m">'+detectedAt+'</td>'
+      +'</tr>';
+    }).join('')+'</tbody></table></div>');
+}
+
+
+const cpIcon='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+function copyText(el){
+  const t=el.dataset.cp||'';
+  navigator.clipboard.writeText(t).then(()=>{
+    el.classList.add('ok');
+    el.innerHTML='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>';
+    setTimeout(()=>{el.classList.remove('ok');el.innerHTML=cpIcon;},1500);
+  }).catch(()=>{});
+}
+document.addEventListener('click',function(ev){if(ev.target.closest('.cp-btn'))copyText(ev.target.closest('.cp-btn'));});
+
+function renderAssetRisk(d){
+  const map={};
+  const get=(host,mid)=>{
+    const key=host||mid||'unknown';
+    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],secrets:[],risk:0};
+    return map[key];
+  };
+  (d.vulns||[]).forEach(r=>{
+    const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
+    if(!host)return;
+    const w=Math.min(100,parseFloat(r.riskScore||0)*10);
+    const a=get(host,r.evalCtx?.mid||'');
+    a.vulns.push({id:r.vulnId||'',score:r.riskScore,w});
+    a.risk+=w;
+  });
+  (d.secretsAll||[]).forEach(r=>{
+    const host=r.HOSTNAME||r.MID||'';
+    if(!host)return;
+    const a=get(host,r.MID||'');
+    a.secrets.push({type:r.SECRET_TYPE||''});
+    a.risk+=50;
+  });
+  const all=Object.values(map).filter(a=>a.risk>0).sort((a,b)=>b.risk-a.risk);
+  const maxRisk=all[0]?.risk||1;
+  // Only show assets whose normalized score > 20
+  const sorted=all.filter(a=>Math.round(a.risk/maxRisk*100)>20);
+  const el=document.getElementById('cnt-ar');if(el)el.textContent=sorted.length||'0';
+  const labAction=document.getElementById('lab-asset-action');
+  if(labAction)labAction.style.display=sorted.length?'block':'none';
+  if(!sorted.length){state('body-ar','','No significant host-level risk detected (all assets score ≤ 20)');return;}
+  const medalColor=i=>i===0?'#ef4444':i===1?'#f97316':i===2?'#f59e0b':'#94a3b8';
+  const barColor=s=>s>=60?'#ef4444':s>=30?'#f59e0b':'#22c55e';
+  setBody('body-ar','<div style="padding:8px 0">'+sorted.map((a,i)=>{
+    const score=Math.round(a.risk/maxRisk*100);
+    const color=barColor(score);
+    const avgCveRisk=a.vulns.length?(' · avg CVSS '+(a.vulns.reduce((s,v)=>s+parseFloat(v.score||0),0)/a.vulns.length).toFixed(1)):'';
+    return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
+      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+        +'<div style="font-size:20px;font-weight:900;color:'+medalColor(i)+';width:30px;text-align:center;flex-shrink:0">#'+(i+1)+'</div>'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="display:flex;align-items:center;gap:6px"><span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span><button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button></div>'
+          +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace">'+e(a.mid)+'</div>':'')
+        +'</div>'
+        +'<div style="font-size:24px;font-weight:900;color:'+color+';flex-shrink:0">'+score+'</div>'
+      +'</div>'
+      +'<div style="background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px">'
+        +'<div style="height:6px;border-radius:4px;background:'+color+';width:'+score+'%"></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+        +(a.vulns.length?'<span style="font-size:10px;font-weight:700;background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:5px;padding:2px 8px">'+a.vulns.length+' CVE'+avgCveRisk+'</span>':'')
+        +(a.secrets.length?'<span style="font-size:10px;font-weight:700;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px">'+a.secrets.length+' Secret'+(a.secrets.length>1?'s':'')+'</span>':'')
+      +'</div>'
+    +'</div>';
+  }).join('')+'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">Risk score: CVE riskScore×10 + 50 per secret &nbsp;·&nbsp; Critical Alerts &amp; Compliance are account-wide (no per-host data)</div></div>');
 }
 
 function nav(name){
@@ -1013,50 +1379,59 @@ function nav(name){
 
 let _lastData=null;
 
-// Cloud Security Posture Score (Rick Score): higher = better posture (0–100).
-// postureScore = 100 − mean(findingRiskScores).  No findings → 100 (perfect).
-// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
+// Cloud Security Posture Score: higher = better posture (0–100).
+// postureScore = 100 − mean(findingRiskScores).  No findings → 100.
+// Alert: 95  |  CVE: riskScore×10  |  Compliance: 80  |  Identity: risk_score×100  |  Secret: 75
 function calcPostureScore(d){
   const risks=[];
   (d.alerts||[]).forEach(()=>risks.push(95));
   (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
   (d.compliance||[]).forEach(()=>risks.push(80));
   (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
-  if(!risks.length) return 100;
-  return Math.round(100 - risks.reduce((s,v)=>s+v,0)/risks.length);
+  (d.secretsAll||[]).forEach(()=>risks.push(75));
+  return Math.max(0, Math.round(risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100));
 }
 // 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
-function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Proactive Security':p>=60?'Some Attention Needed':'URGENT – Attention Needed';}
+function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=90?'Proactive Security':p>=50?'Some Attention Needed':'URGENT – Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
+  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0,ns=(d.secretsAll||[]).length;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
   document.getElementById('rf-k-c').textContent=nc;
   document.getElementById('rf-k-i').textContent=ni;
+  document.getElementById('rf-k-s').textContent=ns;
+  document.getElementById('rf-n-s').textContent=ns||'0';
   document.getElementById('ov-a').textContent=na;
   document.getElementById('ov-v').textContent=nv;
   document.getElementById('ov-i').textContent=ni;
   document.getElementById('ov-c').textContent=nc;
   const base='https://'+d.account;
-  const items=[];
-  (d.alerts||[]).forEach(r=>items.push({cat:'Alert',title:r.alertName,detail:r.alertType,score:95,href:base+'/ui/investigation/alerts/'+r.alertId}));
-  (d.vulns||[]).forEach(r=>items.push({cat:'CVE',title:r.vulnId,detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10,href:base+'/ui/investigation/vulnerabilities/hosts'}));
-  (d.compliance||[]).forEach(r=>items.push({cat:'Compliance',title:r.title,detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80,href:base+'/ui/compliance'}));
-  (d.identities||[]).forEach(r=>items.push({cat:'Identity',title:r.NAME||r.PRINCIPAL_ID,detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100,href:base+'/ui/insights'}));
-  items.sort((a,b)=>b.score-a.score);
-  if(!items.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
-  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th>Category</th><th>Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'
-    +items.slice(0,25).map(r=>'<tr>'
-      +'<td><span class="b b-nt">'+e(r.cat)+'</span></td>'
-      +'<td class="p"><a class="rf-link" href="'+e(r.href)+'" target="_blank" title="Open in FortiCNAPP">'+e(tr(r.title,42))+' &#8599;</a></td>'
-      +'<td class="m">'+e(tr(r.detail,38))+'</td>'
+  const groups=[
+    {key:'Alert',     label:'High Fidelity Alerts',       color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,     copyVal:r.alertName||r.alertId,   detail:r.alertType,score:95}))},
+    {key:'CVE',       label:'Internet Threat Exposure',   color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId,        detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10}))},
+    {key:'Identity',  label:'Identities',                 color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID, copyVal:r.NAME||r.PRINCIPAL_ID, detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100}))},
+    {key:'Compliance',label:'Critical Misconfigurations', color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,     copyVal:r.alertId||r.title,       detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80}))},
+    {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90}))},
+  ].filter(g=>g.items.length);
+  if(!groups.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
+  const rows=groups.map(g=>{
+    const hdr='<tr style="background:#f8fafc;border-top:2px solid '+g.color+'">'
+      +'<td colspan="3" style="padding:7px 12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:'+g.color+'"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)+'</td>'
+      +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" data-tab="'+g.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
+      +'</tr>';
+    const detail=g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
+      +'<td class="p" colspan="2" style="display:flex;align-items:center;gap:4px">'+e(tr(r.title,48))+'<button class="cp-btn" data-cp="'+e(r.copyVal||r.title)+'" title="Copy">'+cpIcon+'</button></td>'
+      +'<td class="m">'+e(tr(r.detail,36))+'</td>'
       +'<td class="r"><span class="risk-score">'+Math.round(r.score)+'</span></td>'
-    +'</tr>').join('')+'</tbody></table></div>');
+    +'</tr>').join('');
+    return hdr+detail;
+  }).join('');
+  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th colspan="2">Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 }
 
 function renderLab(d){
@@ -1065,14 +1440,29 @@ function renderLab(d){
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
-  const actions=[];
-  if((d.identities||[]).length) actions.push({cls:'p1',n:1,tab:'identities',text:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA &amp; Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
-  if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
-  if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
-  if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
-  const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
-  document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
+  // ── Snake journey map: update SVG elements ──
+  const nodes=[
+    {nd:'jnd1',cnt:'jnd1-cnt',count:(d.identities||[]).length, activeClr:'#ef4444'},
+    {nd:'jnd2',cnt:'jnd2-cnt',count:(d.alerts||[]).length,     activeClr:'#ef4444'},
+    {nd:'jnd3',cnt:'jnd3-cnt',count:(d.vulns||[]).length,      activeClr:'#f97316'},
+    {nd:'jnd4',cnt:'jnd4-cnt',count:(d.compliance||[]).length, activeClr:'#f59e0b'},
+    {nd:'jnd5',cnt:'jnd5-cnt',count:(d.secretsAll||[]).length, activeClr:'#eab308'},
+  ];
+  nodes.forEach(n=>{
+    const el=document.getElementById(n.nd), ct=document.getElementById(n.cnt);
+    if(ct)ct.textContent=n.count;
+    if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
+  });
+  // Goal node
+  const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
+  const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
+  if(g6)g6.setAttribute('fill',color);
+  if(g6c)g6c.textContent=p;
+  if(ph3)ph3.setAttribute('fill',color);
+  if(ph3t)ph3t.textContent=p>=90?'ACHIEVED':'GOAL';
+  // Snake path color tracks score band
+  const snake=document.getElementById('jsnake');
+  if(snake)snake.setAttribute('stroke',color);
 }
 
 async function load(){
@@ -1083,6 +1473,8 @@ async function load(){
     renderVulns(d.vulns,d.errors?.vulns);
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
+    renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
+    renderAssetRisk(d);
     updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
@@ -1104,6 +1496,7 @@ async function load(){
   }
 }
 
+
 function updateRiskScore(p){
   const color=scoreColor(p);
   const arcLen=550;
@@ -1124,42 +1517,102 @@ function getCookie(name){
   return v?decodeURIComponent(v.trim().slice(name.length+1)):null;
 }
 
+function wireReportBtn(user){
+  const btn=document.getElementById('rpt-btn-link');
+  if(!btn||!user) return;
+  const params=new URLSearchParams({customer:(user.company||'Customer'),author:(user.first||'')+(user.last?' '+user.last:'')});
+  btn.href='/report?'+params.toString();
+}
+
+function showUserBadge(user){
+  const initials=((user.first||'?')[0]+(user.last||'?')[0]).toUpperCase();
+  document.getElementById('tb-avatar').textContent=initials;
+  document.getElementById('tb-name').textContent=(user.first||'')+' '+(user.last||'');
+  document.getElementById('tb-role').textContent=user.company||'';
+  document.getElementById('tb-admin-badge').style.display='none';
+  document.getElementById('top-bar').style.display='flex';
+}
+function logout(){
+  sessionStorage.removeItem('rca_user');
+  document.cookie='rca_user=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+  document.getElementById('top-bar').style.display='none';
+  document.getElementById('login-overlay').style.display='flex';
+  document.getElementById('li-first').value='';
+  document.getElementById('li-last').value='';
+  document.getElementById('li-company').value='';
+  document.getElementById('login-err').textContent='';
+}
+
 (function checkLogin(){
   const s=sessionStorage.getItem('rca_user')||getCookie('rca_user');
   if(s){
     document.getElementById('login-overlay').style.display='none';
-    load();
+    try{const u=JSON.parse(s);wireReportBtn(u);showUserBadge(u);}catch(_){}
   }
+  load();
+  loadAdminSettings();
 })();
 
 function submitLogin(){
   const first=document.getElementById('li-first').value.trim();
   const last=document.getElementById('li-last').value.trim();
   const company=document.getElementById('li-company').value.trim();
-  const role=document.getElementById('li-role').value;
-  const email=document.getElementById('li-email').value.trim();
   const err=document.getElementById('login-err');
   if(!first||!last){err.textContent='Please enter your first and last name.';return;}
   if(!company){err.textContent='Please enter your company name.';return;}
-  if(!role){err.textContent='Please select your role.';return;}
-  const emailInput=document.getElementById('li-email');
-  if(!email||!emailInput.checkValidity()){err.textContent='Please enter a valid email address.';return;}
   err.textContent='';
-  const user={first,last,company,role,email};
+  const handle=(first+(last.charAt(0))).toLowerCase();
+  const user={first,last,company,handle};
   const userJson=JSON.stringify(user);
   sessionStorage.setItem('rca_user',userJson);
   setCookie('rca_user',userJson,30);
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
+  wireReportBtn(user);
+  showUserBadge(user);
   load();
 }
 
-document.getElementById('li-email').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
+document.getElementById('li-company').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
 
 setInterval(load,REFRESH*1000);
+
+
+async function loadAdminSettings(){
+  try{
+    const s=await fetch('/api/settings').then(r=>r.json());
+    const sec=s.refreshIntervalSec||86400;
+    const sel=document.getElementById('settings-refresh-select');
+    if(sel){
+      const opts=[21600,43200,86400,172800];
+      const closest=opts.reduce((a,b)=>Math.abs(b-sec)<Math.abs(a-sec)?b:a);
+      sel.value=String(closest);
+    }
+    const cur=document.getElementById('settings-cur-interval');
+    if(cur)cur.textContent=fmtSec(sec);
+    setFooterInterval(sec);
+    cd=sec;
+  }catch(ex){}
+}
+async function applySettings(){
+  const sel=document.getElementById('settings-refresh-select');
+  if(!sel)return;
+  const sec=parseInt(sel.value,10);
+  try{
+    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshIntervalSec:sec})});
+    const cur=document.getElementById('settings-cur-interval');
+    if(cur)cur.textContent=fmtSec(sec);
+    setFooterInterval(sec);
+    cd=sec;
+    const saved=document.getElementById('settings-saved');
+    if(saved){saved.style.opacity='1';setTimeout(()=>saved.style.opacity='0',2500);}
+  }catch(ex){}
+}
+setFooterInterval(REFRESH);
 setInterval(()=>{
   cd=Math.max(0,cd-1);
-  document.getElementById('countdown').textContent='Next refresh in '+cd+'s';
+  const el=document.getElementById('countdown');
+  if(el)el.textContent='Next refresh in '+fmtSec(cd);
 },1000);
 
 </script>
@@ -1214,8 +1667,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
         <stop offset="0%"    stop-color="#ef4444"/>
-        <stop offset="65.4%" stop-color="#ef4444"/>
-        <stop offset="65.4%" stop-color="#f59e0b"/>
+        <stop offset="50%"   stop-color="#ef4444"/>
+        <stop offset="50%"   stop-color="#f59e0b"/>
         <stop offset="97.5%" stop-color="#f59e0b"/>
         <stop offset="97.5%" stop-color="#22c55e"/>
         <stop offset="100%"  stop-color="#22c55e"/>
@@ -1223,7 +1676,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </defs>
     <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>
     <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-    <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="200" y1="10" x2="200" y2="44"  stroke="white" stroke-width="3" stroke-linecap="round"/>
     <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
     <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
@@ -1235,6 +1688,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
   <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
   <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
+  <div class="tile tile-i" onclick="nav('secrets-all')" style="cursor:pointer"><div class="tile-lbl">Secrets</div><div class="tile-val" id="t-sa">—</div></div>
 </div>
 <hr class="divider">
 <div class="sec-title">Recommended Next Steps</div>
@@ -1252,8 +1706,8 @@ function calcScore(d){
   (d.vulns||[]).forEach(function(r){risks.push(Math.min(100,parseFloat(r.riskScore||0)*10));});
   (d.compliance||[]).forEach(function(){risks.push(80);});
   (d.identities||[]).forEach(function(r){risks.push(Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100));});
-  if(!risks.length)return 100;
-  return Math.round(100-risks.reduce(function(s,v){return s+v;},0)/risks.length);
+  (d.secretsAll||[]).forEach(function(){risks.push(75);});
+  return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
 function buildSteps(d,p){
   var items=[];
@@ -1288,6 +1742,1017 @@ setInterval(refresh,60000);
 </body>
 </html>`;
 
+
+// ── Alpha: Inline Report Generator ────────────────────────────────────────────
+const REPORT_CSS = `
+        :root {
+            /* ── Fortinet Brand: Red #DA291C · Black #000000 ── */
+            --color-critical: #DA291C;          /* Fortinet Red */
+            --color-critical-bg: #FDECEA;
+            --color-critical-border: #DA291C;
+            --color-high: #CC4A1A;              /* Dark orange-red — distinct from Critical */
+            --color-high-bg: #FDF0E8;
+            --color-medium: #B7770D;            /* Amber */
+            --color-medium-bg: #FEF9E7;
+            --color-low: #2C5280;               /* Muted blue — informational/low risk */
+            --color-low-bg: #EDF2F9;
+            --color-success: #1E7A3E;
+            --color-success-bg: #E8F5ED;
+            --color-primary: #DA291C;           /* Fortinet Red — all primary accents */
+            --color-primary-light: #F04030;
+            --color-primary-dark: #000000;      /* Fortinet Black — all dark backgrounds */
+            --color-text: #1A1A1A;
+            --color-text-muted: #5A5A5A;
+            --color-border: #D5D5D5;
+            --color-bg-light: #F5F5F5;
+            --color-bg-section: #FAFAFA;
+        }
+
+        @keyframes rec-glow {
+            0%,100% { box-shadow: 0 0 0 0 rgba(218,41,28,0), 0 8px 40px rgba(0,0,0,0.35); }
+            50%      { box-shadow: 0 0 0 4px rgba(218,41,28,0.22), 0 8px 40px rgba(0,0,0,0.35); }
+        }
+        @keyframes rec-pulse-badge {
+            0%,100% { transform: scale(1); }
+            50%      { transform: scale(1.06); }
+        }
+        .rec-context-banner         { animation: rec-glow 3s ease-in-out infinite; }
+        .rec-badge-count            { animation: rec-pulse-badge 2.5s ease-in-out infinite; }
+
+        @media print {
+            @page {
+                size: a3 landscape;
+                margin: 1.2cm 1.5cm;
+            }
+            .pagebreak { page-break-after: always; clear: both; }
+            .page-break-before { page-break-before: always; clear: both; }
+            .no-print { display: none !important; }
+            tbody tr:hover { background: transparent !important; }
+            .section-card, .finding-row, .kpi-card, .decision-card, table {
+                page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            section.pagebreak {
+                page-break-before: always;
+            }
+            section.pagebreak:first-of-type {
+                page-break-before: auto;
+            }
+
+            /* ── Tighten spacing for print — prevent large whitespace gaps ── */
+            body { padding: 0 2rem; }
+            h2 { margin: 1.5rem 0 1.2rem !important; }
+            h3 { margin: 1.5rem 0 0.75rem !important; padding-bottom: 0.4rem !important; }
+            h4 { margin: 1rem 0 0.5rem !important; }
+            .narrative p { margin-bottom: 0.6rem !important; }
+            .section-summary { margin: 1.5rem 0 1rem !important; }
+            .narrative { margin-bottom: 1rem !important; }
+            section { padding-bottom: 0 !important; }
+            .product-grid { margin: 1rem 0 !important; gap: 0.8rem !important; }
+            .findings-driver { margin: 1rem 0 1.5rem !important; }
+            .toc { margin: 1rem 0 !important; }
+            /* Keep banner + findings table together — no orphaned banner pages */
+            .rec-context-banner { break-after: avoid; break-inside: avoid; }
+            .findings-driver { break-inside: avoid; }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            width: 100%;
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 0 4rem;
+            color: var(--color-text);
+            background: #FFFFFF;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.2rem 2rem;
+            background: var(--color-primary-dark);
+            margin-bottom: 0;
+        }
+        header img { height: 42px; }
+
+        /* ── Cover / Title ── */
+        .report-cover {
+            background: linear-gradient(160deg, var(--color-primary-dark) 0%, var(--color-primary) 60%, var(--color-primary-light) 100%);
+            color: white;
+            padding: 3.5rem 2.5rem 2.5rem;
+            margin-bottom: 2rem;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            min-height: 62vh;
+        }
+        .report-cover .report-type {
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            opacity: 0.75;
+            margin-bottom: 1rem;
+        }
+        .report-cover h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 0.5rem;
+            border: none;
+        }
+        .report-cover .subtitle {
+            font-size: 1.15rem;
+            opacity: 0.85;
+            margin-bottom: 2rem;
+        }
+        .report-cover .meta-row {
+            display: flex;
+            gap: 2.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            font-size: 0.85rem;
+            opacity: 0.8;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 1.25rem;
+            margin-top: auto;
+        }
+        .report-cover .meta-item strong { display: block; font-size: 0.7rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.6; }
+
+        /* ── Section Headers ── */
+        h2 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            border-left: 5px solid var(--color-primary);
+            padding-left: 1rem;
+            margin: 5.5rem 0 2.5rem;
+            clear: both;
+        }
+        h2:first-of-type { margin-top: 3rem; }
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 3.5rem 0 1.25rem;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid var(--color-border);
+            clear: both;
+        }
+        h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 2.5rem 0 0.85rem;
+            clear: both;
+        }
+        p { margin-bottom: 1.2rem; color: var(--color-text); line-height: 1.85; }
+
+        /* ── TOC ── */
+        .toc {
+            background: var(--color-bg-light);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 1.5rem 2rem;
+            margin: 1.5rem auto 2rem;
+        }
+        .toc h3 { margin-top: 0; font-size: 1rem; color: var(--color-primary-dark); text-align: center; margin-bottom: 1.1rem; }
+        .toc-cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .toc-card {
+            flex: 1 1 calc(20% - 0.75rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 0.9rem 1rem;
+            background: white;
+            text-decoration: none;
+            display: block;
+            transition: box-shadow 0.15s;
+        }
+        .toc-card:hover { box-shadow: 0 4px 12px rgba(218,41,28,0.15); }
+        .toc-card .tc-num {
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.35rem;
+        }
+        .toc-card .tc-title {
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.35rem;
+            line-height: 1.3;
+        }
+        .toc-card .tc-sub {
+            font-size: 0.72rem;
+            color: var(--color-text-muted);
+            line-height: 1.45;
+        }
+
+        /* ── KPI Cards ── */
+        .kpi-grid { width: 100%; margin: 3rem 0; overflow: hidden; }
+        .kpi-grid::after { content: ""; display: table; clear: both; }
+        .kpi-card {
+            float: left;
+            width: 22%;
+            margin-right: 4%;
+            background: white;
+            border-radius: 10px;
+            padding: 1.75rem 1.25rem;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            border: 1px solid var(--color-border);
+            text-align: center;
+            box-sizing: border-box;
+        }
+        .kpi-card:nth-child(4n) { margin-right: 0; }
+        .kpi-card .kpi-number { font-size: 2.25rem; font-weight: 700; line-height: 1; margin-bottom: 0.35rem; }
+        .kpi-card .kpi-label { font-size: 0.78rem; color: var(--color-text-muted); line-height: 1.35; }
+        .kpi-card.critical { border-top: 4px solid var(--color-critical); }
+        .kpi-card.high { border-top: 4px solid var(--color-high); }
+        .kpi-card.medium { border-top: 4px solid var(--color-medium); }
+        .kpi-card.info { border-top: 4px solid var(--color-primary); }
+        .kpi-card.critical .kpi-number { color: var(--color-critical); }
+        .kpi-card.high .kpi-number { color: var(--color-high); }
+        .kpi-card.medium .kpi-number { color: var(--color-medium); }
+        .kpi-card.info .kpi-number { color: var(--color-primary); }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-block;
+            padding: 0.18rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+        .badge-critical { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-high { background: var(--color-high-bg); color: var(--color-high); }
+        .badge-medium { background: var(--color-medium-bg); color: var(--color-medium); }
+        .badge-low { background: var(--color-low-bg); color: var(--color-low); }
+        .badge-success { background: var(--color-success-bg); color: var(--color-success); }
+        .badge-info { background: #EDEDED; color: #1A1A1A; }
+        .badge-aws { background: #FF9900; color: white; }
+        .badge-azure { background: #0078D4; color: white; }
+        .badge-gcp { background: #4285F4; color: white; }
+        .badge-mfa-off { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-mfa-on { background: var(--color-success-bg); color: var(--color-success); }
+
+        /* ── Tables ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2.5rem 0;
+            background: white;
+            font-size: 0.83rem;
+        }
+        thead th {
+            background: var(--color-primary-dark);
+            color: white;
+            font-weight: 600;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 0.85rem 1rem;
+            text-align: left;
+            white-space: nowrap;
+        }
+        tbody tr { border-bottom: 1px solid var(--color-border); }
+        tbody tr:nth-child(even) { background: var(--color-bg-section); }
+        td { padding: 0.9rem 1rem; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+
+        /* Executive finding table — wider cells, no hard max-width */
+        .exec-table { table-layout: auto; }
+        .exec-table td, .exec-table th { font-size: 0.78rem; padding: 0.85rem 0.9rem; max-width: 220px; }
+        .exec-table td.narrow { width: 28px; text-align: center; }
+        .exec-table td.med { max-width: 140px; }
+        .exec-table td.wide { max-width: 260px; }
+
+        /* Summary / leadership table */
+        .summary-table thead th { background: var(--color-primary); }
+        .summary-table td { font-size: 0.82rem; }
+
+        /* ── Info Boxes ── */
+        .info-box {
+            padding: 1.5rem 2rem;
+            border-radius: 8px;
+            margin: 2.5rem 0;
+            display: flex;
+            gap: 0.85rem;
+            border: 1px solid;
+        }
+        .info-box.alert { background: var(--color-critical-bg); border-color: var(--color-critical-border); }
+        .info-box.warning { background: var(--color-high-bg); border-color: var(--color-high); }
+        .info-box.note { background: #F5F5F5; border-color: #BEBEBE; }
+        .info-box.tip { background: var(--color-success-bg); border-color: #82E0AA; }
+        .info-box-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; }
+        .info-box-content { flex: 1; }
+        .info-box-content strong { display: block; margin-bottom: 0.2rem; font-size: 0.85rem; }
+        .info-box-content p { margin: 0; font-size: 0.82rem; }
+
+        /* ── Decision Cards ── */
+        .decision-row { width: 100%; margin: 2.5rem 0; overflow: hidden; }
+        .decision-row::after { content: ""; display: table; clear: both; }
+        .decision-card {
+            float: left;
+            width: 30%;
+            margin-right: 5%;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            box-sizing: border-box;
+        }
+        .decision-card:nth-child(3n) { margin-right: 0; }
+        .decision-card .decision-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px; height: 28px;
+            background: var(--color-primary-dark);
+            color: white;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 0.85rem;
+            margin-bottom: 0.6rem;
+        }
+        .decision-card h4 { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--color-primary-dark); }
+        .decision-card p { font-size: 0.8rem; color: var(--color-text-muted); margin: 0; }
+        .decision-card.urgent { border-top-color: var(--color-critical); }
+        .decision-card.urgent .decision-num { background: var(--color-critical); }
+
+        /* ── Action Plan Table ── */
+        .plan-table thead th { background: var(--color-primary-dark); }
+        .plan-table td { padding: 1rem 1.1rem; font-size: 0.83rem; vertical-align: top; }
+        .plan-table td:first-child { font-weight: 600; white-space: nowrap; color: var(--color-primary-dark); width: 110px; }
+        .plan-table td:last-child { color: var(--color-text-muted); }
+
+        /* ── Identity Risk Commentary ── */
+        .commentary-box {
+            background: linear-gradient(135deg, #F5F5F5 0%, #EBEBEB 100%);
+            border: 1px solid #C8C8C8;
+            border-left: 4px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 2rem 2.5rem;
+            margin: 3rem 0;
+        }
+        .commentary-box h4 { margin-top: 0; color: var(--color-primary-dark); }
+
+        /* ── Narrative ── */
+        .narrative { background: var(--color-bg-section); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; padding: 2rem 2.5rem; margin: 2.5rem 0; }
+        .narrative p:last-child { margin-bottom: 0; }
+
+        /* ── Promo ── */
+        .promo-section { display: flex; justify-content: center; margin: 2rem 0; width: 100%; }
+        .promo-section img { max-width: 85%; width: 85%; height: auto; display: block; margin: 0 auto; }
+        .cover-image img { max-width: 70%; width: 70%; }
+
+        /* ── Risk score chip ── */
+        .risk-chip {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: var(--color-critical-bg);
+            color: var(--color-critical);
+            border: 1px solid var(--color-critical-border);
+        }
+        .risk-chip.high { background: var(--color-high-bg); color: var(--color-high); border-color: var(--color-high); }
+
+        /* ── Apple-style Summary Chart ── */
+        .apple-chart {
+            background: #FFFFFF;
+            border-radius: 18px;
+            padding: 2rem 2.5rem 1.75rem;
+            box-shadow:
+                0 2px 4px rgba(0,0,0,0.06),
+                0 8px 24px rgba(0,0,0,0.08),
+                0 1px 0 rgba(255,255,255,0.9) inset;
+            margin: 2.5rem 0;
+            border: 1px solid rgba(0,0,0,0.06);
+        }
+        .apple-chart-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--color-text-muted);
+            margin-bottom: 1.1rem;
+        }
+        .chart-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin: 0.55rem 0;
+        }
+        .chart-row-label {
+            width: 230px;
+            flex-shrink: 0;
+            font-size: 0.78rem;
+            color: var(--color-text);
+            font-weight: 500;
+        }
+        .chart-track {
+            flex: 1;
+            height: 22px;
+            border-radius: 11px;
+            background: #F0EFEF;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.13), inset 0 -1px 2px rgba(255,255,255,0.6);
+            position: relative;
+            overflow: hidden;
+        }
+        .chart-bar {
+            height: 100%;
+            border-radius: 11px;
+            min-width: 4px;
+            background: linear-gradient(180deg,
+                #F05040 0%,
+                #DA291C 45%,
+                #B82015 100%
+            );
+            box-shadow:
+                0 3px 8px rgba(218,41,28,0.45),
+                inset 0 1px 0 rgba(255,255,255,0.35),
+                inset 0 -1px 0 rgba(0,0,0,0.12);
+            position: relative;
+        }
+        .chart-bar::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 6px; right: 6px;
+            height: 5px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.28);
+        }
+        .chart-row-value {
+            width: 44px;
+            flex-shrink: 0;
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: var(--color-critical);
+            text-align: right;
+            letter-spacing: -0.02em;
+        }
+
+        /* ── Host Priority Cards ── */
+        .host-card-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
+        .host-card {
+            flex: 0 1 calc(20% - 0.6rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-critical);
+            border-radius: 6px;
+            padding: 0.6rem 0.8rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .host-card .host-name {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--color-text);
+            word-break: break-all;
+            margin-bottom: 0.3rem;
+        }
+        .host-card .host-sevs {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            white-space: pre-line;
+            line-height: 1.5;
+        }
+
+        /* ── Security Gauge ── */
+        .gauge-wrap { margin: 0.6rem 0; }
+        .gauge-track {
+            height: 10px;
+            border-radius: 5px;
+            background: #E8E8E8;
+            overflow: hidden;
+            position: relative;
+        }
+        .gauge-fill {
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        .gauge-fill.critical { background: var(--color-critical); }
+        .gauge-fill.high     { background: var(--color-high); }
+        .gauge-fill.medium   { background: var(--color-medium); }
+        .gauge-fill.low      { background: var(--color-success); }
+        .gauge-label { font-size: 0.72rem; color: var(--color-text-muted); margin-bottom: 0.2rem; display: flex; justify-content: space-between; }
+        .gauge-label strong { color: var(--color-text); }
+
+        /* ── Assessment Intro Panels ── */
+        .intro-grid { display: flex; gap: 1.5rem; margin: 2.5rem 0; flex-wrap: wrap; }
+        .intro-card {
+            flex: 1 1 calc(33% - 1rem);
+            min-width: 220px;
+            border-radius: 10px;
+            padding: 1.75rem 1.75rem;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .intro-card .intro-eyebrow {
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.5rem;
+        }
+        .intro-card h4 { margin: 0 0 0.6rem; font-size: 0.95rem; color: var(--color-primary-dark); }
+        .intro-card p { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.6; margin: 0; }
+
+        /* ── Findings Driver Summary ── */
+        .findings-driver {
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 2rem 0 3rem;
+        }
+        .findings-driver-header {
+            background: var(--color-primary-dark);
+            padding: 0.75rem 1.25rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #fff;
+        }
+        .findings-driver table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .findings-driver table tr:not(:last-child) td {
+            border-bottom: 1px solid var(--color-border);
+        }
+        .findings-driver table td {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+        .findings-driver table td:first-child {
+            width: 38%;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+        .findings-driver table td:nth-child(2) {
+            color: var(--color-text-muted);
+        }
+        .findings-driver table tr.finding-row-active td:first-child {
+            color: var(--color-critical);
+        }
+        .finding-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+        /* ── Product Recommendation Cards ── */
+        .product-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2.5rem 0; }
+        .product-card {
+            flex: 1 1 calc(50% - 0.5rem);
+            min-width: 260px;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .product-card .product-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.15rem;
+        }
+        .product-card .product-subtitle {
+            font-size: 0.72rem;
+            color: var(--color-primary);
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            margin-bottom: 0.55rem;
+        }
+        .product-card .product-addresses { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
+        .product-card .product-desc { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.55; margin-bottom: 0.5rem; }
+        .product-card ul.product-caps { margin: 0.4rem 0 0 1.1rem; padding: 0; }
+        .product-card ul.product-caps li { font-size: 0.78rem; color: var(--color-text); margin-bottom: 0.22rem; }
+
+        /* ── Section Risk Summary Callout ── */
+        .section-summary {
+            background: #111111;
+            border-left: 5px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 2rem 2.5rem;
+            margin: 3.5rem 0 2rem;
+        }
+        .section-summary .ss-title {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.55rem;
+        }
+        .section-summary p {
+            color: rgba(255,255,255,0.88);
+            font-size: 0.82rem;
+            margin-bottom: 0;
+            line-height: 1.65;
+        }
+
+        /* ── Misc ── */
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--color-border);
+            margin: 4rem 0 0;
+            opacity: 0.5;
+        }
+        section.pagebreak {
+            padding-top: 1rem;
+            padding-bottom: 4rem;
+        }
+        section.pagebreak + section.pagebreak {
+            border-top: 2px solid var(--color-border);
+            padding-top: 1rem;
+        }
+        footer { margin-top: 5rem; padding: 2rem 2.5rem; background: var(--color-primary-dark); color: rgba(255,255,255,0.92); font-size: 0.78rem; text-align: center; }
+        footer p { color: inherit; }
+        .pagebreak { page-break-after: always; clear: both; }
+        .text-muted { color: var(--color-text-muted); }
+        .text-critical { color: var(--color-critical); font-weight: 600; }
+        ul.findings-list { margin: 0.5rem 0 0.5rem 1.25rem; }
+        ul.findings-list li { margin-bottom: 0.2rem; font-size: 0.8rem; }
+        .section-label {
+            display: inline-block;
+            background: var(--color-primary);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+    `;
+
+function buildReportHtml(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
+  const alerts     = data.alerts     || [];
+  const vulns      = data.vulns      || [];
+  const compliance = data.compliance || [];
+  const identities = data.identities || [];
+  const secrets    = data.secrets    || [];
+  const secretsAll = data.secretsAll || [];
+
+  // Server-side posture score (mirrors client calcPostureScore)
+  function calcScore(d) {
+    const r = [];
+    (d.alerts||[]).forEach(() => r.push(95));
+    (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
+    (d.compliance||[]).forEach(() => r.push(80));
+    (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
+    (d.secretsAll||[]).forEach(() => r.push(75));
+    return Math.max(0, Math.round(r.length ? 100 - r.reduce((s,v) => s+v, 0) / r.length : 100));
+  }
+  const score  = calcScore(data);
+  const sBand  = score>=90 ? 'Proactive Security' : score>=60 ? 'Some Attention Needed' : 'URGENT – Attention Needed';
+  const sColor = score>=90 ? '#22c55e' : score>=60 ? '#f59e0b' : '#ef4444';
+  const total  = alerts.length + vulns.length + compliance.length + identities.length;
+
+  // Helpers
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmt(ts) {
+    if (!ts) return '—';
+    try { return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch(_) { return String(ts); }
+  }
+  function sevBadge(s) {
+    const m = {critical:'badge-critical',high:'badge-high',medium:'badge-medium',low:'badge-low'};
+    const cls = m[(s||'').toLowerCase()] || 'badge-info';
+    return '<span class="badge '+cls+'">'+esc(s||'—')+'</span>';
+  }
+  function cspBadge(c) {
+    const m = {aws:'badge-aws',azure:'badge-azure',gcp:'badge-gcp'};
+    const cls = m[(c||'').toLowerCase()] || 'badge-info';
+    return '<span class="badge '+cls+'">'+esc((c||'').toUpperCase()||'—')+'</span>';
+  }
+
+  // ── Alerts rows
+  const alertRows = alerts.length ? alerts.map(function(r,i) {
+    const desc = ((r.alertInfo && r.alertInfo.description)||'').replace(/\s+/g,' ').slice(0,200);
+    const timeStr = r.startTime ? new Date(r.startTime).toLocaleString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td><small class="text-muted">'+esc(r.alertId||'—')+'</small></td>'+
+      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td class="wide"><strong>'+esc(r.alertName||'—')+'</strong></td>'+
+      '<td class="med"><small class="text-muted">'+esc(r.alertType||'—')+'</small></td>'+
+      '<td><small>'+esc(timeStr)+'</small></td>'+
+      '<td><span class="badge badge-critical" title="Attacker activity">Malicious</span></td>'+
+      '<td class="wide">'+esc(desc||'—')+'</td>'+
+      '<td class="wide">This alert indicates anomalous behavior that may represent an active security incident or policy violation.</td>'+
+      '<td class="wide">Investigate the alert in FortiCNAPP; correlate with cloud activity logs; escalate if the activity is unauthorized.</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="10" style="text-align:center;color:#999;padding:1.5rem">No critical alerts</td></tr>';
+
+  // ── Vuln rows
+  const vulnRows = vulns.length ? vulns.map(function(r,i) {
+    const rs  = parseFloat(r.riskScore||0);
+    const pkg = (r.featureKey && r.featureKey.name) || '—';
+    const ver = (r.featureKey && r.featureKey.version) || '';
+    const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
+    const fixCell = fixVer ? 'Update <strong>'+esc(pkg)+'</strong> to '+esc(fixVer) :
+                    (r.fixInfo && r.fixInfo.fix_available) ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
+    const outcome = rs >= 10
+      ? 'Full system compromise enabling ransomware deployment, data exfiltration, or lateral movement.'
+      : 'Remote code execution enabling host compromise, data exfiltration, or privilege escalation.';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong><br><small class="text-muted">'+esc((r.evalCtx&&r.evalCtx.imageId)?'Container':'Host')+'</small></td>'+
+      '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
+      '<td class="med">'+esc((r.evalCtx&&r.evalCtx.hostname)||r.mid||'—')+'</td>'+
+      '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
+      '<td class="wide">'+esc(outcome)+'</td>'+
+      '<td class="med">'+fixCell+'</td>'+
+      '<td><span class="badge badge-critical">Immediate</span></td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No critical CVEs</td></tr>';
+
+  // ── Compliance rows
+  function compServiceArea(title) {
+    const t = (title||'').toLowerCase();
+    if (/mfa|multi.factor|authenticat|iam|identity|access|password/.test(t)) return 'Identity &amp; Access';
+    if (/encrypt|kms|key|tls|ssl/.test(t)) return 'Data Protection';
+    if (/s3|bucket|storage|object/.test(t)) return 'Storage Security';
+    if (/network|vpc|sg|security.group|firewall|port/.test(t)) return 'Network Security';
+    if (/log|audit|trail|monitor|cloudtrail/.test(t)) return 'Logging &amp; Audit';
+    if (/backup|snapshot|recovery/.test(t)) return 'Resilience';
+    return 'Cloud Security';
+  }
+  const compRows = compliance.length ? compliance.map(function(r,i) {
+    const isCrit = (r.severity||'').toLowerCase()==='critical';
+    const bg = isCrit ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    const svcArea = compServiceArea(r.title);
+    const ctxRisk = 'Misconfigured or non-compliant control expands the attack surface, enabling unauthorized access or data exposure across '+((r.cloud||'cloud').toUpperCase())+' resources.';
+    const bizImpact = 'Regulatory non-compliance, potential data breach, audit failure, and reputational risk.';
+    const recFix = (r.description||'').slice(0,200) || 'Remediate the control violation per the policy guidance and re-evaluate in FortiCNAPP.';
+    // Build resource URN sub-list from saved rows
+    var resourceHtml = '';
+    if (Array.isArray(r.resources) && r.resources.length) {
+      // Detect which field is the URN/resource identifier (priority order)
+      var urnKeys = ['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','PRINCIPAL_ID','NAME'];
+      var rows = r.resources;
+      // Pick the first key that exists in the first row
+      var firstRow = rows[0] || {};
+      var urnKey = urnKeys.find(function(k){ return firstRow[k] !== undefined; }) || Object.keys(firstRow)[0] || '';
+      // Secondary label key (e.g. region or type)
+      var labelKeys = ['REGION','LOCATION','CLOUD','TYPE','RESOURCE_TYPE','SUBSCRIPTION_ID'];
+      var labelKey = labelKeys.find(function(k){ return firstRow[k] !== undefined; }) || '';
+      if (urnKey) {
+        var shown = rows.slice(0, 50);
+        resourceHtml = '<details style="margin-top:6px"><summary style="font-size:10px;font-weight:700;color:#DA291C;cursor:pointer;list-style:none">&#9660; '+rows.length+' Violating Resource'+(rows.length===1?'':'s')+'</summary>'+
+          '<div style="max-height:200px;overflow-y:auto;margin-top:4px;border:1px solid #e5e7eb;border-radius:4px">'+
+          '<table style="width:100%;font-size:9px;border-collapse:collapse">'+
+          '<thead><tr style="background:#f1f5f9"><th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(urnKey)+'</th>'+
+          (labelKey?'<th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(labelKey)+'</th>':'')+
+          '</tr></thead><tbody>'+
+          shown.map(function(row,ri){
+            var urnVal = row[urnKey] !== undefined ? String(row[urnKey]) : '—';
+            var lblVal = labelKey && row[labelKey] !== undefined ? String(row[labelKey]) : '';
+            return '<tr style="'+(ri%2?'background:#f8fafc':'')+'">'
+              +'<td style="padding:2px 6px;font-family:monospace;color:#1e293b;word-break:break-all">'+esc(urnVal)+'</td>'
+              +(labelKey?'<td style="padding:2px 6px;color:#64748b">'+esc(lblVal)+'</td>':'')
+              +'</tr>';
+          }).join('')+
+          (rows.length>50?'<tr><td colspan="2" style="padding:3px 6px;color:#94a3b8;font-style:italic">… and '+(rows.length-50)+' more</td></tr>':'')+
+          '</tbody></table></div></details>';
+      }
+    }
+    return '<tr'+bg+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td>'+sevBadge(r.severity)+'</td>'+
+      '<td class="wide"><strong>'+esc(r.title||'—')+'</strong>'+resourceHtml+'</td>'+
+      '<td class="med">'+cspBadge(r.cloud)+'<br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
+      '<td class="med">'+svcArea+'</td>'+
+      '<td class="wide">'+esc(ctxRisk)+'</td>'+
+      '<td class="wide">'+esc(bizImpact)+'</td>'+
+      '<td class="wide">'+esc(recFix)+'</td>'+
+      '<td><span class="badge badge-critical">Immediate</span></td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No compliance findings</td></tr>';
+
+  // ── Identity rows
+  const idRows = identities.length ? identities.map(function(r,i) {
+    const risks   = (r.METRICS && r.METRICS.risks) || [];
+    const rs      = (r.METRICS && r.METRICS.risk_score) || 0;
+    const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
+    const noMfa   = risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+    const ec = r.ENTITLEMENT_COUNTS || {};
+    const unusedCnt = ec.entitlements_unused_count;
+    const totalCnt  = ec.entitlements_total_count || ec.entitlements_count;
+    const unusedPct = ec.entitlements_unused_percentage;
+    const idlePct = unusedPct != null ? Math.round(unusedPct)+'%'
+                  : (unusedCnt != null && totalCnt) ? Math.round((unusedCnt/totalCnt)*100)+'%'
+                  : '—';
+    const privBadge = isAdmin ? '<span class="badge badge-critical">Admin</span>' : '<span class="badge badge-high">Privileged</span>';
+    const mfaBadge  = noMfa   ? '<span class="badge badge-mfa-off">No MFA</span>' : '<span class="badge badge-mfa-on">MFA ON</span>';
+    const riskNarr  = isAdmin && noMfa
+      ? '<strong class="text-critical">CRITICAL:</strong> Full admin with no MFA — single credential theft enables complete environment compromise.'
+      : isAdmin
+        ? '<strong class="text-critical">HIGH:</strong> Full admin privileges — any compromise allows unrestricted access to all resources.'
+        : '<strong class="text-critical">HIGH:</strong> No MFA on privileged account — credential theft risk with no second factor protection.';
+    const recFix = isAdmin && noMfa
+      ? 'Enforce MFA immediately. Replace standing admin with JIT privilege escalation.'
+      : isAdmin
+        ? 'Apply least-privilege policy; remove wildcard permissions; audit all actions.'
+        : 'Enable MFA immediately; rotate credentials; review recent activity.';
+    const bg = rs>0.6 ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    return '<tr'+bg+'>'+
+      '<td><strong>'+esc(r.NAME||r.PRINCIPAL_ID||'—')+'</strong><br><small class="text-muted">'+esc(r.PRINCIPAL_ID||r.PROVIDER_TYPE||'')+'</small></td>'+
+      '<td>'+privBadge+'</td>'+
+      '<td>'+mfaBadge+'</td>'+
+      '<td>'+(r.LAST_USED_TIME ? fmt(r.LAST_USED_TIME) : '<span class="text-muted">Never / Unknown</span>')+'</td>'+
+      '<td style="text-align:center">'+(unusedCnt!=null ? '<strong class="text-critical">'+idlePct+'</strong><br><small class="text-muted">idle</small>' : '—')+'</td>'+
+      '<td class="wide">'+riskNarr+'</td>'+
+      '<td class="wide">'+esc(recFix)+'</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
+
+  // ── Build HTML ──────────────────────────────────────────────────────────────
+  const tocCards = [
+    alerts.length     ? '<a href="#alerts" class="toc-card"><div class="tc-num">01 — Alerts</div><div class="tc-title">Critical Alerts</div><div class="tc-sub">'+alerts.length+' open critical alert'+(alerts.length===1?'':'s')+'.</div></a>' : '',
+    compliance.length ? '<a href="#compliance" class="toc-card"><div class="tc-num">02 — Compliance</div><div class="tc-title">Critical Non-Compliance</div><div class="tc-sub">'+compliance.length+' control failure'+(compliance.length===1?'':'s')+'.</div></a>' : '',
+    vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
+    identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
+    secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
+  ].filter(Boolean).join('\n      ');
+
+
+  const alertSection = alerts.length ? (
+    '<section id="alerts" class="pagebreak">\n<h2>1. Critical Alerts</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:50px">ID</th><th style="width:55px">Severity</th>' +
+    '<th style="width:150px">Alert</th><th style="width:100px">Type</th><th style="width:105px">Time</th>' +
+    '<th style="width:130px">IP or Domain Reputation</th><th style="width:160px">Description</th>' +
+    '<th style="width:150px">Why It Matters</th><th style="width:160px">Recommended Next Action</th>' +
+    '</tr></thead><tbody>'+alertRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const compSection = compliance.length ? (
+    '<section id="compliance" class="pagebreak">\n<h2>2. Critical Non-Compliance Findings</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:200px">Finding</th>' +
+    '<th style="width:120px">Cloud Scope</th><th style="width:90px">Service Area</th>' +
+    '<th style="width:180px">Contextual Risk</th><th style="width:180px">Business Impact</th>' +
+    '<th style="width:180px">Recommended Fix</th><th style="width:70px">Priority</th>' +
+    '</tr></thead><tbody>'+compRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const vulnSection = vulns.length ? (
+    '<section id="vulnerabilities" class="pagebreak">\n<h2>3. Critical CVE Vulnerabilities</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+    '<th style="width:60px">Risk Score</th><th style="width:140px">Affected Resource</th>' +
+    '<th style="width:130px">Package / Version</th><th style="width:200px">Attacker Outcome if Exploited</th>' +
+    '<th style="width:130px">Recommended Fix</th><th style="width:65px">Priority</th>' +
+    '</tr></thead><tbody>'+vulnRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const idSection = identities.length ? (
+    '<section id="identity" class="pagebreak">\n<h2>4. Identity Risk</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th style="width:160px">Identity</th><th style="width:80px">Privilege</th><th style="width:65px">MFA</th>' +
+    '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
+    '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
+    '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const secretsAllRows = secretsAll.length ? secretsAll.map(function(r, i) {
+    const lastSeen = r.END_TIME ? new Date(r.END_TIME).toLocaleString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
+    const bg = i % 2 ? ' style="background:#FAFAFA;"' : '';
+    return '<tr'+bg+'>' +
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>' +
+      '<td><small class="text-muted">'+esc(r.MID||'—')+'</small></td>' +
+      '<td>'+esc(r.OS||'—')+'</td>' +
+      '<td><span class="badge badge-critical">'+esc(r.SECRET_TYPE||'—')+'</span></td>' +
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.SECRET_IDENTIFIER||'—')+'</code></td>' +
+      '<td><small>'+esc(lastSeen)+'</small></td>' +
+      '</tr>';
+  }).join('') : '';
+
+  const secretsAllSection = secretsAll.length ? (
+    '<section id="secrets-all" class="pagebreak">\n<h2>5. Secrets — Discovered Secrets</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th>' +
+    '<th style="width:80px">OS</th><th style="width:120px">Secret Type</th>' +
+    '<th style="width:220px">Secret Identifier</th><th style="width:130px">Last Seen Time</th>' +
+    '</tr></thead><tbody>'+secretsAllRows+'</tbody></table>\n</section>'
+  ) : '';
+
+
+
+
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+  '  <meta charset="UTF-8">\n' +
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+  '  <title>Rapid Cloud Assessment – '+esc(customer)+'</title>\n' +
+  '  <style type="text/css">\n' + REPORT_CSS + '\n' +
+  '  </style>\n</head>\n<body>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
+  '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
+  '<div class="report-cover">\n' +
+  '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
+  '  <h1>Cloud Security Posture Report</h1>\n' +
+  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  (function(){
+    const arcLen=550, fill=Math.round((score/100)*arcLen);
+    return '  <div style="margin:1rem auto 0;max-width:340px;width:100%">\n'+
+      '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
+      '    <defs><linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
+      '<stop offset="0%" stop-color="#ef4444"/>'+
+      '<stop offset="50%"   stop-color="#ef4444"/>'+
+      '<stop offset="50%"   stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#22c55e"/>'+
+      '<stop offset="100%" stop-color="#22c55e"/>'+
+      '</linearGradient></defs>\n'+
+      '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <path fill="none" stroke="url(#rg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <line x1="249" y1="55" x2="259" y2="22" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
+      '    <line x1="350" y1="156" x2="383" y2="146" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
+      '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">100</text>\n'+
+      '  </svg>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:4px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
+      '  </div>\n';
+  })()+
+  '  <div class="meta-row">\n' +
+  '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
+  '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
+  '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
+  '  </div>\n</div>\n' +
+  '<div class="toc"><h3>Discovered Risk Findings</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  '<section id="exec-summary" class="pagebreak">\n<h2>Executive Summary</h2>\n' +
+  '<div class="kpi-grid">' +
+  '<div class="kpi-card critical"><div class="kpi-number">'+alerts.length+'</div><div class="kpi-label">Critical Alerts</div></div>' +
+  '<div class="kpi-card high"><div class="kpi-number">'+vulns.length+'</div><div class="kpi-label">Critical CVEs (Risk ≥ 9)</div></div>' +
+  '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
+  '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
+  (secrets.length ? '<div class="kpi-card info"><div class="kpi-number">'+secrets.length+'</div><div class="kpi-label">SSH Keys Detected</div></div>' : '') +
+  '</div>\n' +
+  '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
+  '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
+  'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
+  '</section>\n' +
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' +
+  '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
+  '<div style="text-align:center">' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT REPORT &mdash; Powered by FortiCNAPP</div>' +
+  '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
+  '<div style="font-size:11px;color:#6b7280">This report is confidential and intended solely for the named recipient. Generated by the FortiCNAPP Extensible Reporting Tool.</div>' +
+  '</div>' +
+  '<div style="display:flex;align-items:center;justify-content:space-between;gap:32px">' +
+  '<div style="display:flex;align-items:center;gap:0">' +
+  '<span style="font-size:52px;font-weight:500;color:#d1d5db;letter-spacing:.04em;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;line-height:1">F</span>' +
+  '<svg viewBox="0 0 100 100" width="46" height="46" style="margin:0 2px;vertical-align:middle">' +
+  '<rect x="5" y="5" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="56" y="5" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="5" y="41" width="39" height="18" rx="5" fill="#888"/>' +
+  '<rect x="56" y="41" width="39" height="18" rx="5" fill="#888"/>' +
+  '<rect x="5" y="67" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="56" y="67" width="39" height="28" rx="9" fill="#888"/>' +
+  '</svg>' +
+  '<span style="font-size:52px;font-weight:500;color:#d1d5db;letter-spacing:.04em;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;line-height:1">RTINET&#174;</span>' +
+  '</div>' +
+  '<div style="text-align:center">' +
+  '<div style="background:#fff;border-radius:10px;padding:10px;display:inline-block">' +
+  '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAAEsAQMAAABDsxw2AAAABlBMVEUAAAD///7S3q9LAAAACXBIWXMAAA7EAAAOxAGVKw4bAAACQklEQVRoge2aO46EMAyGjSgoOQJHydHgaHMUjkBJgcj6lYTXajWZlXaL38VoxnyVbX7byRDB/oOFqLYStXsj3yZ3rdTao/gC9oDJB/Vrt7U7kfnnYRGnONhGYI8YR3PpV3FweGmciIZjvCdgv4B1MbKX0zCF1zB7WoD9iFG7Wa1q+RJ163MWgL2JuTjETYrXbFiSWtBVQ4A5ZjrqxUoSzTA7Zo8isHosGzulaQkW556fbvRkwMw0vIu6G6tWrufBZIAd1p2AfYBxh1qyhnLP8npuJStUihzYERPjaMqknkZQdutvUdkUXmB1GPf6mbS1lxE0zaCNqgUBe8DUOJppBJ3GqG+9yACV7g+sEgsycLL5CCqT06BF7KPUaOIA7IyJhMoipM2eg1m0QFWWDj0LWA3Geyb3LA563L1FiUPTouVMwB4wNt3PfQSVjTK/9c0p3sBqMBMH1tSY9nMpaJutSEbQo4YAyxgdF6Go1Ut6vGkLZc4CsErMs7ClUSroc8tCEQdgN8wXSNfQoN3pJg7AarCgi9DS5fOPUXNwFQdgV0w3o3K8adH8ZqMEVoMNcaHORykraSleU4vDfgrshPkiFM8zkqyY2ozy4TywCixZl4Lui+fabZQdwG5YsCjers5lVdqb8tYDq8M0FanXe4vSevYsRGDPWDhfnadT9qs4APsIKze+4iDyXh/TH42APWMpmBbdXi6DolyimQGrxdSrWBqlhtlG0PMoBeyEWYVKa9e73XEKPiPZycetZwF7B4P9vX0B1hFily6412wAAAAASUVORK5CYII=" width="130" height="130" alt="QR" style="display:block"/>' +
+  '</div>' +
+  '<div style="font-size:10px;color:#9ca3af;margin-top:8px;letter-spacing:.03em">fortinet.com/resources/reports/cloud-security</div>' +
+  '</div>' +
+  '</div>' +
+  '</div>\n</body>\n</html>';
+}
+
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 const CORS = {
@@ -1296,7 +2761,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-http.createServer((req, res) => {
+function requestHandler(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS);
     res.end();
@@ -1307,13 +2772,14 @@ http.createServer((req, res) => {
     req.on('data', c => body += c);
     req.on('end', () => {
       try {
-        const { first, last, company, role, email } = JSON.parse(body);
+        const { first, last, company } = JSON.parse(body);
+        const handle = ((first||'')+(last||'').charAt(0)).toLowerCase();
         const ts = new Date().toISOString();
-        const row = [ts, first, last, company, role, email]
+        const row = [ts, first, last, company, handle]
           .map(v => `"${(v||'').replace(/"/g,'""')}"`)
           .join(',') + '\n';
         fs.appendFileSync(CONTACTS_CSV, row);
-        console.log(`[register] ${first} ${last} <${email}> — ${company} (${role})`);
+        console.log(`[register] ${handle} — ${first} ${last} @ ${company}`);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
@@ -1326,6 +2792,34 @@ http.createServer((req, res) => {
   const ua = req.headers['user-agent'] || '';
   const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
 
+  if (req.url === '/api/settings' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+    res.end(JSON.stringify({ refreshIntervalSec: dynamicInterval }));
+    return;
+  }
+  if (req.url === '/api/settings' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { refreshIntervalSec } = JSON.parse(body);
+        const minSec = 6 * 3600, maxSec = 48 * 3600;
+        if (typeof refreshIntervalSec === 'number' && refreshIntervalSec >= minSec && refreshIntervalSec <= maxSec) {
+          dynamicInterval = refreshIntervalSec;
+          if (!MOCK_FILE) startRefreshTimer();
+          res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ ok: true, refreshIntervalSec: dynamicInterval }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: 'refreshIntervalSec must be between 21600 and 172800' }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: 'Bad request' }));
+      }
+    });
+    return;
+  }
   if (req.url === '/api/data') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...CORS });
     res.end(JSON.stringify(cache));
@@ -1338,6 +2832,18 @@ http.createServer((req, res) => {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
+  } else if (req.url.startsWith('/report')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer = (qs.get('customer') || 'Customer').trim();
+    const author   = (qs.get('author')   || 'Fortinet').trim();
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    const reportHtml = buildReportHtml(cache, { customer, author });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.end(reportHtml);
   } else if (isMobile && req.url === '/') {
     res.writeHead(302, { Location: '/mobile', ...CORS });
     res.end();
@@ -1345,8 +2851,11 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
   }
-}).listen(PORT, () => {
+}
+
+function startApp(listeningPort, protocol) {
   const mode = MOCK_FILE ? 'MOCK' : 'LIVE';
+  const url  = `${protocol}://localhost:${listeningPort}`;
   console.log('\n┌──────────────────────────────────────────────────┐');
   console.log(`│  Fortinet Rapid Cloud Assessment — ${mode.padEnd(11)}│`);
   console.log('├──────────────────────────────────────────────────┤');
@@ -1356,13 +2865,11 @@ http.createServer((req, res) => {
   } else {
     console.log(`│  Refresh  : every ${String(INTERVAL + 's').padEnd(32)}│`);
   }
-  console.log(`│  Open     : http://localhost:${String(PORT).padEnd(21)}│`);
+  console.log(`│  Open     : ${url.padEnd(37)}│`);
   console.log('└──────────────────────────────────────────────────┘\n');
 
   if (MOCK_FILE) {
-    // Mock mode — load snapshot once, never call the API
     try {
-      const fs = require('fs');
       const raw = fs.readFileSync(MOCK_FILE, 'utf8');
       cache = { ...cache, ...JSON.parse(raw) };
       console.log(`[mock] Loaded ${MOCK_FILE} (${raw.length} bytes) — no API calls will be made\n`);
@@ -1371,6 +2878,34 @@ http.createServer((req, res) => {
     }
   } else {
     refreshData().catch(e => console.error('[startup]', e.message));
-    setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), INTERVAL * 1000);
+    startRefreshTimer();
   }
-});
+}
+
+if (TLS_CERT && TLS_KEY) {
+  // ── HTTPS mode ─────────────────────────────────────────────────────────────
+  let tlsOpts;
+  try {
+    tlsOpts = { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
+  } catch (e) {
+    console.error(`[tls] Cannot read cert/key: ${e.message}`);
+    process.exit(1);
+  }
+  https.createServer(tlsOpts, requestHandler).listen(PORT_TLS, () => {
+    startApp(PORT_TLS, 'https');
+  });
+  // Plain HTTP → HTTPS redirect
+  http.createServer((req, res) => {
+    const host = (req.headers.host || 'localhost').replace(/:\d+$/, '');
+    const target = `https://${host}:${PORT_TLS}${req.url}`;
+    res.writeHead(301, { Location: target });
+    res.end();
+  }).listen(PORT, () => {
+    console.log(`[tls] HTTP :${PORT} → HTTPS :${PORT_TLS} redirect active`);
+  });
+} else {
+  // ── HTTP mode (default) ────────────────────────────────────────────────────
+  http.createServer(requestHandler).listen(PORT, () => {
+    startApp(PORT, 'http');
+  });
+}
