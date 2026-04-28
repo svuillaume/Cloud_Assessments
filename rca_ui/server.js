@@ -29,7 +29,8 @@ function startRefreshTimer() {
   if (_refreshTimer) clearInterval(_refreshTimer);
   _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
 }
-const DAYS_BACK  = 7;    // look-back window
+const DAYS_BACK  = 14;   // look-back window default
+let dynamicDaysBack = DAYS_BACK;
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -96,11 +97,21 @@ async function ensureToken() {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
+async function withRetry(fn, label, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    const result = await fn();
+    if (result.status < 500) return result;
+    console.log(`  [retry] ${label} got ${result.status}, attempt ${i + 1}/${retries}`);
+    if (i < retries - 1) await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+  }
+  return fn();
+}
+
 async function post(path, body) {
   const tok = await ensureToken();
-  const { status, body: resp } = await request(
-    'POST', LW_ACCOUNT, `/api/v2/${path}`,
-    { Authorization: `Bearer ${tok}` }, body,
+  const { status, body: resp } = await withRetry(
+    () => request('POST', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body),
+    path,
   );
   if (status === 204) return [];
   if (status !== 200 && status !== 201)
@@ -110,9 +121,9 @@ async function post(path, body) {
 
 async function get(path) {
   const tok = await ensureToken();
-  const { status, body: resp } = await request(
-    'GET', LW_ACCOUNT, `/api/v2/${path}`,
-    { Authorization: `Bearer ${tok}` }, null,
+  const { status, body: resp } = await withRetry(
+    () => request('GET', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, null),
+    path,
   );
   if (status === 204) return null;
   if (status !== 200 && status !== 201)
@@ -126,23 +137,41 @@ function timeFmt(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
 
 function timeFilter(days) {
   const end   = new Date();
-  const start = new Date(Date.now() - (days || DAYS_BACK) * 86400000);
+  const start = new Date(Date.now() - (days || dynamicDaysBack) * 86400000);
   // NOTE: Lacework v2 search uses singular "timeFilter" not "timeFilters"
   return { startTime: timeFmt(start), endTime: timeFmt(end) };
 }
 
 // ── 1. Alerts — POST /api/v2/Alerts/search ───────────────────────────────────
 
+// Alerts API caps at 7 days per request — split into chunks if window > 7
+function alertTimeWindows() {
+  const total = dynamicDaysBack;
+  const chunkDays = 7;
+  const windows = [];
+  for (let offset = 0; offset < total; offset += chunkDays) {
+    const end   = new Date(Date.now() - offset * 86400000);
+    const start = new Date(Date.now() - Math.min(offset + chunkDays, total) * 86400000);
+    windows.push({ startTime: timeFmt(start), endTime: timeFmt(end) });
+  }
+  return windows;
+}
+
 async function fetchAlerts() {
-  const rows = await post('Alerts/search', {
-    timeFilter: timeFilter(),
-    filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }],
-    paging: { rows: 50 },
-  });
-  return rows
+  const windows = alertTimeWindows();
+  const batches = await Promise.all(windows.flatMap(tf => [
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }], paging: { rows: 100 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], paging: { rows: 100 } }),
+  ]));
+  const rows = batches.flat();
+  const CATS = new Set(['anomaly','composite']);
+  const filtered = rows
     .filter(r => (r.status || '').toLowerCase() !== 'closed')
+    .filter(r => CATS.has((r.derivedFields?.category || '').toLowerCase()));
+  console.log('[alerts] raw:',rows.length,'after category filter:',filtered.length);
+  return filtered
     .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
-    .slice(0, 10);
+    .slice(0, 20);
 }
 
 // ── 2. Vulns — POST /api/v2/Vulnerabilities/Hosts/search ─────────────────────
@@ -150,7 +179,7 @@ async function fetchAlerts() {
 
 async function fetchVulns() {
   const rows = await post('Vulnerabilities/Hosts/search', {
-    timeFilter: timeFilter(),
+    timeFilter: timeFilter(7), // API hard-caps at 7 days
     filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }],
     paging: { rows: 100 },
   });
@@ -405,7 +434,7 @@ async function refreshData() {
 
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
 
-function buildHtml(account, intervalSec) {
+function buildHtml(_account, intervalSec) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -443,6 +472,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',Bl
 .live-dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.5);animation:blink 2.5s ease-in-out infinite}
 .live-dot.err{background:var(--cr)}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes step1-flash{0%,100%{box-shadow:0 6px 24px rgba(239,68,68,.38),0 0 0 0 rgba(239,68,68,.7)}50%{box-shadow:0 6px 24px rgba(239,68,68,.38),0 0 0 18px rgba(239,68,68,0)}}
 
 /* ── Risk Score Mountain ── */
 .rs-block{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 36px;border-left:1px solid var(--border2);border-right:1px solid var(--border2)}
@@ -744,11 +774,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   </div>
   <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
     <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
-    Most Critical per Asset
+    Correlated Risk / Asset
   </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
-    Critical Risk Findings
+    Risk Findings Inventory
   </div>
   <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-lab" onclick="nav('lab')">
@@ -770,7 +800,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
     <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center;margin-bottom:8px">
-      <div><b id="acct-lbl" style="color:#9ca3af">${account}</b></div>
+      <div><b id="acct-lbl" style="color:#9ca3af">Customer Name</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
     </div>
@@ -797,14 +827,15 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
-  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 120px);padding:32px 24px 24px;gap:0">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:28px 48px 24px;gap:0">
 
     <!-- Title -->
-    <div style="font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:2px">Cloud Security Posture Management Score</div>
+    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Cloud Security Posture Management Score</div>
     <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:16px">Fortinet Rapid Cloud Assessment · last ${DAYS_BACK} days</div>
 
-    <!-- Gauge -->
-    <svg id="gauge-svg" viewBox="0 0 400 240" style="display:block;width:100%;max-width:460px;overflow:visible">
+    <!-- Gauge — viewBox expanded to host speech bubbles near arc labels -->
+    <!-- Arc label positions (SVG units): URGENT≈(58,67)  ATTENTION≈(314,43)  PROACTIVE≈(396,180) -->
+    <svg id="gauge-svg" viewBox="-88 -46 636 294" style="display:block;width:100%;max-width:900px;overflow:visible">
       <defs>
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
@@ -815,9 +846,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
           <stop offset="100%"  stop-color="#22c55e"/>
         </linearGradient>
         <filter id="gauge-glow"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="rgba(0,0,0,.12)"/></filter>
-        <!-- label path: slightly outside arc track (r=198) -->
+        <filter id="bub-glow"><feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="rgba(0,0,0,.15)"/></filter>
         <path id="lp" d="M 2,205 A 198,198 0 0,1 398,205"/>
       </defs>
+
       <!-- Outer shadow ring -->
       <path fill="none" stroke="#f0f4f8" stroke-width="42" stroke-linecap="round"
             d="M 25,205 A 175,175 0 0,1 375,205"/>
@@ -831,22 +863,43 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <!-- Band divider ticks -->
       <line x1="200" y1="12" x2="200" y2="48"  stroke="white" stroke-width="3.5" stroke-linecap="round"/>
       <line x1="350" y1="156" x2="387" y2="143" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
-      <!-- Band labels curved along arc via textPath -->
-      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#ef4444">
-        <textPath href="#lp" startOffset="24.5%" text-anchor="middle">URGENT</textPath>
-      </text>
-      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#f59e0b">
-        <textPath href="#lp" startOffset="69.5%" text-anchor="middle">ATTENTION</textPath>
-      </text>
-      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#22c55e">
-        <textPath href="#lp" startOffset="96%" text-anchor="end">PROACTIVE</textPath>
-      </text>
+      <!-- Band labels removed — bubbles carry the labels -->
       <!-- Score number -->
-      <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="72" font-weight="900"
+      <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="58" font-weight="900"
             letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
       <!-- Scale endpoints -->
-      <text x="10"  y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
-      <text x="390" y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+      <text x="25"  y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+      <text x="375" y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+
+      <!-- ── URGENT bubble — left, tail centered on right edge → arc at ~(58,67) ── -->
+      <g id="bubble-urgent" opacity="0.35" style="transition:opacity .4s,filter .4s">
+        <polygon points="40,28 57,63 40,44" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.3" stroke-linejoin="round"/>
+        <rect x="-82" y="5" width="122" height="62" rx="9" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+        <line x1="40" y1="28" x2="40" y2="44" stroke="#fef2f2" stroke-width="3"/>
+        <text x="-21" y="22" text-anchor="middle" font-size="11" font-weight="800" fill="#ef4444" letter-spacing=".06em" font-family="-apple-system,sans-serif">URGENT</text>
+        <text x="-21" y="38" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Critical gaps.</text>
+        <text x="-21" y="52" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Immediate action.</text>
+      </g>
+
+      <!-- ── ATTENTION bubble — upper-right of arc, tail on LEFT → arc at ~(314,43) ── -->
+      <g id="bubble-attention" opacity="0.35" style="transition:opacity .4s,filter .4s">
+        <polygon points="330,18 314,43 330,34" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.3" stroke-linejoin="round"/>
+        <rect x="330" y="-8" width="142" height="62" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+        <line x1="330" y1="18" x2="330" y2="34" stroke="#fffbeb" stroke-width="3"/>
+        <text x="401" y="10" text-anchor="middle" font-size="11" font-weight="800" fill="#b45309" letter-spacing=".06em" font-family="-apple-system,sans-serif">ATTENTION</text>
+        <text x="401" y="26" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Gaps exist.</text>
+        <text x="401" y="40" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Prioritize prompt action.</text>
+      </g>
+
+      <!-- ── PROACTIVE bubble — right, tail 20u → arc at ~(396,180). Left edge at x=416 ── -->
+      <g id="bubble-proactive" opacity="0.35" style="transition:opacity .4s,filter .4s">
+        <polygon points="416,172 398,180 416,188" fill="#f0fdf4" stroke="#86efac" stroke-width="1.3" stroke-linejoin="round"/>
+        <rect x="416" y="149" width="118" height="62" rx="9" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+        <line x1="416" y1="172" x2="416" y2="188" stroke="#f0fdf4" stroke-width="3"/>
+        <text x="475" y="166" text-anchor="middle" font-size="11" font-weight="800" fill="#15803d" letter-spacing=".06em" font-family="-apple-system,sans-serif">PROACTIVE</text>
+        <text x="475" y="182" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Strong controls.</text>
+        <text x="475" y="196" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Low risk.</text>
+      </g>
     </svg>
 
     <!-- hidden ov-* elements so JS updates don't error -->
@@ -854,37 +907,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <span id="ov-v" style="display:none"></span>
     <span id="ov-i" style="display:none"></span>
     <span id="ov-c" style="display:none"></span>
-
-    <!-- Band legend — mirroring arc geography: left=urgent, center=attention, right=proactive -->
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:520px;margin-top:4px">
-      <!-- URGENT — left side of arc -->
-      <div style="text-align:left;padding:10px 12px;border-left:3px solid #ef4444;background:#fef2f2;border-radius:0 8px 8px 0">
-        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
-          <div style="width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0"></div>
-          <span style="font-size:9.5px;font-weight:800;color:#ef4444;letter-spacing:.08em;text-transform:uppercase">Urgent</span>
-          <span style="font-size:9px;font-weight:600;color:#fca5a5">0–49</span>
-        </div>
-        <div style="font-size:10px;color:#7f1d1d;line-height:1.55">Critical security gaps require <strong>immediate action</strong> to reduce risk.</div>
-      </div>
-      <!-- ATTENTION — upper arc, center -->
-      <div style="text-align:left;padding:10px 12px;border-left:3px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0">
-        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
-          <div style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div>
-          <span style="font-size:9.5px;font-weight:800;color:#b45309;letter-spacing:.08em;text-transform:uppercase">Attention</span>
-          <span style="font-size:9px;font-weight:600;color:#fcd34d">50–89</span>
-        </div>
-        <div style="font-size:10px;color:#78350f;line-height:1.55">Some security gaps need <strong>prompt action</strong> to maintain protection.</div>
-      </div>
-      <!-- PROACTIVE — right side of arc -->
-      <div style="text-align:left;padding:10px 12px;border-left:3px solid #22c55e;background:#f0fdf4;border-radius:0 8px 8px 0">
-        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
-          <div style="width:7px;height:7px;border-radius:50%;background:#22c55e;flex-shrink:0"></div>
-          <span style="font-size:9.5px;font-weight:800;color:#15803d;letter-spacing:.08em;text-transform:uppercase">Proactive</span>
-          <span style="font-size:9px;font-weight:600;color:#86efac">90–100</span>
-        </div>
-        <div style="font-size:10px;color:#14532d;line-height:1.55">Strong controls actively <strong>prevent threats</strong> and continuously reduce risk.</div>
-      </div>
-    </div>
 
   </div>
   <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
@@ -959,7 +981,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="view" id="view-asset-risk">
   <div class="view-hdr">
     <div class="vh-text">
-      <div class="vh-title">Most Critical Risk Findings per Asset</div>
+      <div class="vh-title">Correlated Risk Findings per Asset</div>
       <div class="vh-sub">Hosts ranked by combined risk — CVEs &amp; secrets correlated per asset</div>
     </div>
     <span class="vh-badge" id="cnt-ar">—</span>
@@ -1007,18 +1029,16 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
     </div>
   </div>
-  <!-- Step 0 — shown only when top risk assets exist -->
-  <div id="lab-asset-action" style="display:none;margin:0 16px 16px;padding:14px 18px;background:linear-gradient(135deg,#fef2f2,#fff7ed);border:2px solid #ef4444;border-radius:12px">
-    <div style="display:flex;align-items:flex-start;gap:12px">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0">
-        <div style="font-size:9px;font-weight:800;color:#ef4444;letter-spacing:.12em;text-transform:uppercase">STEP</div>
-        <div style="font-size:22px;font-weight:900;color:#ef4444;line-height:1">0</div>
-      </div>
-      <div style="width:2px;background:#fca5a5;border-radius:2px;align-self:stretch;flex-shrink:0;margin:2px 0"></div>
-      <div>
-        <div style="font-size:12px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">&#x1F6A8; &nbsp;Immediate Priority &#8212; Top Risk Assets Detected</div>
-        <div style="font-size:12px;color:#7f1d1d;line-height:1.6">Review and <strong>isolate your highest-risk assets</strong> as soon as possible to contain the blast radius before addressing other findings. See <a href="#" onclick="nav('asset-risk');return false;" style="color:#dc2626;font-weight:700">Most Critical Risk Findings per Asset</a> for the ranked list.</div>
-      </div>
+  <!-- Step 1 — circle node aligned with Step 2 (cx=160 = 16% of SVG width) -->
+  <div id="lab-asset-action" style="display:none;flex-direction:column;align-items:flex-start;padding:8px 0 0 calc(16% - 25px);gap:0">
+    <div id="jnd0-circle" onclick="nav('asset-risk')" style="width:104px;height:104px;border-radius:50%;background:#ef4444;box-shadow:0 6px 24px rgba(239,68,68,.38);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;gap:1px;transition:filter .15s" onmouseover="this.style.filter='brightness(1.08)'" onmouseout="this.style.filter=''">
+      <div style="font-size:7px;font-weight:700;color:rgba(255,255,255,.65);letter-spacing:2.5px;text-transform:uppercase">STEP 1</div>
+      <div style="font-size:10px;font-weight:700;color:white;line-height:1.25;text-align:center">Risk<br>Assets</div>
+      <div id="jnd0-cnt" style="font-size:22px;font-weight:900;color:white;line-height:1.1">—</div>
+    </div>
+    <!-- dashed connector centered under circle -->
+    <div style="width:104px;display:flex;justify-content:center">
+      <div style="width:5px;height:22px;background:repeating-linear-gradient(to bottom,#ef4444 0,#ef4444 6px,transparent 6px,transparent 12px)"></div>
     </div>
   </div>
 
@@ -1061,32 +1081,32 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
     <!-- Node 1 — Identities -->
     <circle id="jnd1" cx="160" cy="155" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-    <text x="160" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 1</text>
+    <text x="160" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
     <text x="160" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
     <text id="jnd1-cnt" x="160" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
 
     <!-- Node 2 — Critical Alerts -->
     <circle id="jnd2" cx="160" cy="365" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-    <text x="160" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
+    <text x="160" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
     <text x="160" y="363" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
     <text id="jnd2-cnt" x="160" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
 
     <!-- Node 3 — Internet Exposure -->
     <circle id="jnd3" cx="500" cy="365" r="58" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
-    <text x="500" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
+    <text x="500" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 4</text>
     <text x="500" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
     <text x="500" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
     <text id="jnd3-cnt" x="500" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
 
     <!-- Node 4 — Compliance -->
     <circle id="jnd4" cx="500" cy="155" r="58" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-    <text x="500" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 4</text>
+    <text x="500" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 5</text>
     <text x="500" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
     <text id="jnd4-cnt" x="500" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
 
     <!-- Node 5 — Secrets -->
     <circle id="jnd5" cx="840" cy="155" r="58" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
-    <text x="840" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 5</text>
+    <text x="840" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 6</text>
     <text x="840" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
     <text id="jnd5-cnt" x="840" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
 
@@ -1126,6 +1146,22 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </div>
     </div>
     <div style="font-size:10px;color:#94a3b8;padding:0 4px">Changes take effect immediately on the server. The browser page reloads at the same cadence.</div>
+
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-top:16px">
+      <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Assessment Window</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:14px">Sliding look-back period used for all API queries (alerts, CVEs, identities, secrets, compliance).</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="settings-days-select" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none">
+          <option value="7">7 days</option>
+          <option value="14">14 days (default)</option>
+        </select>
+        <button onclick="applyDaysBack()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Apply</button>
+        <span id="settings-days-saved" style="font-size:12px;color:#22c55e;font-weight:700;opacity:0;transition:opacity .4s">✓ Saved</span>
+      </div>
+      <div style="margin-top:14px;padding:10px 14px;background:#f1f5f9;border-radius:7px;font-size:11px;color:#475569">
+        Current window: <b id="settings-cur-days">—</b> · Takes effect on next data refresh
+      </div>
+    </div>
 
   </div>
 </div>
@@ -1284,22 +1320,46 @@ function renderSecretsAll(rows,err){
   setCount('cnt-sa',rows?rows.length:0,true);
   if(err){state('body-sa','',err);return}
   if(!rows||!rows.length){state('body-sa','','No secrets detected');return}
-  setBody('body-sa','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Instance ID</th><th>Container</th><th>File Path</th><th>Secret Type</th><th>Metadata</th><th>Detected</th></tr></thead><tbody>'
-    +rows.map((r,i)=>{
+  // Group by SECRET_TYPE
+  const groups={};
+  rows.forEach(r=>{
+    const cat=r.SECRET_TYPE||'Unknown';
+    if(!groups[cat])groups[cat]=[];
+    groups[cat].push(r);
+  });
+  const isHighRisk=cat=>{const l=cat.toLowerCase();return l.includes('key')||l.includes('token')||l.includes('password')||l.includes('credential');};
+  const sortedGroups=Object.entries(groups).sort((a,b)=>{
+    const ah=isHighRisk(a[0])?1:0,bh=isHighRisk(b[0])?1:0;
+    if(ah!==bh)return bh-ah;
+    return b[1].length-a[1].length;
+  });
+  const renderGroup=([cat,items])=>{
+    const high=isHighRisk(cat);
+    const hdrColor=high?'#ef4444':'#0ea5e9';
+    const hdrBg=high?'#fef2f2':'#f0f9ff';
+    const rowsHtml=items.map(r=>{
       const inContainer=r.IS_IN_CONTAINER===true||r.IS_IN_CONTAINER==='true'||r.IS_IN_CONTAINER===1;
       const containerLabel=inContainer?'<span class="b b-hi" title="'+e(r.CONTAINER_KEY||'')+'">'+e(r.CONTAINER_KEY?r.CONTAINER_KEY.slice(0,16):'Container')+'</span>':'<span style="color:#94a3b8">—</span>';
       const detectedAt=r.RECORD_CREATED_TIME?fmtDate(r.RECORD_CREATED_TIME):r.BATCH_END_TIME?fmtDate(r.BATCH_END_TIME):'—';
-      const isHigh=r.SECRET_TYPE?.toLowerCase().includes('key')||r.SECRET_TYPE?.toLowerCase().includes('token')||r.SECRET_TYPE?.toLowerCase().includes('password')||r.SECRET_TYPE?.toLowerCase().includes('credential');
-      return'<tr class="'+(isHigh?'strip-cr':'strip-hi')+'">'
+      return'<tr>'
         +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
-        +'<td class="m"><small>'+e(r.MID||'—')+'</small></td>'
         +'<td>'+containerLabel+'</td>'
         +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
-        +'<td><span class="b b-cr">'+e(r.SECRET_TYPE||'—')+'</span></td>'
         +'<td class="p"><small>'+e(r.SECRET_METADATA||'—')+'</small><button class="cp-btn" data-cp="'+e(r.SECRET_METADATA||'')+'">'+cpIcon+'</button></td>'
         +'<td class="m">'+detectedAt+'</td>'
-      +'</tr>';
-    }).join('')+'</tbody></table></div>');
+        +'</tr>';
+    }).join('');
+    return'<div style="margin-bottom:18px">'
+      +'<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:'+hdrBg+';border-left:4px solid '+hdrColor+';border-radius:0 6px 6px 0;margin-bottom:4px">'
+        +'<span style="font-weight:700;font-size:13px;color:'+hdrColor+'">'+e(cat)+'</span>'
+        +'<span style="background:'+hdrColor+';color:#fff;border-radius:10px;font-size:11px;font-weight:700;padding:1px 8px">'+items.length+'</span>'
+      +'</div>'
+      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th>Metadata</th><th>Detected</th></tr></thead><tbody>'
+        +rowsHtml
+      +'</tbody></table></div>'
+    +'</div>';
+  };
+  setBody('body-sa','<div>'+sortedGroups.map(renderGroup).join('')+'</div>');
 }
 
 
@@ -1342,7 +1402,18 @@ function renderAssetRisk(d){
   const sorted=all.filter(a=>Math.round(a.risk/maxRisk*100)>20);
   const el=document.getElementById('cnt-ar');if(el)el.textContent=sorted.length||'0';
   const labAction=document.getElementById('lab-asset-action');
-  if(labAction)labAction.style.display=sorted.length?'block':'none';
+  if(labAction)labAction.style.display=sorted.length?'flex':'none';
+  const nd0=document.getElementById('jnd0-cnt');
+  if(nd0)nd0.textContent=sorted.length||'0';
+  const circle=document.getElementById('jnd0-circle');
+  if(circle){
+    if(sorted.length>0){
+      circle.style.animation='step1-flash 2.5s ease-in-out infinite';
+    } else {
+      circle.style.animation='';
+      circle.style.boxShadow='0 6px 24px rgba(239,68,68,.38)';
+    }
+  }
   if(!sorted.length){state('body-ar','','No significant host-level risk detected (all assets score ≤ 20)');return;}
   const medalColor=i=>i===0?'#ef4444':i===1?'#f97316':i===2?'#f59e0b':'#94a3b8';
   const barColor=s=>s>=60?'#ef4444':s>=30?'#f59e0b':'#22c55e';
@@ -1480,7 +1551,6 @@ async function load(){
     renderLab(d);
     buildPie(d);
     document.getElementById('fetched-at').textContent=fmtDate(d.fetchedAt);
-    document.getElementById('acct-lbl').textContent=d.account||'';
     const da=document.getElementById('dash-acct');if(da)da.textContent=d.account||'';
     document.getElementById('footer-time').textContent='Assessment window: last ${DAYS_BACK} days';
     const live=document.getElementById('live-dot');
@@ -1505,6 +1575,16 @@ function updateRiskScore(p){
   if(arc){arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
   const gs=document.getElementById('gauge-score');
   if(gs){gs.textContent=p;gs.setAttribute('fill',color);}
+  updateLadder(p);
+}
+function updateLadder(p){
+  const band=p<50?'urgent':p<90?'attention':'proactive';
+  ['urgent','attention','proactive'].forEach(b=>{
+    const el=document.getElementById('bubble-'+b);
+    if(!el)return;
+    el.setAttribute('opacity', b===band ? '1' : '0.35');
+    el.style.filter = b===band ? 'url(#bub-glow)' : '';
+  });
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -1531,6 +1611,8 @@ function showUserBadge(user){
   document.getElementById('tb-role').textContent=user.company||'';
   document.getElementById('tb-admin-badge').style.display='none';
   document.getElementById('top-bar').style.display='flex';
+  const acct=document.getElementById('acct-lbl');
+  if(acct&&user.company)acct.textContent=user.company;
 }
 function logout(){
   sessionStorage.removeItem('rca_user');
@@ -1592,6 +1674,11 @@ async function loadAdminSettings(){
     if(cur)cur.textContent=fmtSec(sec);
     setFooterInterval(sec);
     cd=sec;
+    const days=s.daysBack||14;
+    const dsel=document.getElementById('settings-days-select');
+    if(dsel)dsel.value=String(days);
+    const dcur=document.getElementById('settings-cur-days');
+    if(dcur)dcur.textContent=days+' days';
   }catch(ex){}
 }
 async function applySettings(){
@@ -1605,6 +1692,18 @@ async function applySettings(){
     setFooterInterval(sec);
     cd=sec;
     const saved=document.getElementById('settings-saved');
+    if(saved){saved.style.opacity='1';setTimeout(()=>saved.style.opacity='0',2500);}
+  }catch(ex){}
+}
+async function applyDaysBack(){
+  const sel=document.getElementById('settings-days-select');
+  if(!sel)return;
+  const days=parseInt(sel.value,10);
+  try{
+    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({daysBack:days})});
+    const dcur=document.getElementById('settings-cur-days');
+    if(dcur)dcur.textContent=days+' days';
+    const saved=document.getElementById('settings-days-saved');
     if(saved){saved.style.opacity='1';setTimeout(()=>saved.style.opacity='0',2500);}
   }catch(ex){}
 }
@@ -2794,7 +2893,7 @@ function requestHandler(req, res) {
 
   if (req.url === '/api/settings' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
-    res.end(JSON.stringify({ refreshIntervalSec: dynamicInterval }));
+    res.end(JSON.stringify({ refreshIntervalSec: dynamicInterval, daysBack: dynamicDaysBack }));
     return;
   }
   if (req.url === '/api/settings' && req.method === 'POST') {
@@ -2802,16 +2901,32 @@ function requestHandler(req, res) {
     req.on('data', d => body += d);
     req.on('end', () => {
       try {
-        const { refreshIntervalSec } = JSON.parse(body);
-        const minSec = 6 * 3600, maxSec = 48 * 3600;
-        if (typeof refreshIntervalSec === 'number' && refreshIntervalSec >= minSec && refreshIntervalSec <= maxSec) {
-          dynamicInterval = refreshIntervalSec;
-          if (!MOCK_FILE) startRefreshTimer();
-          res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
-          res.end(JSON.stringify({ ok: true, refreshIntervalSec: dynamicInterval }));
+        const payload = JSON.parse(body);
+        if (payload.refreshIntervalSec !== undefined) {
+          const minSec = 6 * 3600, maxSec = 48 * 3600;
+          const sec = payload.refreshIntervalSec;
+          if (typeof sec === 'number' && sec >= minSec && sec <= maxSec) {
+            dynamicInterval = sec;
+            if (!MOCK_FILE) startRefreshTimer();
+            res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+            res.end(JSON.stringify({ ok: true, refreshIntervalSec: dynamicInterval, daysBack: dynamicDaysBack }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+            res.end(JSON.stringify({ error: 'refreshIntervalSec must be between 21600 and 172800' }));
+          }
+        } else if (payload.daysBack !== undefined) {
+          const d = payload.daysBack;
+          if (d === 7 || d === 14) {
+            dynamicDaysBack = d;
+            res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+            res.end(JSON.stringify({ ok: true, daysBack: dynamicDaysBack }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+            res.end(JSON.stringify({ error: 'daysBack must be 7 or 14' }));
+          }
         } else {
           res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
-          res.end(JSON.stringify({ error: 'refreshIntervalSec must be between 21600 and 172800' }));
+          res.end(JSON.stringify({ error: 'Unknown setting' }));
         }
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });

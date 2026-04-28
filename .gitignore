@@ -1,0 +1,17 @@
+# Credentials & API keys
+.env
+*.json
+
+# Runtime data
+rca_ui/contacts.csv
+rca_ui/users.json
+
+# Generated outputs
+*.pdf
+rca.html
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.log
