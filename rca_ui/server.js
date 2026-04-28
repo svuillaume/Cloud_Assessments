@@ -2105,9 +2105,13 @@ function buildReportHtml(data, meta) {
     const rs      = (r.METRICS && r.METRICS.risk_score) || 0;
     const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
     const noMfa   = risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
-    const unusedCnt = (r.ENTITLEMENT_COUNTS && r.ENTITLEMENT_COUNTS.entitlements_unused_count);
-    const totalCnt  = (r.ENTITLEMENT_COUNTS && r.ENTITLEMENT_COUNTS.entitlements_count);
-    const idlePct = (unusedCnt != null && totalCnt) ? ((unusedCnt/totalCnt)*100).toFixed(0)+'%' : (unusedCnt != null ? unusedCnt : '—');
+    const ec = r.ENTITLEMENT_COUNTS || {};
+    const unusedCnt = ec.entitlements_unused_count;
+    const totalCnt  = ec.entitlements_total_count || ec.entitlements_count;
+    const unusedPct = ec.entitlements_unused_percentage;
+    const idlePct = unusedPct != null ? Math.round(unusedPct)+'%'
+                  : (unusedCnt != null && totalCnt) ? Math.round((unusedCnt/totalCnt)*100)+'%'
+                  : '—';
     const privBadge = isAdmin ? '<span class="badge badge-critical">Admin</span>' : '<span class="badge badge-high">Privileged</span>';
     const mfaBadge  = noMfa   ? '<span class="badge badge-mfa-off">No MFA</span>' : '<span class="badge badge-mfa-on">MFA ON</span>';
     const riskNarr  = isAdmin && noMfa
