@@ -2132,7 +2132,29 @@ function buildReportHtml(data, meta) {
   '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
   '  <h1>Cloud Security Posture Report</h1>\n' +
   '  <div class="subtitle">'+esc(customer)+'</div>\n' +
-  '  <div style="margin:1.5rem auto;display:inline-block;padding:.5rem 2rem;background:rgba(255,255,255,.15);border-radius:20px;font-weight:700;font-size:1rem;color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</div>\n' +
+  (function(){
+    const arcLen=550, fill=Math.round((score/100)*arcLen);
+    return '  <div style="margin:1rem auto 0;max-width:340px;width:100%">\n'+
+      '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
+      '    <defs><linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
+      '<stop offset="0%" stop-color="#ef4444"/>'+
+      '<stop offset="65.4%" stop-color="#ef4444"/>'+
+      '<stop offset="65.4%" stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#22c55e"/>'+
+      '<stop offset="100%" stop-color="#22c55e"/>'+
+      '</linearGradient></defs>\n'+
+      '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <path fill="none" stroke="url(#rg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <line x1="249" y1="55" x2="259" y2="22" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
+      '    <line x1="350" y1="156" x2="383" y2="146" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
+      '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="'+sColor+'">'+score+'</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">100</text>\n'+
+      '  </svg>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:'+sColor+';margin-top:4px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
+      '  </div>\n';
+  })()+
   '  <div class="meta-row">\n' +
   '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
   '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
