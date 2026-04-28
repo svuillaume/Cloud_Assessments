@@ -11,15 +11,24 @@ const path  = require('path');
 
 const CONTACTS_CSV = path.join(__dirname, 'contacts.csv');
 if (!fs.existsSync(CONTACTS_CSV)) {
-  fs.writeFileSync(CONTACTS_CSV, 'Timestamp,FirstName,LastName,Company,Role,Email\n');
+  fs.writeFileSync(CONTACTS_CSV, 'Timestamp,FirstName,LastName,Company,Handle\n');
 }
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const LW_ACCOUNT = process.env.LW_ACCOUNT || 'partner-demo.lacework.net';
 const LW_KEY_ID  = process.env.LW_KEY_ID  || 'YOUR_KEY_ID';
 const LW_SECRET  = process.env.LW_SECRET  || 'YOUR_SECRET_KEY';
-const PORT       = Number(process.env.PORT) || 8080;
-const INTERVAL   = 3600; // refresh interval (seconds) — 60 min
+const PORT       = Number(process.env.PORT)     || 8080;
+const PORT_TLS   = Number(process.env.PORT_TLS) || 8443;
+const TLS_CERT   = process.env.TLS_CERT || '';  // path to fullchain.pem
+const TLS_KEY    = process.env.TLS_KEY  || '';  // path to privkey.pem
+const INTERVAL   = 86400; // refresh interval (seconds) — 24 hrs
+let dynamicInterval = INTERVAL;
+let _refreshTimer = null;
+function startRefreshTimer() {
+  if (_refreshTimer) clearInterval(_refreshTimer);
+  _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
+}
 const DAYS_BACK  = 7;    // look-back window
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,6 +41,8 @@ let cache = {
   riskScore: 0,
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
 };
+
+
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -201,6 +212,7 @@ async function fetchCompliance() {
         description: p.description || '—',
         severity:    'Critical',
         violations:  rows.length,
+        resources:   rows.slice(0, 100), // up to 100 violating resources per policy
       });
     } catch (e) {
       console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
@@ -263,16 +275,45 @@ async function fetchIdentities() {
 
 async function fetchSecretsAll() {
   const tf = timeFilter();
-  const queryText = `{source { LW_HE_SECRETS_ALL } return {HOSTNAME, MID, OS, SECRET_TYPE, SECRET_IDENTIFIER, END_TIME}}`;
-  const rows = await post('Queries/execute', {
-    query: { queryText },
-    arguments: [
+  const queryText = `{source { LW_HE_SECRETS_ALL } return distinct {BATCH_START_TIME, BATCH_END_TIME, BATCH_ID, RECORD_CREATED_TIME, MID, HOSTNAME, IS_IN_CONTAINER, CONTAINER_KEY, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
+  const tok = await ensureToken();
+  const all = [];
+
+  // First page
+  const { status: s1, body: r1 } = await request(
+    'POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+    { Authorization: `Bearer ${tok}` },
+    { query: { queryText }, arguments: [
       { name: 'StartTimeRange', value: tf.startTime },
       { name: 'EndTimeRange',   value: tf.endTime   },
-    ],
+    ] },
+  );
+  if (s1 !== 200 && s1 !== 201) throw new Error(`Queries/execute → HTTP ${s1}`);
+  if (Array.isArray(r1?.data)) all.push(...r1.data);
+
+  // Follow pages
+  let nextUrl = r1?.paging?.urls?.nextPage || null;
+  while (nextUrl) {
+    const u = new URL(nextUrl);
+    const { status: sN, body: rN } = await request(
+      'GET', LW_ACCOUNT, u.pathname + u.search,
+      { Authorization: `Bearer ${tok}` }, null,
+    );
+    if (sN !== 200) break;
+    if (Array.isArray(rN?.data)) all.push(...rN.data);
+    nextUrl = rN?.paging?.urls?.nextPage || null;
+  }
+
+  // Exclude system SSH host keys (etc/ssh/ssh_host_*) with chmod 600 (file_permissions=33152=0o100600)
+  const filtered = all.filter(r => {
+    const path = (r.FILE_PATH || '');
+    const meta = (typeof r.SECRET_METADATA === 'object' && r.SECRET_METADATA) ? r.SECRET_METADATA : {};
+    const isHostKey = /etc\/ssh\/ssh_host_/i.test(path);
+    const isChmod600 = meta.file_permissions === 33152;
+    return !(isHostKey && isChmod600);
   });
-  console.log(`  [secrets-all] total returned: ${rows.length}`);
-  return rows;
+  console.log(`  [secrets-all] total: ${all.length}, after exclusions: ${filtered.length}`);
+  return filtered;
 }
 
 // ── 6. Secrets SSH Keys — POST /api/v2/Queries/execute (LQL) ─────────────────
@@ -493,6 +534,9 @@ td.r{text-align:right;padding-right:10px;white-space:nowrap;width:1%}
 /* ── Risk Findings links ── */
 .rf-link{color:var(--text);text-decoration:none;font-weight:500}
 .rf-link:hover{color:var(--accent-l);text-decoration:underline}
+.cp-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:none;background:transparent;color:#94a3b8;cursor:pointer;border-radius:3px;padding:0;margin-left:5px;vertical-align:middle;flex-shrink:0;transition:color .15s,background .15s}
+.cp-btn:hover{color:#DA291C;background:#fee2e2}
+.cp-btn.ok{color:#22c55e}
 
 /* ── Dashboard pie section ── */
 .pie-section{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px 32px 16px;background:#ffffff;border-bottom:1px solid var(--border)}
@@ -537,6 +581,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .app-layout{display:flex;min-height:100vh}
 .sidebar{width:214px;background:#111827;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
 .main{flex:1;min-width:0}
+.top-bar{display:flex;align-items:center;justify-content:flex-end;padding:8px 20px;background:#fff;border-bottom:1px solid var(--border);gap:12px;position:sticky;top:0;z-index:100}
+.tb-user{display:flex;align-items:center;gap:10px}
+.tb-avatar{width:32px;height:32px;border-radius:50%;background:#DA291C;color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;letter-spacing:.03em;flex-shrink:0}
+.tb-name{font-size:12px;font-weight:700;color:var(--text);line-height:1.2}
+.tb-role-lbl{font-size:10px;color:var(--muted);line-height:1.2}
+.tb-badge{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:5px;padding:2px 7px}
 .sb-brand{display:flex;align-items:center;gap:10px;padding:16px 14px;border-bottom:1px solid #1f2937}
 .sb-logo{width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .sb-logo svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
@@ -567,13 +617,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .rf-kpi-val{font-size:26px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text)}
 .rf-kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
 .rf-body{padding:16px 20px}
-/* ── Recommended Next Steps view ── */
-.lab-steps{padding:16px 32px}
-.lab-step{display:flex;align-items:flex-start;gap:18px;padding:20px 24px;margin-bottom:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 1px 3px rgba(15,23,42,.04)}
-.lab-step-bar{width:4px;border-radius:3px;flex-shrink:0;align-self:stretch;min-height:40px}
-.lab-step-n{font-size:13px;font-weight:700;color:var(--muted);min-width:20px;padding-top:1px}
-.lab-step-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.5}
-.lab-step-sub{font-size:12px;color:var(--muted);margin-top:5px}
+/* ── Journey Snake Map ── */
+.jmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
+.jmap-svg{width:100%;max-width:1000px;overflow:visible}
+@keyframes snake-flow{to{stroke-dashoffset:-26}}
 
 /* ── Report button + modal ── */
 .rpt-btn{display:flex;align-items:center;gap:8px;margin:8px 10px 0;padding:10px 13px;border-radius:8px;cursor:pointer;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;border:none;width:calc(100% - 20px);transition:filter .15s}
@@ -625,11 +672,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="login-overlay" id="login-overlay">
   <div class="login-box">
     <div class="login-logo">
-      <svg viewBox="0 0 100 100" width="36" height="36"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
-      <div class="login-logo-name">FortiCNAPP<br>Rapid Cloud Assessment</div>
+      <svg viewBox="0 0 100 100" width="32" height="32"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
+      <div class="login-logo-name">Fortinet &nbsp;·&nbsp; Rapid Cloud Assessment</div>
     </div>
     <div class="login-title">Welcome</div>
-    <div class="login-sub">Please identify yourself to access the dashboard</div>
+    <div class="login-sub">Enter your details to access the dashboard</div>
     <div class="login-row">
       <div class="login-field">
         <div class="login-label">First Name</div>
@@ -644,23 +691,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div class="login-label">Company</div>
       <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
     </div>
-    <div class="login-field">
-      <div class="login-label">Role</div>
-      <select class="login-select" id="li-role">
-        <option value="" disabled selected>Select your role…</option>
-        <option>CISO / Security Leader</option>
-        <option>Security Architect</option>
-        <option>Cloud Engineer</option>
-        <option>DevSecOps</option>
-        <option>IT Manager</option>
-        <option>Sales / PreSales</option>
-        <option>Other</option>
-      </select>
-    </div>
-    <div class="login-field">
-      <div class="login-label">Email</div>
-      <input class="login-input" id="li-email" type="email" placeholder="jane.smith@acme.com" autocomplete="email"/>
-    </div>
     <button class="login-btn" onclick="submitLogin()">Access Dashboard</button>
     <div class="login-err" id="login-err"></div>
   </div>
@@ -670,57 +700,64 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <!-- Sidebar -->
 <div class="sidebar">
-  <div class="sb-brand">
-    <div class="sb-logo">
-      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
-        <rect x="5" y="5"  width="39" height="28" rx="9" fill="#c93428"/>
+  <div class="sb-brand" style="flex-direction:column;align-items:flex-start;gap:3px;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:0">
+      <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">F</span>
+      <svg viewBox="0 0 100 100" width="17" height="17" style="margin:0 1px;vertical-align:middle">
+        <rect x="5"  y="5"  width="39" height="28" rx="9" fill="#c93428"/>
         <rect x="56" y="5"  width="39" height="28" rx="9" fill="#c93428"/>
-        <rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/>
+        <rect x="5"  y="41" width="39" height="18" rx="5" fill="#c93428"/>
         <rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/>
-        <rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/>
+        <rect x="5"  y="67" width="39" height="28" rx="9" fill="#c93428"/>
         <rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/>
       </svg>
+      <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">RTINET</span>
     </div>
-    <div class="sb-name" style="font-size:12px;line-height:1.3">Rapid Cloud<br>Assessment</div>
+    <div style="font-size:9px;font-weight:600;color:#6b7280;letter-spacing:.08em;text-transform:uppercase;margin-left:1px">Rapid Cloud Assessment</div>
   </div>
-  <div class="sb-sect">Overview</div>
+  <div class="sb-sect">Dashboard</div>
   <div class="sb-item active" id="nav-overview" onclick="nav('overview')">
     <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-    Dashboard
+    CSPM Score
   </div>
   <div class="sb-sect">Threat Center</div>
   <div class="sb-item" id="nav-alerts" onclick="nav('alerts')">
     <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-    Critical Alerts
+    High Fidelity Alerts
   </div>
+  <div class="sb-sect">Risk Findings</div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Vulnerabilities
-  </div>
-  <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
-    <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-    Compliance
+    Internet Threat Exposure
   </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Identities
   </div>
+  <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
+    <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+    Critical Misconfigurations
+  </div>
   <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
   </div>
-  <div class="sb-item" id="nav-secrets-ssh" onclick="nav('secrets-ssh')">
-    <svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-    SSH Key Types
+  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
+    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
+    Most Critical per Asset
   </div>
-  <div class="sb-sect">Risk Center</div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
     Critical Risk Findings
   </div>
+  <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-lab" onclick="nav('lab')">
     <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
     Next Steps
+  </div>
+  <div class="sb-item" id="nav-admin-settings" onclick="nav('admin-settings')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    Admin Settings
   </div>
   <!-- Generate Report button (alpha: live from cache) -->
   <div style="padding:0 0 6px">
@@ -730,87 +767,127 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     </a>
   </div>
   <!-- Sidebar meta -->
-  <div style="padding:16px 14px;border-top:1px solid #1f2937;margin-top:auto">
+  <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
-    <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center">
+    <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center;margin-bottom:8px">
       <div><b id="acct-lbl" style="color:#9ca3af">${account}</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
     </div>
+
   </div>
 </div>
 
 <!-- Main content -->
 <div class="main">
 
+<div class="top-bar" id="top-bar" style="display:none">
+  <div class="tb-user">
+    <div>
+      <div class="tb-name" id="tb-name">—</div>
+      <div class="tb-role-lbl" id="tb-role">—</div>
+    </div>
+    <div class="tb-avatar" id="tb-avatar">?</div>
+    <span class="tb-badge" id="tb-admin-badge" style="display:none">Admin</span>
+  </div>
+  <button onclick="logout()" style="margin-left:8px;padding:5px 12px;font-size:11px;font-weight:600;color:#64748b;background:transparent;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;letter-spacing:.03em" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">Sign out</button>
+</div>
+
 <div class="err-notice" id="err-bar"></div>
 
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
-  <div class="pie-section">
-    <div style="text-align:center;line-height:1.3">
-      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Cloud Security Posture Score</div>
-    </div>
-    <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 120px);padding:32px 24px 24px;gap:0">
+
+    <!-- Title -->
+    <div style="font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:2px">Cloud Security Posture Management Score</div>
+    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:16px">Fortinet Rapid Cloud Assessment · last ${DAYS_BACK} days</div>
+
+    <!-- Gauge -->
+    <svg id="gauge-svg" viewBox="0 0 400 240" style="display:block;width:100%;max-width:460px;overflow:visible">
       <defs>
-        <!-- Gradient: Red→Orange→Green (higher score = better posture)
-             Band boundaries: p=60→65.4%  p=90→97.5% of gradient width -->
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
-          <stop offset="65.4%" stop-color="#ef4444"/>
-          <stop offset="65.4%" stop-color="#f59e0b"/>
+          <stop offset="50%"   stop-color="#ef4444"/>
+          <stop offset="50%"   stop-color="#f59e0b"/>
           <stop offset="97.5%" stop-color="#f59e0b"/>
           <stop offset="97.5%" stop-color="#22c55e"/>
           <stop offset="100%"  stop-color="#22c55e"/>
         </linearGradient>
+        <filter id="gauge-glow"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="rgba(0,0,0,.12)"/></filter>
+        <!-- label path: slightly outside arc track (r=198) -->
+        <path id="lp" d="M 2,205 A 198,198 0 0,1 398,205"/>
       </defs>
-      <!-- Grey background track -->
-      <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round"
+      <!-- Outer shadow ring -->
+      <path fill="none" stroke="#f0f4f8" stroke-width="42" stroke-linecap="round"
             d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- Coloured fill arc (gradient, grows with score) -->
-      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
-            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- White divider ticks at band boundaries 60 / 90 -->
-      <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <text id="gauge-score" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900"
-            letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
-      <!-- Scale labels at arc endpoints -->
-      <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">0</text>
-      <text x="408" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">100</text>
+      <!-- Grey background track -->
+      <path fill="none" stroke="#e2e8f0" stroke-width="32" stroke-linecap="round"
+            d="M 25,205 A 175,175 0 0,1 375,205"/>
+      <!-- Coloured fill arc -->
+      <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="32" stroke-linecap="round"
+            stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"
+            filter="url(#gauge-glow)" style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
+      <!-- Band divider ticks -->
+      <line x1="200" y1="12" x2="200" y2="48"  stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="350" y1="156" x2="387" y2="143" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <!-- Band labels curved along arc via textPath -->
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#ef4444">
+        <textPath href="#lp" startOffset="24.5%" text-anchor="middle">URGENT</textPath>
+      </text>
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#f59e0b">
+        <textPath href="#lp" startOffset="69.5%" text-anchor="middle">ATTENTION</textPath>
+      </text>
+      <text font-size="9" font-weight="700" font-family="-apple-system,sans-serif" letter-spacing=".08em" fill="#22c55e">
+        <textPath href="#lp" startOffset="96%" text-anchor="end">PROACTIVE</textPath>
+      </text>
+      <!-- Score number -->
+      <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="72" font-weight="900"
+            letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
+      <!-- Scale endpoints -->
+      <text x="10"  y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+      <text x="390" y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
     </svg>
-    <div class="rs-band" id="rs-band" style="display:none">—</div>
-    <!-- Findings summary below gauge -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-top:4px;font-size:12px;min-width:200px">
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="color:#475569">Alerts</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-a">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#f97316;flex-shrink:0"></div><span style="color:#475569">CVEs</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-v">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#8b5cf6;flex-shrink:0"></div><span style="color:#475569">Identities</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-i">—</span></div>
-      <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#d97706;flex-shrink:0"></div><span style="color:#475569">Compliance</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-c">—</span></div>
+
+    <!-- hidden ov-* elements so JS updates don't error -->
+    <span id="ov-a" style="display:none"></span>
+    <span id="ov-v" style="display:none"></span>
+    <span id="ov-i" style="display:none"></span>
+    <span id="ov-c" style="display:none"></span>
+
+    <!-- Band legend — mirroring arc geography: left=urgent, center=attention, right=proactive -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:520px;margin-top:4px">
+      <!-- URGENT — left side of arc -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #ef4444;background:#fef2f2;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#ef4444;letter-spacing:.08em;text-transform:uppercase">Urgent</span>
+          <span style="font-size:9px;font-weight:600;color:#fca5a5">0–49</span>
+        </div>
+        <div style="font-size:10px;color:#7f1d1d;line-height:1.55">Critical security gaps require <strong>immediate action</strong> to reduce risk.</div>
+      </div>
+      <!-- ATTENTION — upper arc, center -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#b45309;letter-spacing:.08em;text-transform:uppercase">Attention</span>
+          <span style="font-size:9px;font-weight:600;color:#fcd34d">50–89</span>
+        </div>
+        <div style="font-size:10px;color:#78350f;line-height:1.55">Some security gaps need <strong>prompt action</strong> to maintain protection.</div>
+      </div>
+      <!-- PROACTIVE — right side of arc -->
+      <div style="text-align:left;padding:10px 12px;border-left:3px solid #22c55e;background:#f0fdf4;border-radius:0 8px 8px 0">
+        <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+          <div style="width:7px;height:7px;border-radius:50%;background:#22c55e;flex-shrink:0"></div>
+          <span style="font-size:9.5px;font-weight:800;color:#15803d;letter-spacing:.08em;text-transform:uppercase">Proactive</span>
+          <span style="font-size:9px;font-weight:600;color:#86efac">90–100</span>
+        </div>
+        <div style="font-size:10px;color:#14532d;line-height:1.55">Strong controls actively <strong>prevent threats</strong> and continuously reduce risk.</div>
+      </div>
     </div>
+
   </div>
-  <!-- Score legend — grey area, left-aligned -->
-  <div style="padding:20px 28px 4px">
-    <div style="max-width:280px;border-radius:10px;overflow:hidden;border:1px solid #dde2ea;font-family:-apple-system,Inter,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.05)">
-      <div style="display:grid;grid-template-columns:1fr 68px;background:#eaecf2;padding:5px 12px;border-bottom:1px solid #dde2ea">
-        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.08em;padding-left:4px">POSTURE</div>
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">COLOR</div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;color:#334155;padding-left:4px">Proactive Security</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#22c55e">Green</span></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;color:#334155;padding-left:4px">Some Attention Needed</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#f59e0b">Orange</span></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;align-items:center;background:#ffffff">
-        <div style="font-size:12px;color:#334155;padding-left:4px">URGENT – Attention Needed</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#ef4444">Red</span></div>
-      </div>
-    </div>
-  </div>
-  <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#94a3b8;font-style:italic">Aiming towards a better, more secure cloud posture</div>
-  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every ${intervalSec}s &nbsp;·&nbsp; <span id="footer-time"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
 </div><!-- /view-overview -->
 
 <!-- ═══ View: Critical Alerts ═══ -->
@@ -818,7 +895,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-red">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Critical Alerts</div>
+      <div class="vh-title">High Fidelity Alerts</div>
       <div class="vh-sub">Active threats &amp; policy violations · last ${DAYS_BACK} days</div>
     </div>
     <span class="vh-badge" id="cnt-a">—</span>
@@ -831,7 +908,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Critical Vulnerabilities</div>
+      <div class="vh-title">Internet Threat Exposure</div>
       <div class="vh-sub">Host CVEs · Risk Score ≥ 9.0 · Agentless scan &nbsp;<span class="agent-tip" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available</span></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
@@ -844,7 +921,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-amber">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Top Critical Non-Compliance</div>
+      <div class="vh-title">Critical Misconfigurations</div>
       <div class="vh-sub">NonCompliant · Critical severity · sorted by violations</div>
     </div>
     <span class="vh-badge" id="cnt-c">—</span>
@@ -878,17 +955,16 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
-<!-- ═══ View: SSH Key Types ═══ -->
-<div class="view" id="view-secrets-ssh">
-  <div class="view-hdr vha-purple">
-    <div class="vh-icon"></div>
+<!-- ═══ View: Asset Risk ═══ -->
+<div class="view" id="view-asset-risk">
+  <div class="view-hdr">
     <div class="vh-text">
-      <div class="vh-title">Discovered SSH Key Type</div>
-      <div class="vh-sub">LW_HE_SECRETS_SSH_PRIVATE_KEYS · SSH private keys by algorithm — legacy ssh-rsa should be rotated</div>
+      <div class="vh-title">Most Critical Risk Findings per Asset</div>
+      <div class="vh-sub">Hosts ranked by combined risk — CVEs &amp; secrets correlated per asset</div>
     </div>
-    <span class="vh-badge" id="cnt-ssh">—</span>
+    <span class="vh-badge" id="cnt-ar">—</span>
   </div>
-  <div id="body-ssh"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+  <div id="body-ar"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
 <!-- ═══ View: Risk Findings ═══ -->
@@ -910,33 +986,148 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     </svg>
     <div style="display:flex;gap:20px;justify-content:center;margin-top:14px;flex-wrap:wrap;font-size:11px">
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('alerts')"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444"></div><span style="color:#475569">Alerts</span><b id="rf-n-a" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">CVEs</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">Exposure</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:9px;height:9px;border-radius:50%;background:#8b5cf6"></div><span style="color:#475569">Identities</span><b id="rf-n-i" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Compliance</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Misconfigurations</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
       <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('secrets-all')"><div style="width:9px;height:9px;border-radius:50%;background:#0ea5e9"></div><span style="color:#475569">Secrets</span><b id="rf-n-s" style="margin-left:3px;color:#0f172a">—</b></div>
     </div>
   </div>
-  <div class="rf-kpis">
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Critical Alerts</div><div class="rf-kpi-val" id="rf-k-a">—</div><div class="rf-kpi-sub">Open &amp; unresolved</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">CVEs Risk ≥ 9</div><div class="rf-kpi-val" id="rf-k-v">—</div><div class="rf-kpi-sub">Critical host CVEs</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Non-Compliance</div><div class="rf-kpi-val" id="rf-k-c">—</div><div class="rf-kpi-sub">Critical controls violated</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Risky Identities</div><div class="rf-kpi-val" id="rf-k-i">—</div><div class="rf-kpi-sub">No MFA · Admin/over-privileged</div></div>
-    <div class="rf-kpi"><div class="rf-kpi-lbl">Secrets Detected</div><div class="rf-kpi-val" id="rf-k-s">—</div><div class="rf-kpi-sub">Verify &amp; deprecate all</div></div>
-  </div>
+  <!-- hidden KPI value holders still updated by JS for internal use -->
+  <span id="rf-k-a" style="display:none"></span><span id="rf-k-v" style="display:none"></span><span id="rf-k-c" style="display:none"></span><span id="rf-k-i" style="display:none"></span><span id="rf-k-s" style="display:none"></span>
   <div class="rf-body">
     <div id="rf-table"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
   </div>
 </div>
 
-<!-- ═══ View: Lab ═══ -->
+<!-- ═══ View: Next Steps ═══ -->
 <div class="view" id="view-lab">
   <div class="view-hdr">
     <div class="vh-text">
       <div class="vh-title">Recommended Next Steps</div>
-      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span></div>
+      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
     </div>
   </div>
-  <div class="lab-steps" id="lab-actions"></div>
+  <!-- Step 0 — shown only when top risk assets exist -->
+  <div id="lab-asset-action" style="display:none;margin:0 16px 16px;padding:14px 18px;background:linear-gradient(135deg,#fef2f2,#fff7ed);border:2px solid #ef4444;border-radius:12px">
+    <div style="display:flex;align-items:flex-start;gap:12px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;flex-shrink:0">
+        <div style="font-size:9px;font-weight:800;color:#ef4444;letter-spacing:.12em;text-transform:uppercase">STEP</div>
+        <div style="font-size:22px;font-weight:900;color:#ef4444;line-height:1">0</div>
+      </div>
+      <div style="width:2px;background:#fca5a5;border-radius:2px;align-self:stretch;flex-shrink:0;margin:2px 0"></div>
+      <div>
+        <div style="font-size:12px;font-weight:800;color:#dc2626;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">&#x1F6A8; &nbsp;Immediate Priority &#8212; Top Risk Assets Detected</div>
+        <div style="font-size:12px;color:#7f1d1d;line-height:1.6">Review and <strong>isolate your highest-risk assets</strong> as soon as possible to contain the blast radius before addressing other findings. See <a href="#" onclick="nav('asset-risk');return false;" style="color:#dc2626;font-weight:700">Most Critical Risk Findings per Asset</a> for the ranked list.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="jmap-outer">
+  <svg class="jmap-svg" viewBox="0 0 1000 480" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <filter id="jnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
+      </filter>
+      <filter id="jph-shadow" x="-5%" y="-30%" width="115%" height="180%">
+        <feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="rgba(0,0,0,.18)"/>
+      </filter>
+    </defs>
+
+    <!-- Phase chevron headers -->
+    <polygon id="jph1" points="0,4 328,4 352,27 328,50 0,50" fill="#ef4444" filter="url(#jph-shadow)"/>
+    <text x="164" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+
+    <polygon id="jph2" points="328,4 672,4 696,27 672,50 328,50 352,27" fill="#f97316" filter="url(#jph-shadow)"/>
+    <text x="500" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">HIGH</text>
+
+    <polygon id="jph3" points="672,4 1000,4 1000,50 672,50 696,27" fill="#94a3b8" filter="url(#jph-shadow)"/>
+    <text id="jph3-txt" x="836" y="32" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">MEDIUM · GOAL</text>
+
+    <!-- Background snake (gray dashed) -->
+    <path d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
+      fill="none" stroke="#e2e8f0" stroke-width="10" stroke-dasharray="16,10" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Colored snake -->
+    <path id="jsnake" d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
+      fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="14,12" stroke-linecap="round" stroke-linejoin="round"
+      style="animation:snake-flow 1.2s linear infinite"/>
+
+    <!-- Direction arrows -->
+    <polygon points="153,258 167,258 160,272" fill="#cbd5e1"/>
+    <polygon points="324,431 338,425 336,439" fill="#cbd5e1"/>
+    <polygon points="493,262 507,262 500,248" fill="#cbd5e1"/>
+    <polygon points="664,79 678,73 676,87"   fill="#cbd5e1"/>
+    <polygon points="833,258 847,258 840,272" fill="#cbd5e1"/>
+
+    <!-- Node 1 — Identities -->
+    <circle id="jnd1" cx="160" cy="155" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+    <text x="160" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 1</text>
+    <text x="160" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+    <text id="jnd1-cnt" x="160" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 2 — Critical Alerts -->
+    <circle id="jnd2" cx="160" cy="365" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+    <text x="160" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
+    <text x="160" y="363" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
+    <text id="jnd2-cnt" x="160" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 3 — Internet Exposure -->
+    <circle id="jnd3" cx="500" cy="365" r="58" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <text x="500" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
+    <text x="500" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
+    <text x="500" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
+    <text id="jnd3-cnt" x="500" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 4 — Compliance -->
+    <circle id="jnd4" cx="500" cy="155" r="58" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+    <text x="500" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 4</text>
+    <text x="500" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+    <text id="jnd4-cnt" x="500" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Node 5 — Secrets -->
+    <circle id="jnd5" cx="840" cy="155" r="58" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
+    <text x="840" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 5</text>
+    <text x="840" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
+    <text id="jnd5-cnt" x="840" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+    <!-- Goal — Proactive Security -->
+    <circle id="jnd6" cx="840" cy="365" r="58" fill="#22c55e" filter="url(#jnd-shadow)"/>
+    <text x="840" y="343" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
+    <text x="840" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
+    <text x="840" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
+    <text id="jnd6-cnt" x="840" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+  </svg>
+  </div>
+</div>
+
+<div class="view" id="view-admin-settings">
+  <div class="view-hdr">
+    <div class="vh-text">
+      <div class="vh-title">Admin Settings</div>
+      <div class="vh-sub">Configure dashboard behaviour</div>
+    </div>
+  </div>
+  <div style="padding:24px 20px;max-width:520px">
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Data Refresh Interval</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:14px">How often the server re-fetches data from FortiCNAPP. Min 6 h · Max 48 h.</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="settings-refresh-select" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none">
+          <option value="21600">6 hours</option>
+          <option value="43200">12 hours</option>
+          <option value="86400" selected>24 hours (default)</option>
+          <option value="172800">48 hours</option>
+        </select>
+        <button onclick="applySettings()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Apply</button>
+        <span id="settings-saved" style="font-size:12px;color:#22c55e;font-weight:700;opacity:0;transition:opacity .4s">✓ Saved</span>
+      </div>
+      <div style="margin-top:14px;padding:10px 14px;background:#f1f5f9;border-radius:7px;font-size:11px;color:#475569">
+        Current server interval: <b id="settings-cur-interval">—</b>
+      </div>
+    </div>
+    <div style="font-size:10px;color:#94a3b8;padding:0 4px">Changes take effect immediately on the server. The browser page reloads at the same cadence.</div>
+
+  </div>
 </div>
 
 </div><!-- /main -->
@@ -945,6 +1136,15 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <script>
 const REFRESH=${intervalSec};
 let cd=REFRESH;
+function fmtSec(s){
+  if(s>=3600){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+(m>0?' '+m+'m':'');}
+  if(s>=60){const m=Math.floor(s/60),ss=s%60;return m+'m'+(ss>0?' '+ss+'s':'');}
+  return s+'s';
+}
+function setFooterInterval(sec){
+  const fi=document.getElementById('footer-interval');
+  if(fi)fi.textContent=fmtSec(sec);
+}
 
 const e=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const tr=(s,n)=>{s=String(s||'');return s.length>n?s.slice(0,n)+'\\u2026':s||'\\u2014'};
@@ -969,8 +1169,7 @@ function status(s){
 }
 function cloud(c){const m={aws:'b-ok',azure:'b-hi',gcp:'b-cr'};return'<span class="b '+(m[c]||'b-nt')+'">'+(c||'').toUpperCase()+'</span>';}
 function strip(s){return(s||'').toLowerCase()==='critical'?'strip-cr':'strip-hi';}
-function setKpi(id,n){document.getElementById(id).textContent=n;}
-function setCount(id,n,bad){const el=document.getElementById(id);el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
+function setKpi(id,n){const el=document.getElementById(id);if(el)el.textContent=n;}
 function buildPie(d){
   var segs=[
     {id:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
@@ -999,8 +1198,9 @@ function buildPie(d){
   var rft=document.getElementById('rf-pie-total');
   if(rft)rft.textContent=total||'0';
 }
-function setBody(id,h){document.getElementById(id).innerHTML=h;}
+function setBody(id,h){const el=document.getElementById(id);if(el)el.innerHTML=h;}
 function state(id,icon,msg){setBody(id,'<div class="state"><span class="state-icon">'+icon+'</span><span>'+e(msg)+'</span></div>');}
+function setCount(id,n,bad){const el=document.getElementById(id);if(!el)return;el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
 
 function renderAlerts(rows,err){
   if(err){state('body-a','',err);return}
@@ -1010,9 +1210,9 @@ function renderAlerts(rows,err){
   setBody('body-a','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Alert</th><th>Description</th><th>Status</th><th>Time</th></tr></thead><tbody>'
     +rows.map(r=>{
       const desc=(r.alertInfo?.description||'').replace(/\s+/g,' ').trim();
-      const href=baseA+'/ui/investigation/alerts/'+r.alertId;
+      const href=baseA;
       return'<tr class="'+strip('critical')+'">'
-        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(String(r.alertId||''))+'">'+cpIcon+'</button></td>'
         +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertName||'—')+'</a></td>'
         +'<td class="desc">'+e(desc||'—')+'</td>'
         +'<td>'+status(r.status)+'</td>'
@@ -1025,13 +1225,13 @@ function renderVulns(rows,err){
   if(err){state('body-v','',err);return}
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
   if(!rows.length){state('body-v','','No CVEs with risk score \\u2265 9');return}
-  const baseV='https://'+(_lastData?.account||'')+'/ui/investigation/vulnerabilities/hosts';
+  const baseV='https://'+(_lastData?.account||'');
   setBody('body-v','<div class="tbl-wrap"><table><thead><tr><th>CVE / Vuln ID</th><th>Risk</th><th>Package</th><th>Host</th><th>Fix Version</th></tr></thead><tbody>'
     +rows.map(r=>{
       const fix=r.fixInfo?.fix_available===true||String(r.fixInfo?.fix_available)==='1'||r.fixInfo?.fix_available==='1';
       const fixVer=r.fixInfo?.fixed_version||'';
       return'<tr class="strip-cr">'
-        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(r.vulnId||r.cveId||'')+'">'+cpIcon+'</button></td>'
         +'<td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td>'
         +'<td class="p">'+e(r.featureKey?.name||'—')+'</td>'
         +'<td class="m">'+e(r.evalCtx?.hostname||r.mid||'—')+'</td>'
@@ -1044,10 +1244,10 @@ function renderCompliance(rows,err){
   if(err){state('body-c','',err);return}
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
-  const baseC='https://'+(_lastData?.account||'')+'/ui/compliance';
+  const baseC='https://'+(_lastData?.account||'');
   setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Policy ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
-      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a></td>'
+      +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a><button class="cp-btn" data-cp="'+e(r.alertId||'')+'">'+cpIcon+'</button></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
       +'<td class="desc"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
       +'<td class="desc">'+e(r.description||'—')+'</td>'
@@ -1067,8 +1267,9 @@ function renderIdentities(rows,err){
       const riskSev=(r.METRICS?.risk_severity||'').toLowerCase();
       const unused=r.ENTITLEMENT_COUNTS?.entitlements_unused_count??'\\u2014';
       const iHref='https://'+(_lastData?.account||'')+'/ui/insights';
+      const iName=r.NAME||r.PRINCIPAL_ID||'';
       return'<tr class="'+(isAdmin?'strip-cr':'strip-hi')+'">'
-        +'<td class="p" title="'+e(r.NAME||r.PRINCIPAL_ID)+'"><a class="rf-link" href="'+e(iHref)+'" target="_blank">'+e(tr(r.NAME||r.PRINCIPAL_ID,28))+'</a></td>'
+        +'<td class="p" title="'+e(iName)+'"><a class="rf-link" href="'+e(iHref)+'" target="_blank">'+e(tr(iName,28))+'</a><button class="cp-btn" data-cp="'+e(iName)+'" title="Copy identity">'+cpIcon+'</button></td>'
         +'<td><span class="b b-nt">'+e(r.PROVIDER_TYPE||'\\u2014')+'</span></td>'
         +'<td>'+(isAdmin?'<span class="tag-admin">FULL ADMIN</span>':sev(riskSev))+'</td>'
         +'<td class="r">'+unused+'</td>'
@@ -1083,34 +1284,90 @@ function renderSecretsAll(rows,err){
   setCount('cnt-sa',rows?rows.length:0,true);
   if(err){state('body-sa','',err);return}
   if(!rows||!rows.length){state('body-sa','','No secrets detected');return}
-  setBody('body-sa','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Instance ID</th><th>OS</th><th>Secret Type</th><th>Secret Identifier</th><th>Last Seen</th></tr></thead><tbody>'
+  setBody('body-sa','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Instance ID</th><th>Container</th><th>File Path</th><th>Secret Type</th><th>Metadata</th><th>Detected</th></tr></thead><tbody>'
     +rows.map((r,i)=>{
-      const lastSeen=r.END_TIME?fmtDate(r.END_TIME):'—';
-      return'<tr class="'+(i%2?'':'')+(r.SECRET_TYPE?.toLowerCase().includes('key')||r.SECRET_TYPE?.toLowerCase().includes('token')?'strip-cr':'strip-hi')+'">'
-        +'<td class="p">'+e(r.HOSTNAME||'—')+'</td>'
+      const inContainer=r.IS_IN_CONTAINER===true||r.IS_IN_CONTAINER==='true'||r.IS_IN_CONTAINER===1;
+      const containerLabel=inContainer?'<span class="b b-hi" title="'+e(r.CONTAINER_KEY||'')+'">'+e(r.CONTAINER_KEY?r.CONTAINER_KEY.slice(0,16):'Container')+'</span>':'<span style="color:#94a3b8">—</span>';
+      const detectedAt=r.RECORD_CREATED_TIME?fmtDate(r.RECORD_CREATED_TIME):r.BATCH_END_TIME?fmtDate(r.BATCH_END_TIME):'—';
+      const isHigh=r.SECRET_TYPE?.toLowerCase().includes('key')||r.SECRET_TYPE?.toLowerCase().includes('token')||r.SECRET_TYPE?.toLowerCase().includes('password')||r.SECRET_TYPE?.toLowerCase().includes('credential');
+      return'<tr class="'+(isHigh?'strip-cr':'strip-hi')+'">'
+        +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
         +'<td class="m"><small>'+e(r.MID||'—')+'</small></td>'
-        +'<td>'+e(r.OS||'—')+'</td>'
+        +'<td>'+containerLabel+'</td>'
+        +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
         +'<td><span class="b b-cr">'+e(r.SECRET_TYPE||'—')+'</span></td>'
-        +'<td class="p"><code style="font-size:11px">'+e(r.SECRET_IDENTIFIER||'—')+'</code></td>'
-        +'<td class="m">'+lastSeen+'</td>'
+        +'<td class="p"><small>'+e(r.SECRET_METADATA||'—')+'</small><button class="cp-btn" data-cp="'+e(r.SECRET_METADATA||'')+'">'+cpIcon+'</button></td>'
+        +'<td class="m">'+detectedAt+'</td>'
       +'</tr>';
     }).join('')+'</tbody></table></div>');
 }
 
-function renderSecretsSsh(rows,err){
-  setCount('cnt-ssh',rows?rows.length:0,true);
-  if(err){state('body-ssh','',err);return}
-  if(!rows||!rows.length){state('body-ssh','','No SSH private keys detected');return}
-  setBody('body-ssh','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>File Path</th><th>SSH Key Type</th><th>Risk</th></tr></thead><tbody>'
-    +rows.map((r,i)=>{
-      const isRsa=(r.SSH_KEY_TYPE||'').toLowerCase()==='ssh-rsa';
-      return'<tr class="'+(isRsa?'strip-cr':'')+(i%2&&!isRsa?'':'')+('">')
-        +'<td class="p">'+e(r.HOSTNAME||'—')+'</td>'
-        +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code></td>'
-        +'<td><span class="b '+(isRsa?'b-cr':'b-ok')+'">'+e(r.SSH_KEY_TYPE||'—')+'</span></td>'
-        +'<td>'+(isRsa?'<span class="tag-nomfa">ROTATE NOW</span>':'<span class="b b-ok">OK</span>')+'</td>'
-      +'</tr>';
-    }).join('')+'</tbody></table></div>');
+
+const cpIcon='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+function copyText(el){
+  const t=el.dataset.cp||'';
+  navigator.clipboard.writeText(t).then(()=>{
+    el.classList.add('ok');
+    el.innerHTML='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>';
+    setTimeout(()=>{el.classList.remove('ok');el.innerHTML=cpIcon;},1500);
+  }).catch(()=>{});
+}
+document.addEventListener('click',function(ev){if(ev.target.closest('.cp-btn'))copyText(ev.target.closest('.cp-btn'));});
+
+function renderAssetRisk(d){
+  const map={};
+  const get=(host,mid)=>{
+    const key=host||mid||'unknown';
+    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],secrets:[],risk:0};
+    return map[key];
+  };
+  (d.vulns||[]).forEach(r=>{
+    const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
+    if(!host)return;
+    const w=Math.min(100,parseFloat(r.riskScore||0)*10);
+    const a=get(host,r.evalCtx?.mid||'');
+    a.vulns.push({id:r.vulnId||'',score:r.riskScore,w});
+    a.risk+=w;
+  });
+  (d.secretsAll||[]).forEach(r=>{
+    const host=r.HOSTNAME||r.MID||'';
+    if(!host)return;
+    const a=get(host,r.MID||'');
+    a.secrets.push({type:r.SECRET_TYPE||''});
+    a.risk+=50;
+  });
+  const all=Object.values(map).filter(a=>a.risk>0).sort((a,b)=>b.risk-a.risk);
+  const maxRisk=all[0]?.risk||1;
+  // Only show assets whose normalized score > 20
+  const sorted=all.filter(a=>Math.round(a.risk/maxRisk*100)>20);
+  const el=document.getElementById('cnt-ar');if(el)el.textContent=sorted.length||'0';
+  const labAction=document.getElementById('lab-asset-action');
+  if(labAction)labAction.style.display=sorted.length?'block':'none';
+  if(!sorted.length){state('body-ar','','No significant host-level risk detected (all assets score ≤ 20)');return;}
+  const medalColor=i=>i===0?'#ef4444':i===1?'#f97316':i===2?'#f59e0b':'#94a3b8';
+  const barColor=s=>s>=60?'#ef4444':s>=30?'#f59e0b':'#22c55e';
+  setBody('body-ar','<div style="padding:8px 0">'+sorted.map((a,i)=>{
+    const score=Math.round(a.risk/maxRisk*100);
+    const color=barColor(score);
+    const avgCveRisk=a.vulns.length?(' · avg CVSS '+(a.vulns.reduce((s,v)=>s+parseFloat(v.score||0),0)/a.vulns.length).toFixed(1)):'';
+    return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
+      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+        +'<div style="font-size:20px;font-weight:900;color:'+medalColor(i)+';width:30px;text-align:center;flex-shrink:0">#'+(i+1)+'</div>'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="display:flex;align-items:center;gap:6px"><span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span><button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button></div>'
+          +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace">'+e(a.mid)+'</div>':'')
+        +'</div>'
+        +'<div style="font-size:24px;font-weight:900;color:'+color+';flex-shrink:0">'+score+'</div>'
+      +'</div>'
+      +'<div style="background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px">'
+        +'<div style="height:6px;border-radius:4px;background:'+color+';width:'+score+'%"></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+        +(a.vulns.length?'<span style="font-size:10px;font-weight:700;background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:5px;padding:2px 8px">'+a.vulns.length+' CVE'+avgCveRisk+'</span>':'')
+        +(a.secrets.length?'<span style="font-size:10px;font-weight:700;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px">'+a.secrets.length+' Secret'+(a.secrets.length>1?'s':'')+'</span>':'')
+      +'</div>'
+    +'</div>';
+  }).join('')+'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">Risk score: CVE riskScore×10 + 50 per secret &nbsp;·&nbsp; Critical Alerts &amp; Compliance are account-wide (no per-host data)</div></div>');
 }
 
 function nav(name){
@@ -1122,23 +1379,21 @@ function nav(name){
 
 let _lastData=null;
 
-// Cloud Security Posture Score (Rick Score): higher = better posture (0–100).
-// postureScore = 100 − mean(findingRiskScores) − (secretCount × 0.5).  No findings → 100.
-// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
-// Secrets penalty: −0.5 pts per detected secret (applied after mean, excluded from mean pool)
+// Cloud Security Posture Score: higher = better posture (0–100).
+// postureScore = 100 − mean(findingRiskScores).  No findings → 100.
+// Alert: 95  |  CVE: riskScore×10  |  Compliance: 80  |  Identity: risk_score×100  |  Secret: 75
 function calcPostureScore(d){
   const risks=[];
   (d.alerts||[]).forEach(()=>risks.push(95));
   (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
   (d.compliance||[]).forEach(()=>risks.push(80));
   (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
-  const secretPenalty=(d.secretsAll||[]).length*0.5;
-  const base=risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100;
-  return Math.max(0, Math.round(base - secretPenalty));
+  (d.secretsAll||[]).forEach(()=>risks.push(75));
+  return Math.max(0, Math.round(risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100));
 }
 // 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
-function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Proactive Security':p>=60?'Some Attention Needed':'URGENT – Attention Needed';}
+function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=90?'Proactive Security':p>=50?'Some Attention Needed':'URGENT – Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
@@ -1157,11 +1412,11 @@ function renderRiskFindings(d){
   document.getElementById('ov-c').textContent=nc;
   const base='https://'+d.account;
   const groups=[
-    {key:'Alert',     label:'Critical Alerts',      color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,detail:r.alertType,score:95,href:base+'/ui/investigation/alerts/'+r.alertId}))},
-    {key:'CVE',       label:'Critical CVEs',         color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId,detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10,href:base+'/ui/investigation/vulnerabilities/hosts'}))},
-    {key:'Identity',  label:'Identity Risk',         color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID,detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100,href:base+'/ui/insights'}))},
-    {key:'Compliance',label:'Non-Compliance',        color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80,href:base+'/ui/compliance'}))},
-    {key:'Secret',    label:'Secrets Detected',      color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret',detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90,href:base+'/ui/investigation'}))},
+    {key:'Alert',     label:'High Fidelity Alerts',       color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,     copyVal:r.alertName||r.alertId,   detail:r.alertType,score:95}))},
+    {key:'CVE',       label:'Internet Threat Exposure',   color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId,        detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10}))},
+    {key:'Identity',  label:'Identities',                 color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID, copyVal:r.NAME||r.PRINCIPAL_ID, detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100}))},
+    {key:'Compliance',label:'Critical Misconfigurations', color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,     copyVal:r.alertId||r.title,       detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80}))},
+    {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90}))},
   ].filter(g=>g.items.length);
   if(!groups.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
   const rows=groups.map(g=>{
@@ -1170,7 +1425,7 @@ function renderRiskFindings(d){
       +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" data-tab="'+g.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
       +'</tr>';
     const detail=g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
-      +'<td class="p" colspan="2"><a class="rf-link" href="'+e(r.href)+'" target="_blank">'+e(tr(r.title,48))+' &#8599;</a></td>'
+      +'<td class="p" colspan="2" style="display:flex;align-items:center;gap:4px">'+e(tr(r.title,48))+'<button class="cp-btn" data-cp="'+e(r.copyVal||r.title)+'" title="Copy">'+cpIcon+'</button></td>'
       +'<td class="m">'+e(tr(r.detail,36))+'</td>'
       +'<td class="r"><span class="risk-score">'+Math.round(r.score)+'</span></td>'
     +'</tr>').join('');
@@ -1185,15 +1440,29 @@ function renderLab(d){
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
-  const actions=[];
-  if((d.identities||[]).length) actions.push({cls:'p1',n:1,tab:'identities',text:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA &amp; Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
-  if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
-  if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
-  if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if((d.secretsAll||[]).length) actions.push({cls:'p1',n:actions.length+1,tab:'secrets-all',text:'Verify &amp; Deprecate '+d.secretsAll.length+' discovered secret'+(d.secretsAll.length===1?'':'s')+' — rotate or revoke immediately',sub:'Secrets · SSH keys, API tokens &amp; credentials detected on hosts'});
-  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
-  const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
-  document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
+  // ── Snake journey map: update SVG elements ──
+  const nodes=[
+    {nd:'jnd1',cnt:'jnd1-cnt',count:(d.identities||[]).length, activeClr:'#ef4444'},
+    {nd:'jnd2',cnt:'jnd2-cnt',count:(d.alerts||[]).length,     activeClr:'#ef4444'},
+    {nd:'jnd3',cnt:'jnd3-cnt',count:(d.vulns||[]).length,      activeClr:'#f97316'},
+    {nd:'jnd4',cnt:'jnd4-cnt',count:(d.compliance||[]).length, activeClr:'#f59e0b'},
+    {nd:'jnd5',cnt:'jnd5-cnt',count:(d.secretsAll||[]).length, activeClr:'#eab308'},
+  ];
+  nodes.forEach(n=>{
+    const el=document.getElementById(n.nd), ct=document.getElementById(n.cnt);
+    if(ct)ct.textContent=n.count;
+    if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
+  });
+  // Goal node
+  const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
+  const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
+  if(g6)g6.setAttribute('fill',color);
+  if(g6c)g6c.textContent=p;
+  if(ph3)ph3.setAttribute('fill',color);
+  if(ph3t)ph3t.textContent=p>=90?'ACHIEVED':'GOAL';
+  // Snake path color tracks score band
+  const snake=document.getElementById('jsnake');
+  if(snake)snake.setAttribute('stroke',color);
 }
 
 async function load(){
@@ -1205,7 +1474,7 @@ async function load(){
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
-    renderSecretsSsh(d.secrets,d.errors?.secrets);
+    renderAssetRisk(d);
     updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
@@ -1226,6 +1495,7 @@ async function load(){
     console.error('/api/data failed:',ex);
   }
 }
+
 
 function updateRiskScore(p){
   const color=scoreColor(p);
@@ -1254,44 +1524,95 @@ function wireReportBtn(user){
   btn.href='/report?'+params.toString();
 }
 
+function showUserBadge(user){
+  const initials=((user.first||'?')[0]+(user.last||'?')[0]).toUpperCase();
+  document.getElementById('tb-avatar').textContent=initials;
+  document.getElementById('tb-name').textContent=(user.first||'')+' '+(user.last||'');
+  document.getElementById('tb-role').textContent=user.company||'';
+  document.getElementById('tb-admin-badge').style.display='none';
+  document.getElementById('top-bar').style.display='flex';
+}
+function logout(){
+  sessionStorage.removeItem('rca_user');
+  document.cookie='rca_user=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+  document.getElementById('top-bar').style.display='none';
+  document.getElementById('login-overlay').style.display='flex';
+  document.getElementById('li-first').value='';
+  document.getElementById('li-last').value='';
+  document.getElementById('li-company').value='';
+  document.getElementById('login-err').textContent='';
+}
+
 (function checkLogin(){
   const s=sessionStorage.getItem('rca_user')||getCookie('rca_user');
   if(s){
     document.getElementById('login-overlay').style.display='none';
-    try{wireReportBtn(JSON.parse(s));}catch(_){}
-    load();
+    try{const u=JSON.parse(s);wireReportBtn(u);showUserBadge(u);}catch(_){}
   }
+  load();
+  loadAdminSettings();
 })();
 
 function submitLogin(){
   const first=document.getElementById('li-first').value.trim();
   const last=document.getElementById('li-last').value.trim();
   const company=document.getElementById('li-company').value.trim();
-  const role=document.getElementById('li-role').value;
-  const email=document.getElementById('li-email').value.trim();
   const err=document.getElementById('login-err');
   if(!first||!last){err.textContent='Please enter your first and last name.';return;}
   if(!company){err.textContent='Please enter your company name.';return;}
-  if(!role){err.textContent='Please select your role.';return;}
-  const emailInput=document.getElementById('li-email');
-  if(!email||!emailInput.checkValidity()){err.textContent='Please enter a valid email address.';return;}
   err.textContent='';
-  const user={first,last,company,role,email};
+  const handle=(first+(last.charAt(0))).toLowerCase();
+  const user={first,last,company,handle};
   const userJson=JSON.stringify(user);
   sessionStorage.setItem('rca_user',userJson);
   setCookie('rca_user',userJson,30);
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
   wireReportBtn(user);
+  showUserBadge(user);
   load();
 }
 
-document.getElementById('li-email').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
+document.getElementById('li-company').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
 
 setInterval(load,REFRESH*1000);
+
+
+async function loadAdminSettings(){
+  try{
+    const s=await fetch('/api/settings').then(r=>r.json());
+    const sec=s.refreshIntervalSec||86400;
+    const sel=document.getElementById('settings-refresh-select');
+    if(sel){
+      const opts=[21600,43200,86400,172800];
+      const closest=opts.reduce((a,b)=>Math.abs(b-sec)<Math.abs(a-sec)?b:a);
+      sel.value=String(closest);
+    }
+    const cur=document.getElementById('settings-cur-interval');
+    if(cur)cur.textContent=fmtSec(sec);
+    setFooterInterval(sec);
+    cd=sec;
+  }catch(ex){}
+}
+async function applySettings(){
+  const sel=document.getElementById('settings-refresh-select');
+  if(!sel)return;
+  const sec=parseInt(sel.value,10);
+  try{
+    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refreshIntervalSec:sec})});
+    const cur=document.getElementById('settings-cur-interval');
+    if(cur)cur.textContent=fmtSec(sec);
+    setFooterInterval(sec);
+    cd=sec;
+    const saved=document.getElementById('settings-saved');
+    if(saved){saved.style.opacity='1';setTimeout(()=>saved.style.opacity='0',2500);}
+  }catch(ex){}
+}
+setFooterInterval(REFRESH);
 setInterval(()=>{
   cd=Math.max(0,cd-1);
-  document.getElementById('countdown').textContent='Next refresh in '+cd+'s';
+  const el=document.getElementById('countdown');
+  if(el)el.textContent='Next refresh in '+fmtSec(cd);
 },1000);
 
 </script>
@@ -1346,8 +1667,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
         <stop offset="0%"    stop-color="#ef4444"/>
-        <stop offset="65.4%" stop-color="#ef4444"/>
-        <stop offset="65.4%" stop-color="#f59e0b"/>
+        <stop offset="50%"   stop-color="#ef4444"/>
+        <stop offset="50%"   stop-color="#f59e0b"/>
         <stop offset="97.5%" stop-color="#f59e0b"/>
         <stop offset="97.5%" stop-color="#22c55e"/>
         <stop offset="100%"  stop-color="#22c55e"/>
@@ -1355,7 +1676,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     </defs>
     <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>
     <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-    <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="200" y1="10" x2="200" y2="44"  stroke="white" stroke-width="3" stroke-linecap="round"/>
     <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
     <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
@@ -1385,9 +1706,8 @@ function calcScore(d){
   (d.vulns||[]).forEach(function(r){risks.push(Math.min(100,parseFloat(r.riskScore||0)*10));});
   (d.compliance||[]).forEach(function(){risks.push(80);});
   (d.identities||[]).forEach(function(r){risks.push(Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100));});
-  var secretPenalty=(d.secretsAll||[]).length*0.5;
-  var base=risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100;
-  return Math.max(0,Math.round(base-secretPenalty));
+  (d.secretsAll||[]).forEach(function(){risks.push(75);});
+  return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
 function buildSteps(d,p){
   var items=[];
@@ -2107,9 +2427,8 @@ function buildReportHtml(data, meta) {
     (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
     (d.compliance||[]).forEach(() => r.push(80));
     (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
-    const secretPenalty = (d.secretsAll||[]).length * 0.5;
-    const base = r.length ? 100 - r.reduce((s,v) => s+v, 0) / r.length : 100;
-    return Math.max(0, Math.round(base - secretPenalty));
+    (d.secretsAll||[]).forEach(() => r.push(75));
+    return Math.max(0, Math.round(r.length ? 100 - r.reduce((s,v) => s+v, 0) / r.length : 100));
   }
   const score  = calcScore(data);
   const sBand  = score>=90 ? 'Proactive Security' : score>=60 ? 'Some Attention Needed' : 'URGENT – Attention Needed';
@@ -2193,10 +2512,42 @@ function buildReportHtml(data, meta) {
     const ctxRisk = 'Misconfigured or non-compliant control expands the attack surface, enabling unauthorized access or data exposure across '+((r.cloud||'cloud').toUpperCase())+' resources.';
     const bizImpact = 'Regulatory non-compliance, potential data breach, audit failure, and reputational risk.';
     const recFix = (r.description||'').slice(0,200) || 'Remediate the control violation per the policy guidance and re-evaluate in FortiCNAPP.';
+    // Build resource URN sub-list from saved rows
+    var resourceHtml = '';
+    if (Array.isArray(r.resources) && r.resources.length) {
+      // Detect which field is the URN/resource identifier (priority order)
+      var urnKeys = ['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','PRINCIPAL_ID','NAME'];
+      var rows = r.resources;
+      // Pick the first key that exists in the first row
+      var firstRow = rows[0] || {};
+      var urnKey = urnKeys.find(function(k){ return firstRow[k] !== undefined; }) || Object.keys(firstRow)[0] || '';
+      // Secondary label key (e.g. region or type)
+      var labelKeys = ['REGION','LOCATION','CLOUD','TYPE','RESOURCE_TYPE','SUBSCRIPTION_ID'];
+      var labelKey = labelKeys.find(function(k){ return firstRow[k] !== undefined; }) || '';
+      if (urnKey) {
+        var shown = rows.slice(0, 50);
+        resourceHtml = '<details style="margin-top:6px"><summary style="font-size:10px;font-weight:700;color:#DA291C;cursor:pointer;list-style:none">&#9660; '+rows.length+' Violating Resource'+(rows.length===1?'':'s')+'</summary>'+
+          '<div style="max-height:200px;overflow-y:auto;margin-top:4px;border:1px solid #e5e7eb;border-radius:4px">'+
+          '<table style="width:100%;font-size:9px;border-collapse:collapse">'+
+          '<thead><tr style="background:#f1f5f9"><th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(urnKey)+'</th>'+
+          (labelKey?'<th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(labelKey)+'</th>':'')+
+          '</tr></thead><tbody>'+
+          shown.map(function(row,ri){
+            var urnVal = row[urnKey] !== undefined ? String(row[urnKey]) : '—';
+            var lblVal = labelKey && row[labelKey] !== undefined ? String(row[labelKey]) : '';
+            return '<tr style="'+(ri%2?'background:#f8fafc':'')+'">'
+              +'<td style="padding:2px 6px;font-family:monospace;color:#1e293b;word-break:break-all">'+esc(urnVal)+'</td>'
+              +(labelKey?'<td style="padding:2px 6px;color:#64748b">'+esc(lblVal)+'</td>':'')
+              +'</tr>';
+          }).join('')+
+          (rows.length>50?'<tr><td colspan="2" style="padding:3px 6px;color:#94a3b8;font-style:italic">… and '+(rows.length-50)+' more</td></tr>':'')+
+          '</tbody></table></div></details>';
+      }
+    }
     return '<tr'+bg+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
       '<td>'+sevBadge(r.severity)+'</td>'+
-      '<td class="wide"><strong>'+esc(r.title||'—')+'</strong></td>'+
+      '<td class="wide"><strong>'+esc(r.title||'—')+'</strong>'+resourceHtml+'</td>'+
       '<td class="med">'+cspBadge(r.cloud)+'<br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
       '<td class="med">'+svcArea+'</td>'+
       '<td class="wide">'+esc(ctxRisk)+'</td>'+
@@ -2250,7 +2601,6 @@ function buildReportHtml(data, meta) {
     vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
     secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
-    secrets.length    ? '<a href="#secrets" class="toc-card"><div class="tc-num">06 — SSH Keys</div><div class="tc-title">SSH Key Type</div><div class="tc-sub">'+secrets.length+' SSH private key'+(secrets.length===1?'':'s')+' detected.</div></a>' : '',
   ].filter(Boolean).join('\n      ');
 
 
@@ -2315,69 +2665,15 @@ function buildReportHtml(data, meta) {
     '</tr></thead><tbody>'+secretsAllRows+'</tbody></table>\n</section>'
   ) : '';
 
-  function inferCsp(hostname) {
-    const h = (hostname || '').toLowerCase();
-    if (/^ip-\d+|^i-[0-9a-f]{8,17}$|ec2|\.aws\.|amazon/.test(h)) return 'AWS';
-    if (/azure|-vm$|azurevm|msft/.test(h)) return 'Azure';
-    if (/gcp|google|^instance-[0-9]/.test(h)) return 'GCP';
-    return 'Unknown';
-  }
-  function permRisk(path) {
-    const p = path || '';
-    if (/\\/. test(p) || (p.length > 2 && p[1] === ':')) return 'Windows — restrict to owner account; remove Users/Everyone ACE';
-    if (p.startsWith('/tmp/')) return 'Linux /tmp — CRITICAL: world-readable directory; move immediately';
-    if (p.startsWith('/etc/')) return 'Linux /etc — root:root 600 required; no world/group read';
-    if (p.startsWith('/root/')) return 'Linux /root — root:root 600; accessible only by root';
-    if (p.startsWith('/home/')) return 'Linux /home — owner:owner 600; no group or world permissions';
-    if (/\.(pem|key|p12|pfx|crt)$/.test(p)) return 'Key/cert file — 600 (owner read-only); never world or group readable';
-    return 'Linux/Unix — verify 600 (owner read-only); audit with: stat -c "%a %U %G" &lt;path&gt;';
-  }
-  function secretRec(keyType) {
-    return (keyType || '').toLowerCase() === 'ssh-rsa'
-      ? 'Upgrade to ssh-ed25519 — stronger, faster, and immune to RSA timing attacks'
-      : '—';
-  }
-  function isRsaRisk(keyType) { return (keyType || '').toLowerCase() === 'ssh-rsa'; }
 
-  const secretRows = secrets.length ? secrets.map(function(r, i) {
-    const risky = isRsaRisk(r.SSH_KEY_TYPE);
-    const bg = risky ? ' style="background:#FDECEA;"' : (i % 2 ? ' style="background:#FAFAFA;"' : '');
-    return '<tr'+bg+'>' +
-      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>' +
-      '<td><span class="badge '+(inferCsp(r.HOSTNAME)==='AWS'?'badge-aws':inferCsp(r.HOSTNAME)==='Azure'?'badge-azure':inferCsp(r.HOSTNAME)==='GCP'?'badge-gcp':'badge-high')+'">'+esc(inferCsp(r.HOSTNAME))+'</span></td>' +
-      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.FILE_PATH||'—')+'</code></td>' +
-      '<td><span class="badge '+(risky?'badge-critical':'badge-mfa-on')+'">'+esc(r.SSH_KEY_TYPE||'—')+'</span></td>' +
-      '<td class="wide">'+esc(permRisk(r.FILE_PATH))+'</td>' +
-      '<td class="wide">'+esc(secretRec(r.SSH_KEY_TYPE))+'</td>' +
-      '</tr>';
-  }).join('') : '';
 
-  const rsaCount = secrets.filter(r => isRsaRisk(r.SSH_KEY_TYPE)).length;
-  const secretSummary = secrets.length === 0 ? '' :
-    '<div class="section-summary"><div class="ss-title">&#9650; Risk Summary — Secrets Posture</div>' +
-    (rsaCount > 0
-      ? '<p><strong style="color:#DA291C;">&#9888; Key Algorithm Risk:</strong> '+rsaCount+' of '+secrets.length+' detected SSH key'+(secrets.length===1?'':'s')+' use the legacy <code>ssh-rsa</code> algorithm. Migrate to <code>ssh-ed25519</code> — run <code>ssh-keygen -t ed25519</code> to generate replacements, then rotate and revoke legacy keys.</p>'
-      : '<p><strong style="color:#1E7A3E;">&#10003; No algorithm risk.</strong> All '+secrets.length+' detected key'+(secrets.length===1?'':'s')+' use modern algorithms. Verify file permissions are 600 (owner read-only) and rotate on a scheduled basis.</p>'
-    ) + '</div>';
-
-  const secretSection = secrets.length ? (
-    '<section id="secrets" class="pagebreak">\n<h2>6. Secrets — Discovered SSH Key Type</h2>\n' +
-    '<table class="exec-table"><thead><tr>' +
-    '<th style="width:160px">Hostname</th><th style="width:70px">CSP</th>' +
-    '<th style="width:200px">File Path</th><th style="width:100px">SSH Key Type</th>' +
-    '<th style="width:200px">Permission Risk</th><th style="width:200px">Recommendation</th>' +
-    '</tr></thead><tbody>'+secretRows+'</tbody></table>\n' +
-    secretSummary + '\n</section>'
-  ) : '';
 
   return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
   '  <meta charset="UTF-8">\n' +
   '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
   '  <title>Rapid Cloud Assessment – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
-  '    .alpha-banner{background:#f59e0b;color:#000;padding:6px 20px;font-size:11px;font-weight:700;text-align:center;letter-spacing:.06em}\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<div class="alpha-banner no-print">⚠ ALPHA — Generated live from RCA UI dashboard data · '+new Date().toISOString()+'</div>\n' +
   '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
   '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
   '<div class="report-cover">\n' +
@@ -2390,8 +2686,8 @@ function buildReportHtml(data, meta) {
       '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
       '    <defs><linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
       '<stop offset="0%" stop-color="#ef4444"/>'+
-      '<stop offset="65.4%" stop-color="#ef4444"/>'+
-      '<stop offset="65.4%" stop-color="#f59e0b"/>'+
+      '<stop offset="50%"   stop-color="#ef4444"/>'+
+      '<stop offset="50%"   stop-color="#f59e0b"/>'+
       '<stop offset="97.5%" stop-color="#f59e0b"/>'+
       '<stop offset="97.5%" stop-color="#22c55e"/>'+
       '<stop offset="100%" stop-color="#22c55e"/>'+
@@ -2412,7 +2708,6 @@ function buildReportHtml(data, meta) {
   '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
   '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
   '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
-  '    <div class="meta-item"><strong>Status</strong><span style="color:#f59e0b;font-weight:700">ALPHA</span></div>\n' +
   '  </div>\n</div>\n' +
   '<div class="toc"><h3>Discovered Risk Findings</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
   '<section id="exec-summary" class="pagebreak">\n<h2>Executive Summary</h2>\n' +
@@ -2427,10 +2722,34 @@ function buildReportHtml(data, meta) {
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
   'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
   '</section>\n' +
-  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' + secretSection + '\n' +
-  '<footer><p>RAPID CLOUD ASSESSMENT REPORT — Powered by FortiCNAPP · Prepared for '+esc(customer)+' · '+dateStr+'</p>' +
-  '<p style="opacity:.55;font-size:.72rem;margin-top:.4rem">Confidential — for named recipient only. Alpha feature — generated from live dashboard cache.</p>' +
-  '</footer>\n</body>\n</html>';
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' +
+  '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
+  '<div style="text-align:center">' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT REPORT &mdash; Powered by FortiCNAPP</div>' +
+  '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
+  '<div style="font-size:11px;color:#6b7280">This report is confidential and intended solely for the named recipient. Generated by the FortiCNAPP Extensible Reporting Tool.</div>' +
+  '</div>' +
+  '<div style="display:flex;align-items:center;justify-content:space-between;gap:32px">' +
+  '<div style="display:flex;align-items:center;gap:0">' +
+  '<span style="font-size:52px;font-weight:500;color:#d1d5db;letter-spacing:.04em;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;line-height:1">F</span>' +
+  '<svg viewBox="0 0 100 100" width="46" height="46" style="margin:0 2px;vertical-align:middle">' +
+  '<rect x="5" y="5" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="56" y="5" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="5" y="41" width="39" height="18" rx="5" fill="#888"/>' +
+  '<rect x="56" y="41" width="39" height="18" rx="5" fill="#888"/>' +
+  '<rect x="5" y="67" width="39" height="28" rx="9" fill="#888"/>' +
+  '<rect x="56" y="67" width="39" height="28" rx="9" fill="#888"/>' +
+  '</svg>' +
+  '<span style="font-size:52px;font-weight:500;color:#d1d5db;letter-spacing:.04em;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;line-height:1">RTINET&#174;</span>' +
+  '</div>' +
+  '<div style="text-align:center">' +
+  '<div style="background:#fff;border-radius:10px;padding:10px;display:inline-block">' +
+  '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAAEsAQMAAABDsxw2AAAABlBMVEUAAAD///7S3q9LAAAACXBIWXMAAA7EAAAOxAGVKw4bAAACQklEQVRoge2aO46EMAyGjSgoOQJHydHgaHMUjkBJgcj6lYTXajWZlXaL38VoxnyVbX7byRDB/oOFqLYStXsj3yZ3rdTao/gC9oDJB/Vrt7U7kfnnYRGnONhGYI8YR3PpV3FweGmciIZjvCdgv4B1MbKX0zCF1zB7WoD9iFG7Wa1q+RJ163MWgL2JuTjETYrXbFiSWtBVQ4A5ZjrqxUoSzTA7Zo8isHosGzulaQkW556fbvRkwMw0vIu6G6tWrufBZIAd1p2AfYBxh1qyhnLP8npuJStUihzYERPjaMqknkZQdutvUdkUXmB1GPf6mbS1lxE0zaCNqgUBe8DUOJppBJ3GqG+9yACV7g+sEgsycLL5CCqT06BF7KPUaOIA7IyJhMoipM2eg1m0QFWWDj0LWA3Geyb3LA563L1FiUPTouVMwB4wNt3PfQSVjTK/9c0p3sBqMBMH1tSY9nMpaJutSEbQo4YAyxgdF6Go1Ut6vGkLZc4CsErMs7ClUSroc8tCEQdgN8wXSNfQoN3pJg7AarCgi9DS5fOPUXNwFQdgV0w3o3K8adH8ZqMEVoMNcaHORykraSleU4vDfgrshPkiFM8zkqyY2ozy4TywCixZl4Lui+fabZQdwG5YsCjers5lVdqb8tYDq8M0FanXe4vSevYsRGDPWDhfnadT9qs4APsIKze+4iDyXh/TH42APWMpmBbdXi6DolyimQGrxdSrWBqlhtlG0PMoBeyEWYVKa9e73XEKPiPZycetZwF7B4P9vX0B1hFily6412wAAAAASUVORK5CYII=" width="130" height="130" alt="QR" style="display:block"/>' +
+  '</div>' +
+  '<div style="font-size:10px;color:#9ca3af;margin-top:8px;letter-spacing:.03em">fortinet.com/resources/reports/cloud-security</div>' +
+  '</div>' +
+  '</div>' +
+  '</div>\n</body>\n</html>';
 }
 
 
@@ -2442,7 +2761,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-http.createServer((req, res) => {
+function requestHandler(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, CORS);
     res.end();
@@ -2453,13 +2772,14 @@ http.createServer((req, res) => {
     req.on('data', c => body += c);
     req.on('end', () => {
       try {
-        const { first, last, company, role, email } = JSON.parse(body);
+        const { first, last, company } = JSON.parse(body);
+        const handle = ((first||'')+(last||'').charAt(0)).toLowerCase();
         const ts = new Date().toISOString();
-        const row = [ts, first, last, company, role, email]
+        const row = [ts, first, last, company, handle]
           .map(v => `"${(v||'').replace(/"/g,'""')}"`)
           .join(',') + '\n';
         fs.appendFileSync(CONTACTS_CSV, row);
-        console.log(`[register] ${first} ${last} <${email}> — ${company} (${role})`);
+        console.log(`[register] ${handle} — ${first} ${last} @ ${company}`);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
@@ -2472,6 +2792,34 @@ http.createServer((req, res) => {
   const ua = req.headers['user-agent'] || '';
   const isMobile = /Mobile|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
 
+  if (req.url === '/api/settings' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+    res.end(JSON.stringify({ refreshIntervalSec: dynamicInterval }));
+    return;
+  }
+  if (req.url === '/api/settings' && req.method === 'POST') {
+    let body = '';
+    req.on('data', d => body += d);
+    req.on('end', () => {
+      try {
+        const { refreshIntervalSec } = JSON.parse(body);
+        const minSec = 6 * 3600, maxSec = 48 * 3600;
+        if (typeof refreshIntervalSec === 'number' && refreshIntervalSec >= minSec && refreshIntervalSec <= maxSec) {
+          dynamicInterval = refreshIntervalSec;
+          if (!MOCK_FILE) startRefreshTimer();
+          res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ ok: true, refreshIntervalSec: dynamicInterval }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: 'refreshIntervalSec must be between 21600 and 172800' }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: 'Bad request' }));
+      }
+    });
+    return;
+  }
   if (req.url === '/api/data') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...CORS });
     res.end(JSON.stringify(cache));
@@ -2503,8 +2851,11 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
   }
-}).listen(PORT, () => {
+}
+
+function startApp(listeningPort, protocol) {
   const mode = MOCK_FILE ? 'MOCK' : 'LIVE';
+  const url  = `${protocol}://localhost:${listeningPort}`;
   console.log('\n┌──────────────────────────────────────────────────┐');
   console.log(`│  Fortinet Rapid Cloud Assessment — ${mode.padEnd(11)}│`);
   console.log('├──────────────────────────────────────────────────┤');
@@ -2514,13 +2865,11 @@ http.createServer((req, res) => {
   } else {
     console.log(`│  Refresh  : every ${String(INTERVAL + 's').padEnd(32)}│`);
   }
-  console.log(`│  Open     : http://localhost:${String(PORT).padEnd(21)}│`);
+  console.log(`│  Open     : ${url.padEnd(37)}│`);
   console.log('└──────────────────────────────────────────────────┘\n');
 
   if (MOCK_FILE) {
-    // Mock mode — load snapshot once, never call the API
     try {
-      const fs = require('fs');
       const raw = fs.readFileSync(MOCK_FILE, 'utf8');
       cache = { ...cache, ...JSON.parse(raw) };
       console.log(`[mock] Loaded ${MOCK_FILE} (${raw.length} bytes) — no API calls will be made\n`);
@@ -2529,6 +2878,34 @@ http.createServer((req, res) => {
     }
   } else {
     refreshData().catch(e => console.error('[startup]', e.message));
-    setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), INTERVAL * 1000);
+    startRefreshTimer();
   }
-});
+}
+
+if (TLS_CERT && TLS_KEY) {
+  // ── HTTPS mode ─────────────────────────────────────────────────────────────
+  let tlsOpts;
+  try {
+    tlsOpts = { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
+  } catch (e) {
+    console.error(`[tls] Cannot read cert/key: ${e.message}`);
+    process.exit(1);
+  }
+  https.createServer(tlsOpts, requestHandler).listen(PORT_TLS, () => {
+    startApp(PORT_TLS, 'https');
+  });
+  // Plain HTTP → HTTPS redirect
+  http.createServer((req, res) => {
+    const host = (req.headers.host || 'localhost').replace(/:\d+$/, '');
+    const target = `https://${host}:${PORT_TLS}${req.url}`;
+    res.writeHead(301, { Location: target });
+    res.end();
+  }).listen(PORT, () => {
+    console.log(`[tls] HTTP :${PORT} → HTTPS :${PORT_TLS} redirect active`);
+  });
+} else {
+  // ── HTTP mode (default) ────────────────────────────────────────────────────
+  http.createServer(requestHandler).listen(PORT, () => {
+    startApp(PORT, 'http');
+  });
+}
