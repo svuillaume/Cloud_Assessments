@@ -1,88 +1,83 @@
 <div align="center">
 
-# Fortinet Cloud Risk IQ — Scoring Guide
+# Cloud Security Posture Score — Scoring Guide
 
-Both tools (Live Dashboard and CSA Report) share the same **Fortinet Cloud Risk IQ** model on a **0–100 risk scale** — **lower is better**.
+Both tools (Live Dashboard and CSA Report) share the same **Cloud Security Posture Score** model on a **0–100 scale** — **higher is better**.
 
 </div>
 
 ---
 
-## Rick Score
+## Score Bands
 
 | Score (0–100) | Security Posture | Color |
 |:-------------:|------------------|:-----:|
-| 80 – 100 | Proactive Security | 🟢 Green |
-| 50 - 79 | Ongoing Security Posture  | 🟠 Orange |
-|0 – 49 |  Attention Needed | 🔴 Red |
+| 90 – 100 | Proactive Security | 🟢 Green |
+| 60 – 89 | Some Attention Needed | 🟠 Orange |
+| 0 – 59 | URGENT – Attention Needed | 🔴 Red |
 
 ### Guidance
 
-- **Green** — Very low risk exposure. Strong controls and mature security practices are in place.
-- **Blue** — Moderate risk. Improvements are underway; continue reducing exposure.
-- **Orange** — Meaningful gaps exist. Prioritize remediation across affected categories.
-- **Red** — High risk exposure. Immediate focus is required to address critical findings.
+- **Green (90–100)** — Very low risk exposure. Strong controls and mature security practices are in place.
+- **Orange (60–89)** — Meaningful gaps exist. Prioritize remediation across affected categories.
+- **Red (0–59)** — High risk exposure. Immediate, focused action is required to address critical findings.
 
-> 📐 **Lower score = less risk = better posture.** A score of 0 means no penalty-triggering findings. A score of 100 means all inputs are fully saturated.
+> **Higher score = lower risk = better posture.** A score of 100 means no penalty-triggering findings. A score of 0 means all categories are fully saturated with critical findings.
 
 ---
 
 ## Formula
 
 ```
-penalty = min(vulns   / 15, 1) × 2.5
-        + min(cvss10  / 10, 1) × 1.5
-        + min(admins  / 30, 1) × 2.5
-        + min(alerts  / 10, 1) × 1.5
-        + min(comp    / 10, 1) × 1.0
-
-score = round( (penalty / 9) × 100 )
+postureScore = 100 − mean(findingRiskScores)
 ```
 
-Each category contributes independently. The total max penalty is **9.0**, mapping to a score of **100** (worst case).
+Each active finding contributes a **risk weight** to the pool. The mean of all weights is subtracted from 100. No findings → score **100** (perfect posture).
 
-| Input | Description | Saturates at | Max deduction |
-|-------|-------------|:------------:|:-------------:|
-| Critical vulns | CVEs with risk score ≥ 9.0 | 15 | 2.5 |
-| Critical CVSS 10 | Subset with risk score = 10.0 | 10 | 1.5 |
-| Admins without MFA | Admin identities — no MFA enabled | 30 | 2.5 |
-| Critical alerts | Open, unresolved critical alerts | 10 | 1.5 |
-| Non-compliance | Critical compliance control violations | 10 | 1.0 |
+| Category | Risk Weight per Finding | Notes |
+|----------|:-----------------------:|-------|
+| Critical Alerts | 95 | Open, unresolved critical alerts |
+| Critical CVEs | `riskScore × 10` (max 100) | CVEs with risk score ≥ 9.0 |
+| Compliance Violations | 80 | Critical control violations |
+| Identity Risk | `risk_score × 100` (max 100) | Admin identities with MFA gaps |
 
 ---
 
 ## Worked Example
 
-A tenant with 10 critical CVEs (2 at CVSS 10), 5 admins without MFA, 3 alerts, 4 compliance violations:
+A tenant with 3 alerts, 5 CVEs (avg risk score 9.5), 4 compliance violations, 2 risky identities (risk_score 0.8):
 
 ```
-p_vulns   = min(10/15, 1) × 2.5  = 0.667 × 2.5 = 1.67
-p_cvss10  = min( 2/10, 1) × 1.5  = 0.200 × 1.5 = 0.30
-p_admins  = min( 5/30, 1) × 2.5  = 0.167 × 2.5 = 0.42
-p_alerts  = min( 3/10, 1) × 1.5  = 0.300 × 1.5 = 0.45
-p_comp    = min( 4/10, 1) × 1.0  = 0.400 × 1.0 = 0.40
-                                               ──────
-                              total penalty  = 3.24
+findings = [
+  95, 95, 95,           // 3 alerts → weight 95 each
+  95, 95, 95, 95, 95,   // 5 CVEs at riskScore 9.5 → 9.5×10 = 95
+  80, 80, 80, 80,       // 4 compliance violations → weight 80 each
+  80, 80                // 2 identities at risk_score 0.8 → 0.8×100 = 80
+]
 
-score = round((3.24 / 9) × 100) = round(36.0) = 36
-        → 🔵 Progressing Cloud Security Posture (20–49)
+mean = (8×95 + 6×80) / 14
+     = (760 + 480) / 14
+     = 1240 / 14 ≈ 88.6
+
+postureScore = round(100 − 88.6) = 11   → 🔴 URGENT – Attention Needed
 ```
 
 ---
 
 ## Dashboard Gauge
 
-The **Fortinet Cloud Risk IQ** gauge is a 270° gradient arc displayed on the overview panel:
+The **Cloud Security Posture Score** gauge is a 180° gradient arc on the overview panel:
 
-- Arc goes from **green** (left, score = 0) through yellow and orange to **red** (right, score = 100)
-- A dark needle points to the current score position on the arc
-- Boundary labels appear at **0 / 20 / 50 / 80 / 100**
-- The band label below the gauge updates with the score color
+- Arc fills left to right as score increases — **red → orange → green**
+- Gradient band boundaries: score 60 (65.4% of arc width) and score 90 (97.5%)
+- White tick marks at **60** and **90** separate the colour bands
+- Scale labels **0** and **100** appear at the arc endpoints
+- The large score number in the centre updates colour with the band
 
 ---
 
 <div align="center">
 
-[← Back to README](README.md) · [📝 Changelog](CHANGELOG.md) · [📄 Sample Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
+[📄 Sample Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
 
 </div>

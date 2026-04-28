@@ -706,13 +706,13 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
       <defs>
         <!-- Gradient: Red→Orange→Green (higher score = better posture)
-             Band boundaries: p=50→50%  p=80→90.5% of gradient width -->
+             Band boundaries: p=60→65.4%  p=90→97.5% of gradient width -->
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#f59e0b"/>
-          <stop offset="90.5%" stop-color="#f59e0b"/>
-          <stop offset="90.5%" stop-color="#22c55e"/>
+          <stop offset="65.4%" stop-color="#ef4444"/>
+          <stop offset="65.4%" stop-color="#f59e0b"/>
+          <stop offset="97.5%" stop-color="#f59e0b"/>
+          <stop offset="97.5%" stop-color="#22c55e"/>
           <stop offset="100%"  stop-color="#22c55e"/>
         </linearGradient>
       </defs>
@@ -722,14 +722,14 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <!-- Coloured fill arc (gradient, grows with score) -->
       <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="34" stroke-linecap="round"
             stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-      <!-- White divider ticks at band boundaries 50 / 80 -->
-      <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <!-- White divider ticks at band boundaries 60 / 90 -->
+      <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+      <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
       <text id="gauge-score" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900"
             letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
       <!-- Scale labels at arc endpoints -->
-      <text x="14" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">0</text>
-      <text x="386" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">100</text>
+      <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">0</text>
+      <text x="408" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">100</text>
     </svg>
     <div class="rs-band" id="rs-band" style="display:none">—</div>
     <!-- Findings summary below gauge -->
@@ -738,6 +738,31 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#f97316;flex-shrink:0"></div><span style="color:#475569">CVEs</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-v">—</span></div>
       <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#8b5cf6;flex-shrink:0"></div><span style="color:#475569">Identities</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-i">—</span></div>
       <div style="display:flex;align-items:center;gap:7px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#d97706;flex-shrink:0"></div><span style="color:#475569">Compliance</span><span style="margin-left:auto;color:#0f172a;font-weight:800;font-size:14px" id="ov-c">—</span></div>
+    </div>
+  </div>
+  <!-- Score legend — grey area, left-aligned -->
+  <div style="padding:20px 28px 4px">
+    <div style="max-width:360px;border-radius:10px;overflow:hidden;border:1px solid #dde2ea;font-family:-apple-system,Inter,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:72px 1fr 68px;background:#eaecf2;padding:5px 12px;border-bottom:1px solid #dde2ea">
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">SCORE</div>
+        <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.08em;padding-left:4px">POSTURE</div>
+        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">COLOR</div>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
+        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">90–100</div>
+        <div style="font-size:12px;color:#334155;padding-left:4px">Proactive Security</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#22c55e">Green</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
+        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">60–89</div>
+        <div style="font-size:12px;color:#334155;padding-left:4px">Some Attention Needed</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#f59e0b">Orange</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;align-items:center;background:#ffffff">
+        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">0–59</div>
+        <div style="font-size:12px;color:#334155;padding-left:4px">URGENT – Attention Needed</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#ef4444">Red</span></div>
+      </div>
     </div>
   </div>
   <div style="text-align:center;padding:10px 28px 4px;font-size:11px;font-weight:600;letter-spacing:.08em;color:#94a3b8;font-style:italic">Aiming towards a better, more secure cloud posture</div>
@@ -1000,9 +1025,9 @@ function calcPostureScore(d){
   if(!risks.length) return 100;
   return Math.round(100 - risks.reduce((s,v)=>s+v,0)/risks.length);
 }
-// 80–100 Green · 50–79 Orange · 0–49 Red  (higher = better posture)
-function scoreColor(p){return p>=80?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=80?'Proactive Security':p>=50?'Ongoing Security Posture':'Attention Needed';}
+// 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
+function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=90?'Proactive Security':p>=60?'Some Attention Needed':'URGENT – Attention Needed';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
@@ -1178,20 +1203,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
         <stop offset="0%"    stop-color="#ef4444"/>
-        <stop offset="50%"   stop-color="#ef4444"/>
-        <stop offset="50%"   stop-color="#f59e0b"/>
-        <stop offset="90.5%" stop-color="#f59e0b"/>
-        <stop offset="90.5%" stop-color="#22c55e"/>
+        <stop offset="65.4%" stop-color="#ef4444"/>
+        <stop offset="65.4%" stop-color="#f59e0b"/>
+        <stop offset="97.5%" stop-color="#f59e0b"/>
+        <stop offset="97.5%" stop-color="#22c55e"/>
         <stop offset="100%"  stop-color="#22c55e"/>
       </linearGradient>
     </defs>
     <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>
     <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-    <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-    <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="249" y1="55" x2="259" y2="22"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
-    <text x="14" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
-    <text x="386" y="228" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">100</text>
+    <text x="-8" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">0</text>
+    <text x="408" y="212" text-anchor="middle" font-size="18" font-weight="700" font-family="-apple-system,sans-serif" fill="#94a3b8">100</text>
   </svg>
 </div>
 <div class="tiles">
@@ -1208,8 +1233,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
-function scoreColor(p){return p>=80?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=80?'Proactive Security':p>=50?'Ongoing Security Posture':'Attention Needed';}
+function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
+function scoreBand(p){return p>=90?'Proactive Security':p>=60?'Some Attention Needed':'URGENT – Attention Needed';}
 function calcScore(d){
   var risks=[];
   (d.alerts||[]).forEach(function(){risks.push(95);});

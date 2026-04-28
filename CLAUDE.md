@@ -68,17 +68,17 @@ python lw_report_gen.py \
 
 **Mock mode**: when `MOCK_FILE` is set, `mock_data.json` is loaded directly into `cache` — no API calls are made. The mock data structure must match what the fetchers return.
 
-## Scoring — Fortinet Cloud Risk IQ
+## Scoring — Cloud Security Posture Score
 
 Score is 0–100, **higher = better posture**:
 ```
 postureScore = 100 − mean(findingRiskScores)
 ```
-Where per-category risk scores are: alerts→95, vulns→`riskScore×10` (capped 100), compliance→80, identities→`risk_score×100` (capped 100).
+Per-category risk weights fed into the mean: alerts→95, vulns→`riskScore×10` (capped 100), compliance→80, identities→`risk_score×100` (capped 100). No findings → score 100.
 
-Bands: ≥80 Green (Proactive Security) · 50–79 Orange (Ongoing Security Posture) · 0–49 Red (Attention Needed).
+Bands: ≥90 Green (Proactive Security) · 60–89 Orange (Some Attention Needed) · 0–59 Red (URGENT – Attention Needed).
 
-See `SCORING_GUIDE.md` for the full formula.
+See `SCORING_GUIDE.md` for the full formula and worked example.
 
 ## Architecture: report generator
 
