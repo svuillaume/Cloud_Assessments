@@ -258,7 +258,24 @@ async function fetchIdentities() {
     .slice(0, 10);
 }
 
-// ── 5. Secrets — POST /api/v2/Queries/execute (LQL) ──────────────────────────
+// ── 5. Secrets All — POST /api/v2/Queries/execute (LQL) ──────────────────────
+// LW_HE_SECRETS_ALL dataset — all discovered secrets across hosts
+
+async function fetchSecretsAll() {
+  const tf = timeFilter();
+  const queryText = `{source { LW_HE_SECRETS_ALL } return {HOSTNAME, MID, OS, SECRET_TYPE, SECRET_IDENTIFIER, END_TIME}}`;
+  const rows = await post('Queries/execute', {
+    query: { queryText },
+    arguments: [
+      { name: 'StartTimeRange', value: tf.startTime },
+      { name: 'EndTimeRange',   value: tf.endTime   },
+    ],
+  });
+  console.log(`  [secrets-all] total returned: ${rows.length}`);
+  return rows;
+}
+
+// ── 6. Secrets SSH Keys — POST /api/v2/Queries/execute (LQL) ─────────────────
 // LW_HE_SECRETS_SSH_PRIVATE_KEYS dataset — SSH private keys detected on hosts
 
 async function fetchSecrets() {
@@ -271,7 +288,7 @@ async function fetchSecrets() {
       { name: 'EndTimeRange',   value: tf.endTime   },
     ],
   });
-  console.log(`  [secrets] total returned: ${rows.length}`);
+  console.log(`  [secrets-ssh] total returned: ${rows.length}`);
   return rows;
 }
 
@@ -289,11 +306,12 @@ async function refreshData() {
   const errors = {};
 
   // Phase 1: fast parallel fetch — update cache immediately so UI is responsive
-  const [a, v, i, s] = await Promise.allSettled([
+  const [a, v, i, s, sa] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
     fetchSecrets(),
+    fetchSecretsAll(),
   ]);
 
   function unwrap(res, key) {
@@ -303,20 +321,21 @@ async function refreshData() {
     return [];
   }
 
-  const alerts     = unwrap(a, 'alerts');
-  const vulns      = unwrap(v, 'vulns');
-  const identities = unwrap(i, 'identities');
-  const secrets    = unwrap(s, 'secrets');
+  const alerts     = unwrap(a,  'alerts');
+  const vulns      = unwrap(v,  'vulns');
+  const identities = unwrap(i,  'identities');
+  const secrets    = unwrap(s,  'secrets');
+  const secretsAll = unwrap(sa, 'secretsAll');
 
   // Publish fast data right away; compliance will update the cache when ready
   cache = {
     ...cache,
-    alerts, vulns, identities, secrets,
+    alerts, vulns, identities, secrets, secretsAll,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
     riskScore: calcRiskScore(alerts, vulns, identities),
-    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length },
+    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: secretsAll.length },
   };
 
   // Phase 2: compliance runs after (avoids rate-limit collision with identities LQL)
@@ -335,6 +354,7 @@ async function refreshData() {
       compliance: compliance.length,
       identities: identities.length,
       secrets:    secrets.length,
+      secretsAll: secretsAll.length,
     },
   };
 
@@ -1993,6 +2013,7 @@ function buildReportHtml(data, meta) {
   const compliance = data.compliance || [];
   const identities = data.identities || [];
   const secrets    = data.secrets    || [];
+  const secretsAll = data.secretsAll || [];
 
   // Server-side posture score (mirrors client calcPostureScore)
   function calcScore(d) {
@@ -2142,7 +2163,8 @@ function buildReportHtml(data, meta) {
     compliance.length ? '<a href="#compliance" class="toc-card"><div class="tc-num">02 — Compliance</div><div class="tc-title">Critical Non-Compliance</div><div class="tc-sub">'+compliance.length+' control failure'+(compliance.length===1?'':'s')+'.</div></a>' : '',
     vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
-    secrets.length    ? '<a href="#secrets" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Exposed SSH Keys</div><div class="tc-sub">'+secrets.length+' SSH private key'+(secrets.length===1?'':'s')+' detected.</div></a>' : '',
+    secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
+    secrets.length    ? '<a href="#secrets" class="toc-card"><div class="tc-num">06 — SSH Keys</div><div class="tc-title">SSH Key Type</div><div class="tc-sub">'+secrets.length+' SSH private key'+(secrets.length===1?'':'s')+' detected.</div></a>' : '',
   ].filter(Boolean).join('\n      ');
 
 
@@ -2183,6 +2205,28 @@ function buildReportHtml(data, meta) {
     '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
     '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
     '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const secretsAllRows = secretsAll.length ? secretsAll.map(function(r, i) {
+    const lastSeen = r.END_TIME ? new Date(r.END_TIME).toLocaleString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
+    const bg = i % 2 ? ' style="background:#FAFAFA;"' : '';
+    return '<tr'+bg+'>' +
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>' +
+      '<td><small class="text-muted">'+esc(r.MID||'—')+'</small></td>' +
+      '<td>'+esc(r.OS||'—')+'</td>' +
+      '<td><span class="badge badge-critical">'+esc(r.SECRET_TYPE||'—')+'</span></td>' +
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.SECRET_IDENTIFIER||'—')+'</code></td>' +
+      '<td><small>'+esc(lastSeen)+'</small></td>' +
+      '</tr>';
+  }).join('') : '';
+
+  const secretsAllSection = secretsAll.length ? (
+    '<section id="secrets-all" class="pagebreak">\n<h2>5. Secrets — Discovered Secrets</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th>' +
+    '<th style="width:80px">OS</th><th style="width:120px">Secret Type</th>' +
+    '<th style="width:220px">Secret Identifier</th><th style="width:130px">Last Seen Time</th>' +
+    '</tr></thead><tbody>'+secretsAllRows+'</tbody></table>\n</section>'
   ) : '';
 
   function inferCsp(hostname) {
@@ -2231,7 +2275,7 @@ function buildReportHtml(data, meta) {
     ) + '</div>';
 
   const secretSection = secrets.length ? (
-    '<section id="secrets" class="pagebreak">\n<h2>5. Secrets — Exposed SSH Keys</h2>\n' +
+    '<section id="secrets" class="pagebreak">\n<h2>6. Secrets — Discovered SSH Key Type</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
     '<th style="width:160px">Hostname</th><th style="width:70px">CSP</th>' +
     '<th style="width:200px">File Path</th><th style="width:100px">SSH Key Type</th>' +
@@ -2297,7 +2341,7 @@ function buildReportHtml(data, meta) {
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
   'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
   '</section>\n' +
-  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretSection + '\n' +
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' + secretSection + '\n' +
   '<footer><p>RAPID CLOUD ASSESSMENT REPORT — Powered by FortiCNAPP · Prepared for '+esc(customer)+' · '+dateStr+'</p>' +
   '<p style="opacity:.55;font-size:.72rem;margin-top:.4rem">Confidential — for named recipient only. Alpha feature — generated from live dashboard cache.</p>' +
   '</footer>\n</body>\n</html>';
