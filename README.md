@@ -109,31 +109,66 @@ Open **http://localhost:8080** — data loads in the background (Phase 1: alerts
 
 ### Option C — HTTPS / TLS (production)
 
-Run behind HTTPS using Let's Encrypt (requires a public domain with port 80 reachable):
+The container handles TLS automatically via `entrypoint.sh`. When `DOMAIN` is set, **certbot** runs the Let's Encrypt HTTP-01 challenge on port 80, obtains a signed certificate, and starts the Node server in HTTPS mode on port 8443. HTTP on port 80 then redirects to HTTPS.
 
+**Requirements:**
+- A public domain pointing to your server's IP
+- Port **80** publicly reachable (for the ACME HTTP-01 challenge)
+- Port **8443** open for HTTPS traffic
+
+**`.env` file on your server:**
 ```bash
-docker run -d --name rca \
-  -p 80:80 -p 8443:8443 \
-  -e DOMAIN=rca.yourdomain.com \
-  -e LE_EMAIL=you@example.com \
-  -e LW_ACCOUNT=your-tenant.lacework.net \
-  -e LW_KEY_ID=FORTINET_XXXXXXXXXXXXXXXX \
-  -e LW_SECRET=_xxxxxxxxxxxxxxxxxxxx \
-  -v letsencrypt:/etc/letsencrypt \
-  forticnapp-dashboard
+PORT=80
+DOMAIN=rapidassessment.yourdomain.com
+LE_EMAIL=you@example.com
+LW_ACCOUNT=your-tenant.lacework.net
+LW_KEY_ID=FORTINET_XXXXXXXXXXXXXXXX
+LW_SECRET=_xxxxxxxxxxxxxxxxxxxx
 ```
 
-Or supply an existing certificate:
+> **No quotes** around values — Docker reads `.env` literally.
+
+**Build and run:**
 ```bash
-docker run -d --name rca \
-  -p 8080:8080 -p 8443:8443 \
-  -v /path/to/certs:/certs:ro \
-  -e TLS_CERT=/certs/fullchain.pem \
-  -e TLS_KEY=/certs/privkey.pem \
-  -e LW_ACCOUNT=your-tenant.lacework.net \
-  -e LW_KEY_ID=FORTINET_XXXXXXXXXXXXXXXX \
-  -e LW_SECRET=_xxxxxxxxxxxxxxxxxxxx \
-  forticnapp-dashboard
+cd rca_ui
+sudo docker build -t rca-dashboard .
+
+sudo docker run --rm -d \
+    --name rca \
+    -p 80:80 \
+    -p 8443:8443 \
+    --env-file .env \
+    -v letsencrypt:/etc/letsencrypt \
+    rca-dashboard
+```
+
+The `-v letsencrypt:/etc/letsencrypt` volume persists the certificate across container restarts so certbot does not re-issue on every start (`--keep-until-expiring` is set). Check progress with:
+
+```bash
+sudo docker logs -f rca
+```
+
+Expected output:
+```
+[tls] Domain: rapidassessment.yourdomain.com — running certbot …
+[tls] Cert obtained: /etc/letsencrypt/live/rapidassessment.yourdomain.com/fullchain.pem
+[tls] HTTPS mode — cert: /etc/letsencrypt/live/…/fullchain.pem
+│  Open     : https://rapidassessment.yourdomain.com:8443
+```
+
+Dashboard will be available at **https://rapidassessment.yourdomain.com:8443**.
+
+**Supply your own existing certificate** (skip certbot):
+```bash
+sudo docker run --rm -d \
+    --name rca \
+    -p 80:80 \
+    -p 8443:8443 \
+    -v /path/to/certs:/certs:ro \
+    -e TLS_CERT=/certs/fullchain.pem \
+    -e TLS_KEY=/certs/privkey.pem \
+    --env-file .env \
+    rca-dashboard
 ```
 
 ---
