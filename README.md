@@ -2,8 +2,6 @@
 
 A live security dashboard and customer-ready PDF report powered by the FortiCNAPP API.
 
-[View Sample Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
-
 ---
 
 ## Table of Contents
