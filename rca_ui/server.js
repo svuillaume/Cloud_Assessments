@@ -674,9 +674,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
     Next Steps
   </div>
-  <!-- Generate Report button -->
+  <!-- Generate Report button (alpha: live from cache) -->
   <div style="padding:0 0 6px">
-    <a href="https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html" target="_blank" rel="noopener" class="rpt-btn" style="display:flex;text-decoration:none">
+    <a id="rpt-btn-link" href="/report" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Report
     </a>
@@ -1124,10 +1124,18 @@ function getCookie(name){
   return v?decodeURIComponent(v.trim().slice(name.length+1)):null;
 }
 
+function wireReportBtn(user){
+  const btn=document.getElementById('rpt-btn-link');
+  if(!btn||!user) return;
+  const params=new URLSearchParams({customer:(user.company||'Customer'),author:(user.first||'')+(user.last?' '+user.last:'')});
+  btn.href='/report?'+params.toString();
+}
+
 (function checkLogin(){
   const s=sessionStorage.getItem('rca_user')||getCookie('rca_user');
   if(s){
     document.getElementById('login-overlay').style.display='none';
+    try{wireReportBtn(JSON.parse(s));}catch(_){}
     load();
   }
 })();
@@ -1151,6 +1159,7 @@ function submitLogin(){
   setCookie('rca_user',userJson,30);
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
+  wireReportBtn(user);
   load();
 }
 
@@ -1288,6 +1297,869 @@ setInterval(refresh,60000);
 </body>
 </html>`;
 
+
+// ── Alpha: Inline Report Generator ────────────────────────────────────────────
+const REPORT_CSS = `
+        :root {
+            /* ── Fortinet Brand: Red #DA291C · Black #000000 ── */
+            --color-critical: #DA291C;          /* Fortinet Red */
+            --color-critical-bg: #FDECEA;
+            --color-critical-border: #DA291C;
+            --color-high: #CC4A1A;              /* Dark orange-red — distinct from Critical */
+            --color-high-bg: #FDF0E8;
+            --color-medium: #B7770D;            /* Amber */
+            --color-medium-bg: #FEF9E7;
+            --color-low: #2C5280;               /* Muted blue — informational/low risk */
+            --color-low-bg: #EDF2F9;
+            --color-success: #1E7A3E;
+            --color-success-bg: #E8F5ED;
+            --color-primary: #DA291C;           /* Fortinet Red — all primary accents */
+            --color-primary-light: #F04030;
+            --color-primary-dark: #000000;      /* Fortinet Black — all dark backgrounds */
+            --color-text: #1A1A1A;
+            --color-text-muted: #5A5A5A;
+            --color-border: #D5D5D5;
+            --color-bg-light: #F5F5F5;
+            --color-bg-section: #FAFAFA;
+        }
+
+        @keyframes rec-glow {
+            0%,100% { box-shadow: 0 0 0 0 rgba(218,41,28,0), 0 8px 40px rgba(0,0,0,0.35); }
+            50%      { box-shadow: 0 0 0 4px rgba(218,41,28,0.22), 0 8px 40px rgba(0,0,0,0.35); }
+        }
+        @keyframes rec-pulse-badge {
+            0%,100% { transform: scale(1); }
+            50%      { transform: scale(1.06); }
+        }
+        .rec-context-banner         { animation: rec-glow 3s ease-in-out infinite; }
+        .rec-badge-count            { animation: rec-pulse-badge 2.5s ease-in-out infinite; }
+
+        @media print {
+            @page {
+                size: a3 landscape;
+                margin: 1.2cm 1.5cm;
+            }
+            .pagebreak { page-break-after: always; clear: both; }
+            .page-break-before { page-break-before: always; clear: both; }
+            .no-print { display: none !important; }
+            tbody tr:hover { background: transparent !important; }
+            .section-card, .finding-row, .kpi-card, .decision-card, table {
+                page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            section.pagebreak {
+                page-break-before: always;
+            }
+            section.pagebreak:first-of-type {
+                page-break-before: auto;
+            }
+
+            /* ── Tighten spacing for print — prevent large whitespace gaps ── */
+            body { padding: 0 2rem; }
+            h2 { margin: 1.5rem 0 1.2rem !important; }
+            h3 { margin: 1.5rem 0 0.75rem !important; padding-bottom: 0.4rem !important; }
+            h4 { margin: 1rem 0 0.5rem !important; }
+            .narrative p { margin-bottom: 0.6rem !important; }
+            .section-summary { margin: 1.5rem 0 1rem !important; }
+            .narrative { margin-bottom: 1rem !important; }
+            section { padding-bottom: 0 !important; }
+            .product-grid { margin: 1rem 0 !important; gap: 0.8rem !important; }
+            .findings-driver { margin: 1rem 0 1.5rem !important; }
+            .toc { margin: 1rem 0 !important; }
+            /* Keep banner + findings table together — no orphaned banner pages */
+            .rec-context-banner { break-after: avoid; break-inside: avoid; }
+            .findings-driver { break-inside: avoid; }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            width: 100%;
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 0 4rem;
+            color: var(--color-text);
+            background: #FFFFFF;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.2rem 2rem;
+            background: var(--color-primary-dark);
+            margin-bottom: 0;
+        }
+        header img { height: 42px; }
+
+        /* ── Cover / Title ── */
+        .report-cover {
+            background: linear-gradient(160deg, var(--color-primary-dark) 0%, var(--color-primary) 60%, var(--color-primary-light) 100%);
+            color: white;
+            padding: 3.5rem 2.5rem 2.5rem;
+            margin-bottom: 2rem;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            min-height: 62vh;
+        }
+        .report-cover .report-type {
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            opacity: 0.75;
+            margin-bottom: 1rem;
+        }
+        .report-cover h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 0.5rem;
+            border: none;
+        }
+        .report-cover .subtitle {
+            font-size: 1.15rem;
+            opacity: 0.85;
+            margin-bottom: 2rem;
+        }
+        .report-cover .meta-row {
+            display: flex;
+            gap: 2.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            font-size: 0.85rem;
+            opacity: 0.8;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 1.25rem;
+            margin-top: auto;
+        }
+        .report-cover .meta-item strong { display: block; font-size: 0.7rem; letter-spacing: 1px; text-transform: uppercase; opacity: 0.6; }
+
+        /* ── Section Headers ── */
+        h2 {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            border-left: 5px solid var(--color-primary);
+            padding-left: 1rem;
+            margin: 5.5rem 0 2.5rem;
+            clear: both;
+        }
+        h2:first-of-type { margin-top: 3rem; }
+        h3 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 3.5rem 0 1.25rem;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid var(--color-border);
+            clear: both;
+        }
+        h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--color-text);
+            margin: 2.5rem 0 0.85rem;
+            clear: both;
+        }
+        p { margin-bottom: 1.2rem; color: var(--color-text); line-height: 1.85; }
+
+        /* ── TOC ── */
+        .toc {
+            background: var(--color-bg-light);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 1.5rem 2rem;
+            margin: 1.5rem auto 2rem;
+        }
+        .toc h3 { margin-top: 0; font-size: 1rem; color: var(--color-primary-dark); text-align: center; margin-bottom: 1.1rem; }
+        .toc-cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .toc-card {
+            flex: 1 1 calc(20% - 0.75rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 0.9rem 1rem;
+            background: white;
+            text-decoration: none;
+            display: block;
+            transition: box-shadow 0.15s;
+        }
+        .toc-card:hover { box-shadow: 0 4px 12px rgba(218,41,28,0.15); }
+        .toc-card .tc-num {
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.35rem;
+        }
+        .toc-card .tc-title {
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.35rem;
+            line-height: 1.3;
+        }
+        .toc-card .tc-sub {
+            font-size: 0.72rem;
+            color: var(--color-text-muted);
+            line-height: 1.45;
+        }
+
+        /* ── KPI Cards ── */
+        .kpi-grid { width: 100%; margin: 3rem 0; overflow: hidden; }
+        .kpi-grid::after { content: ""; display: table; clear: both; }
+        .kpi-card {
+            float: left;
+            width: 22%;
+            margin-right: 4%;
+            background: white;
+            border-radius: 10px;
+            padding: 1.75rem 1.25rem;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            border: 1px solid var(--color-border);
+            text-align: center;
+            box-sizing: border-box;
+        }
+        .kpi-card:nth-child(4n) { margin-right: 0; }
+        .kpi-card .kpi-number { font-size: 2.25rem; font-weight: 700; line-height: 1; margin-bottom: 0.35rem; }
+        .kpi-card .kpi-label { font-size: 0.78rem; color: var(--color-text-muted); line-height: 1.35; }
+        .kpi-card.critical { border-top: 4px solid var(--color-critical); }
+        .kpi-card.high { border-top: 4px solid var(--color-high); }
+        .kpi-card.medium { border-top: 4px solid var(--color-medium); }
+        .kpi-card.info { border-top: 4px solid var(--color-primary); }
+        .kpi-card.critical .kpi-number { color: var(--color-critical); }
+        .kpi-card.high .kpi-number { color: var(--color-high); }
+        .kpi-card.medium .kpi-number { color: var(--color-medium); }
+        .kpi-card.info .kpi-number { color: var(--color-primary); }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-block;
+            padding: 0.18rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+        .badge-critical { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-high { background: var(--color-high-bg); color: var(--color-high); }
+        .badge-medium { background: var(--color-medium-bg); color: var(--color-medium); }
+        .badge-low { background: var(--color-low-bg); color: var(--color-low); }
+        .badge-success { background: var(--color-success-bg); color: var(--color-success); }
+        .badge-info { background: #EDEDED; color: #1A1A1A; }
+        .badge-aws { background: #FF9900; color: white; }
+        .badge-azure { background: #0078D4; color: white; }
+        .badge-gcp { background: #4285F4; color: white; }
+        .badge-mfa-off { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
+        .badge-mfa-on { background: var(--color-success-bg); color: var(--color-success); }
+
+        /* ── Tables ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 2.5rem 0;
+            background: white;
+            font-size: 0.83rem;
+        }
+        thead th {
+            background: var(--color-primary-dark);
+            color: white;
+            font-weight: 600;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 0.85rem 1rem;
+            text-align: left;
+            white-space: nowrap;
+        }
+        tbody tr { border-bottom: 1px solid var(--color-border); }
+        tbody tr:nth-child(even) { background: var(--color-bg-section); }
+        td { padding: 0.9rem 1rem; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+
+        /* Executive finding table — wider cells, no hard max-width */
+        .exec-table { table-layout: auto; }
+        .exec-table td, .exec-table th { font-size: 0.78rem; padding: 0.85rem 0.9rem; max-width: 220px; }
+        .exec-table td.narrow { width: 28px; text-align: center; }
+        .exec-table td.med { max-width: 140px; }
+        .exec-table td.wide { max-width: 260px; }
+
+        /* Summary / leadership table */
+        .summary-table thead th { background: var(--color-primary); }
+        .summary-table td { font-size: 0.82rem; }
+
+        /* ── Info Boxes ── */
+        .info-box {
+            padding: 1.5rem 2rem;
+            border-radius: 8px;
+            margin: 2.5rem 0;
+            display: flex;
+            gap: 0.85rem;
+            border: 1px solid;
+        }
+        .info-box.alert { background: var(--color-critical-bg); border-color: var(--color-critical-border); }
+        .info-box.warning { background: var(--color-high-bg); border-color: var(--color-high); }
+        .info-box.note { background: #F5F5F5; border-color: #BEBEBE; }
+        .info-box.tip { background: var(--color-success-bg); border-color: #82E0AA; }
+        .info-box-icon { font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem; }
+        .info-box-content { flex: 1; }
+        .info-box-content strong { display: block; margin-bottom: 0.2rem; font-size: 0.85rem; }
+        .info-box-content p { margin: 0; font-size: 0.82rem; }
+
+        /* ── Decision Cards ── */
+        .decision-row { width: 100%; margin: 2.5rem 0; overflow: hidden; }
+        .decision-row::after { content: ""; display: table; clear: both; }
+        .decision-card {
+            float: left;
+            width: 30%;
+            margin-right: 5%;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            box-sizing: border-box;
+        }
+        .decision-card:nth-child(3n) { margin-right: 0; }
+        .decision-card .decision-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px; height: 28px;
+            background: var(--color-primary-dark);
+            color: white;
+            border-radius: 50%;
+            font-weight: 700;
+            font-size: 0.85rem;
+            margin-bottom: 0.6rem;
+        }
+        .decision-card h4 { margin: 0 0 0.5rem; font-size: 0.92rem; color: var(--color-primary-dark); }
+        .decision-card p { font-size: 0.8rem; color: var(--color-text-muted); margin: 0; }
+        .decision-card.urgent { border-top-color: var(--color-critical); }
+        .decision-card.urgent .decision-num { background: var(--color-critical); }
+
+        /* ── Action Plan Table ── */
+        .plan-table thead th { background: var(--color-primary-dark); }
+        .plan-table td { padding: 1rem 1.1rem; font-size: 0.83rem; vertical-align: top; }
+        .plan-table td:first-child { font-weight: 600; white-space: nowrap; color: var(--color-primary-dark); width: 110px; }
+        .plan-table td:last-child { color: var(--color-text-muted); }
+
+        /* ── Identity Risk Commentary ── */
+        .commentary-box {
+            background: linear-gradient(135deg, #F5F5F5 0%, #EBEBEB 100%);
+            border: 1px solid #C8C8C8;
+            border-left: 4px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 2rem 2.5rem;
+            margin: 3rem 0;
+        }
+        .commentary-box h4 { margin-top: 0; color: var(--color-primary-dark); }
+
+        /* ── Narrative ── */
+        .narrative { background: var(--color-bg-section); border-left: 4px solid var(--color-primary); border-radius: 0 8px 8px 0; padding: 2rem 2.5rem; margin: 2.5rem 0; }
+        .narrative p:last-child { margin-bottom: 0; }
+
+        /* ── Promo ── */
+        .promo-section { display: flex; justify-content: center; margin: 2rem 0; width: 100%; }
+        .promo-section img { max-width: 85%; width: 85%; height: auto; display: block; margin: 0 auto; }
+        .cover-image img { max-width: 70%; width: 70%; }
+
+        /* ── Risk score chip ── */
+        .risk-chip {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            background: var(--color-critical-bg);
+            color: var(--color-critical);
+            border: 1px solid var(--color-critical-border);
+        }
+        .risk-chip.high { background: var(--color-high-bg); color: var(--color-high); border-color: var(--color-high); }
+
+        /* ── Apple-style Summary Chart ── */
+        .apple-chart {
+            background: #FFFFFF;
+            border-radius: 18px;
+            padding: 2rem 2.5rem 1.75rem;
+            box-shadow:
+                0 2px 4px rgba(0,0,0,0.06),
+                0 8px 24px rgba(0,0,0,0.08),
+                0 1px 0 rgba(255,255,255,0.9) inset;
+            margin: 2.5rem 0;
+            border: 1px solid rgba(0,0,0,0.06);
+        }
+        .apple-chart-title {
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--color-text-muted);
+            margin-bottom: 1.1rem;
+        }
+        .chart-row {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin: 0.55rem 0;
+        }
+        .chart-row-label {
+            width: 230px;
+            flex-shrink: 0;
+            font-size: 0.78rem;
+            color: var(--color-text);
+            font-weight: 500;
+        }
+        .chart-track {
+            flex: 1;
+            height: 22px;
+            border-radius: 11px;
+            background: #F0EFEF;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.13), inset 0 -1px 2px rgba(255,255,255,0.6);
+            position: relative;
+            overflow: hidden;
+        }
+        .chart-bar {
+            height: 100%;
+            border-radius: 11px;
+            min-width: 4px;
+            background: linear-gradient(180deg,
+                #F05040 0%,
+                #DA291C 45%,
+                #B82015 100%
+            );
+            box-shadow:
+                0 3px 8px rgba(218,41,28,0.45),
+                inset 0 1px 0 rgba(255,255,255,0.35),
+                inset 0 -1px 0 rgba(0,0,0,0.12);
+            position: relative;
+        }
+        .chart-bar::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 6px; right: 6px;
+            height: 5px;
+            border-radius: 3px;
+            background: rgba(255,255,255,0.28);
+        }
+        .chart-row-value {
+            width: 44px;
+            flex-shrink: 0;
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: var(--color-critical);
+            text-align: right;
+            letter-spacing: -0.02em;
+        }
+
+        /* ── Host Priority Cards ── */
+        .host-card-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
+        .host-card {
+            flex: 0 1 calc(20% - 0.6rem);
+            min-width: 140px;
+            border: 1px solid var(--color-border);
+            border-top: 3px solid var(--color-critical);
+            border-radius: 6px;
+            padding: 0.6rem 0.8rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .host-card .host-name {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--color-text);
+            word-break: break-all;
+            margin-bottom: 0.3rem;
+        }
+        .host-card .host-sevs {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            white-space: pre-line;
+            line-height: 1.5;
+        }
+
+        /* ── Security Gauge ── */
+        .gauge-wrap { margin: 0.6rem 0; }
+        .gauge-track {
+            height: 10px;
+            border-radius: 5px;
+            background: #E8E8E8;
+            overflow: hidden;
+            position: relative;
+        }
+        .gauge-fill {
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
+        .gauge-fill.critical { background: var(--color-critical); }
+        .gauge-fill.high     { background: var(--color-high); }
+        .gauge-fill.medium   { background: var(--color-medium); }
+        .gauge-fill.low      { background: var(--color-success); }
+        .gauge-label { font-size: 0.72rem; color: var(--color-text-muted); margin-bottom: 0.2rem; display: flex; justify-content: space-between; }
+        .gauge-label strong { color: var(--color-text); }
+
+        /* ── Assessment Intro Panels ── */
+        .intro-grid { display: flex; gap: 1.5rem; margin: 2.5rem 0; flex-wrap: wrap; }
+        .intro-card {
+            flex: 1 1 calc(33% - 1rem);
+            min-width: 220px;
+            border-radius: 10px;
+            padding: 1.75rem 1.75rem;
+            background: white;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .intro-card .intro-eyebrow {
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.5rem;
+        }
+        .intro-card h4 { margin: 0 0 0.6rem; font-size: 0.95rem; color: var(--color-primary-dark); }
+        .intro-card p { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.6; margin: 0; }
+
+        /* ── Findings Driver Summary ── */
+        .findings-driver {
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 2rem 0 3rem;
+        }
+        .findings-driver-header {
+            background: var(--color-primary-dark);
+            padding: 0.75rem 1.25rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #fff;
+        }
+        .findings-driver table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .findings-driver table tr:not(:last-child) td {
+            border-bottom: 1px solid var(--color-border);
+        }
+        .findings-driver table td {
+            padding: 0.75rem 1.25rem;
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+        .findings-driver table td:first-child {
+            width: 38%;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+        .findings-driver table td:nth-child(2) {
+            color: var(--color-text-muted);
+        }
+        .findings-driver table tr.finding-row-active td:first-child {
+            color: var(--color-critical);
+        }
+        .finding-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+        /* ── Product Recommendation Cards ── */
+        .product-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2.5rem 0; }
+        .product-card {
+            flex: 1 1 calc(50% - 0.5rem);
+            min-width: 260px;
+            border: 1px solid var(--color-border);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 8px;
+            padding: 1.25rem;
+            background: var(--color-bg-section);
+            break-inside: avoid;
+        }
+        .product-card .product-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--color-primary-dark);
+            margin-bottom: 0.15rem;
+        }
+        .product-card .product-subtitle {
+            font-size: 0.72rem;
+            color: var(--color-primary);
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+            margin-bottom: 0.55rem;
+        }
+        .product-card .product-addresses { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.75rem; }
+        .product-card .product-desc { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.55; margin-bottom: 0.5rem; }
+        .product-card ul.product-caps { margin: 0.4rem 0 0 1.1rem; padding: 0; }
+        .product-card ul.product-caps li { font-size: 0.78rem; color: var(--color-text); margin-bottom: 0.22rem; }
+
+        /* ── Section Risk Summary Callout ── */
+        .section-summary {
+            background: #111111;
+            border-left: 5px solid var(--color-primary);
+            border-radius: 0 8px 8px 0;
+            padding: 2rem 2.5rem;
+            margin: 3.5rem 0 2rem;
+        }
+        .section-summary .ss-title {
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--color-primary);
+            margin-bottom: 0.55rem;
+        }
+        .section-summary p {
+            color: rgba(255,255,255,0.88);
+            font-size: 0.82rem;
+            margin-bottom: 0;
+            line-height: 1.65;
+        }
+
+        /* ── Misc ── */
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--color-border);
+            margin: 4rem 0 0;
+            opacity: 0.5;
+        }
+        section.pagebreak {
+            padding-top: 1rem;
+            padding-bottom: 4rem;
+        }
+        section.pagebreak + section.pagebreak {
+            border-top: 2px solid var(--color-border);
+            padding-top: 1rem;
+        }
+        footer { margin-top: 5rem; padding: 2rem 2.5rem; background: var(--color-primary-dark); color: rgba(255,255,255,0.92); font-size: 0.78rem; text-align: center; }
+        footer p { color: inherit; }
+        .pagebreak { page-break-after: always; clear: both; }
+        .text-muted { color: var(--color-text-muted); }
+        .text-critical { color: var(--color-critical); font-weight: 600; }
+        ul.findings-list { margin: 0.5rem 0 0.5rem 1.25rem; }
+        ul.findings-list li { margin-bottom: 0.2rem; font-size: 0.8rem; }
+        .section-label {
+            display: inline-block;
+            background: var(--color-primary);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+    `;
+
+function buildReportHtml(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
+  const alerts     = data.alerts     || [];
+  const vulns      = data.vulns      || [];
+  const compliance = data.compliance || [];
+  const identities = data.identities || [];
+
+  // Server-side posture score (mirrors client calcPostureScore)
+  function calcScore(d) {
+    const r = [];
+    (d.alerts||[]).forEach(() => r.push(95));
+    (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
+    (d.compliance||[]).forEach(() => r.push(80));
+    (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
+    if (!r.length) return 100;
+    return Math.round(100 - r.reduce((s,v) => s+v, 0) / r.length);
+  }
+  const score  = calcScore(data);
+  const sBand  = score>=90 ? 'Proactive Security' : score>=60 ? 'Some Attention Needed' : 'URGENT – Attention Needed';
+  const sColor = score>=90 ? '#22c55e' : score>=60 ? '#f59e0b' : '#ef4444';
+  const total  = alerts.length + vulns.length + compliance.length + identities.length;
+
+  // Helpers
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmt(ts) {
+    if (!ts) return '—';
+    try { return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch(_) { return String(ts); }
+  }
+  function sevBadge(s) {
+    const m = {critical:'badge-critical',high:'badge-high',medium:'badge-medium',low:'badge-low'};
+    const cls = m[(s||'').toLowerCase()] || 'badge-info';
+    return '<span class="badge '+cls+'">'+esc(s||'—')+'</span>';
+  }
+  function cspBadge(c) {
+    const m = {aws:'badge-aws',azure:'badge-azure',gcp:'badge-gcp'};
+    const cls = m[(c||'').toLowerCase()] || 'badge-info';
+    return '<span class="badge '+cls+'">'+esc((c||'').toUpperCase()||'—')+'</span>';
+  }
+  const mx  = Math.max(alerts.length, vulns.length, compliance.length, identities.length, 1);
+  function bar(n) { return '<div class="chart-bar" style="width:'+Math.max(4,Math.round(n/mx*100))+'%"></div>'; }
+
+  // ── Alerts rows
+  const alertRows = alerts.length ? alerts.map(function(r,i) {
+    const desc = ((r.alertInfo && r.alertInfo.description)||'').replace(/\s+/g,' ').slice(0,200);
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td style="font-size:.75rem;color:#5A5A5A">'+esc(r.alertId||'—')+'</td>'+
+      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td><strong>'+esc(r.alertName||'—')+'</strong><br><small class="text-muted">'+esc(r.alertType||'')+'</small></td>'+
+      '<td style="white-space:nowrap">'+fmt(r.startTime)+'</td>'+
+      '<td class="wide">'+esc(desc||'—')+'</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">No critical alerts</td></tr>';
+
+  // ── Vuln rows
+  const vulnRows = vulns.length ? vulns.map(function(r,i) {
+    const rs  = parseFloat(r.riskScore||0);
+    const fix = (r.fixInfo && r.fixInfo.fixed_version) ? '→ '+r.fixInfo.fixed_version :
+                (r.fixInfo && r.fixInfo.fix_available)  ? 'Fix available' : 'No fix yet';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong></td>'+
+      '<td><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
+      '<td class="med">'+esc((r.evalCtx&&r.evalCtx.hostname)||r.mid||'—')+'</td>'+
+      '<td><strong>'+esc((r.featureKey&&r.featureKey.name)||'—')+'</strong></td>'+
+      '<td>'+esc(fix)+'</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No critical CVEs</td></tr>';
+
+  // ── Compliance rows
+  const compRows = compliance.length ? compliance.map(function(r,i) {
+    const bg = (r.severity||'').toLowerCase()==='critical' ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    return '<tr'+bg+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td>'+sevBadge(r.severity)+'</td>'+
+      '<td>'+cspBadge(r.cloud)+'</td>'+
+      '<td class="med"><strong>'+esc(r.title||'—')+'</strong><br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
+      '<td class="wide">'+esc((r.description||'—').slice(0,240))+'</td>'+
+      '<td style="text-align:center;font-weight:700">'+esc(r.violations||0)+'</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">No compliance findings</td></tr>';
+
+  // ── Identity rows
+  const idRows = identities.length ? identities.map(function(r,i) {
+    const rs    = (r.METRICS && r.METRICS.risk_score) || 0;
+    const rsVal = Math.round(rs*100);
+    const mfa   = r.MFA_ENABLED ? '<span class="badge badge-mfa-on">MFA ON</span>' : '<span class="badge badge-mfa-off">NO MFA</span>';
+    const bg    = rs>0.6 ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    return '<tr'+bg+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td><strong>'+esc(r.NAME||r.PRINCIPAL_ID||'—')+'</strong><br><small class="text-muted">'+esc(r.PROVIDER_TYPE||'')+'</small></td>'+
+      '<td>'+mfa+'</td>'+
+      '<td><span class="risk-chip'+(rsVal<80?' high':'')+'">'+rsVal+'</span></td>'+
+      '<td>'+fmt(r.LAST_USED_TIME)+'</td>'+
+      '</tr>';
+  }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
+
+  // ── Build HTML ──────────────────────────────────────────────────────────────
+  const tocCards = [
+    alerts.length     ? '<a href="#alerts" class="toc-card"><div class="tc-num">01 — Alerts</div><div class="tc-title">Critical Alerts</div><div class="tc-sub">'+alerts.length+' open critical alert'+(alerts.length===1?'':'s')+'.</div></a>' : '',
+    compliance.length ? '<a href="#compliance" class="toc-card"><div class="tc-num">02 — Compliance</div><div class="tc-title">Critical Non-Compliance</div><div class="tc-sub">'+compliance.length+' control failure'+(compliance.length===1?'':'s')+'.</div></a>' : '',
+    vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
+    identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
+  ].filter(Boolean).join('\n      ');
+
+  const chartRows = [
+    ['Critical Alerts', alerts.length],
+    ['Critical CVEs (Risk ≥ 9)', vulns.length],
+    ['Non-Compliance Findings', compliance.length],
+    ['Identity Risk Findings', identities.length],
+  ].map(function(pair) {
+    return '<div class="chart-row"><div class="chart-row-label">'+esc(pair[0])+'</div><div class="chart-track">'+bar(pair[1])+'</div><div class="chart-row-value">'+pair[1]+'</div></div>';
+  }).join('\n      ');
+
+  const alertSection = alerts.length ? (
+    '<section id="alerts" class="pagebreak">\n' +
+    '<h2>1. Critical Alerts</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:65px">Alert ID</th><th style="width:75px">Severity</th>' +
+    '<th style="width:210px">Alert Name</th><th style="width:110px">Date</th><th>Description</th>' +
+    '</tr></thead><tbody>'+alertRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const compSection = compliance.length ? (
+    '<section id="compliance" class="pagebreak">\n' +
+    '<h2>2. Critical Non-Compliance Findings</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:80px">Severity</th><th style="width:70px">Cloud</th>' +
+    '<th style="width:210px">Policy / Finding</th><th>Description</th><th style="width:80px;text-align:center">Violations</th>' +
+    '</tr></thead><tbody>'+compRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const vulnSection = vulns.length ? (
+    '<section id="vulnerabilities" class="pagebreak">\n' +
+    '<h2>3. Critical CVE Vulnerabilities</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:75px">Severity</th><th style="width:150px">CVE</th>' +
+    '<th style="width:75px">Risk Score</th><th style="width:150px">Affected Host</th>' +
+    '<th style="width:130px">Package</th><th style="width:120px">Fix Version</th>' +
+    '</tr></thead><tbody>'+vulnRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  const idSection = identities.length ? (
+    '<section id="identity" class="pagebreak">\n' +
+    '<h2>4. Identity Risk</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th class="narrow">#</th><th style="width:220px">Identity</th>' +
+    '<th style="width:90px">MFA</th><th style="width:90px">Risk Score</th><th style="width:130px">Last Active</th>' +
+    '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+  '  <meta charset="UTF-8">\n' +
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+  '  <title>Rapid Cloud Assessment – '+esc(customer)+'</title>\n' +
+  '  <style type="text/css">\n' + REPORT_CSS + '\n' +
+  '    .alpha-banner{background:#f59e0b;color:#000;padding:6px 20px;font-size:11px;font-weight:700;text-align:center;letter-spacing:.06em}\n' +
+  '  </style>\n</head>\n<body>\n' +
+  '<div class="alpha-banner no-print">⚠ ALPHA — Generated live from RCA UI dashboard data · '+new Date().toISOString()+'</div>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
+  '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
+  '<div class="report-cover">\n' +
+  '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
+  '  <h1>Cloud Security Posture Report</h1>\n' +
+  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  '  <div style="margin:1.5rem auto;display:inline-block;padding:.5rem 2rem;background:rgba(255,255,255,.15);border-radius:20px;font-weight:700;font-size:1rem;color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</div>\n' +
+  '  <div class="meta-row">\n' +
+  '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
+  '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
+  '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
+  '    <div class="meta-item"><strong>Status</strong><span style="color:#f59e0b;font-weight:700">ALPHA</span></div>\n' +
+  '  </div>\n</div>\n' +
+  '<div class="toc"><h3>Discovered Risk Findings</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  '<section id="exec-summary" class="pagebreak">\n<h2>Executive Summary</h2>\n' +
+  '<div class="kpi-grid">' +
+  '<div class="kpi-card critical"><div class="kpi-number">'+alerts.length+'</div><div class="kpi-label">Critical Alerts</div></div>' +
+  '<div class="kpi-card high"><div class="kpi-number">'+vulns.length+'</div><div class="kpi-label">Critical CVEs (Risk ≥ 9)</div></div>' +
+  '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
+  '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
+  '</div>\n' +
+  '<div class="apple-chart"><div class="apple-chart-title">Risk Finding Summary</div>\n      '+chartRows+'\n</div>\n' +
+  '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
+  '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
+  'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
+  '</section>\n' +
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' +
+  '<footer><p>RAPID CLOUD ASSESSMENT REPORT — Powered by FortiCNAPP · Prepared for '+esc(customer)+' · '+dateStr+'</p>' +
+  '<p style="opacity:.55;font-size:.72rem;margin-top:.4rem">Confidential — for named recipient only. Alpha feature — generated from live dashboard cache.</p>' +
+  '</footer>\n</body>\n</html>';
+}
+
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
 const CORS = {
@@ -1338,6 +2210,18 @@ http.createServer((req, res) => {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(HTML);
+  } else if (req.url.startsWith('/report')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer = (qs.get('customer') || 'Customer').trim();
+    const author   = (qs.get('author')   || 'Fortinet').trim();
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    const reportHtml = buildReportHtml(cache, { customer, author });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.end(reportHtml);
   } else if (isMobile && req.url === '/') {
     res.writeHead(302, { Location: '/mobile', ...CORS });
     res.end();
