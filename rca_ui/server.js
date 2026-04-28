@@ -970,7 +970,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">Discovered Secrets</div>
-      <div class="vh-sub">LW_HE_SECRETS_ALL · SSH keys, API tokens &amp; credentials detected on hosts</div>
+      <div class="vh-sub">SSH keys, API tokens &amp; credentials detected on hosts</div>
     </div>
     <span class="vh-badge" id="cnt-sa">—</span>
   </div>
