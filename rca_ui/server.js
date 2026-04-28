@@ -1115,8 +1115,17 @@ function updateRiskScore(p){
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
+function setCookie(name,val,days){
+  const d=new Date();d.setTime(d.getTime()+days*86400000);
+  document.cookie=name+'='+encodeURIComponent(val)+';expires='+d.toUTCString()+';path=/;SameSite=Lax';
+}
+function getCookie(name){
+  const v=document.cookie.split(';').find(c=>c.trim().startsWith(name+'='));
+  return v?decodeURIComponent(v.trim().slice(name.length+1)):null;
+}
+
 (function checkLogin(){
-  const s=sessionStorage.getItem('rca_user');
+  const s=sessionStorage.getItem('rca_user')||getCookie('rca_user');
   if(s){
     document.getElementById('login-overlay').style.display='none';
     load();
@@ -1137,7 +1146,9 @@ function submitLogin(){
   if(!email||!emailInput.checkValidity()){err.textContent='Please enter a valid email address.';return;}
   err.textContent='';
   const user={first,last,company,role,email};
-  sessionStorage.setItem('rca_user',JSON.stringify(user));
+  const userJson=JSON.stringify(user);
+  sessionStorage.setItem('rca_user',userJson);
+  setCookie('rca_user',userJson,30);
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
   load();
