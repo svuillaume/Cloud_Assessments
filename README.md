@@ -37,24 +37,27 @@ This repository contains **two tools** that work together to help you assess a c
 
 > 💡 **New to CNAPP?** Start with the Dashboard in **mock mode** (no credentials required — see [Step 2](#-step-2--run-the-live-dashboard)).
 
-### Fortinet Cloud Risk IQ
+### Cloud Security Posture Score
 
-The dashboard computes a **0–100 risk score** — lower is better — from five live inputs:
+The dashboard computes a **0–100 posture score** — **higher is better** — using the formula:
 
-| Input | Saturates at | Max weight |
-|-------|:------------:|:----------:|
-| Critical CVEs (risk ≥ 9.0) | 15 | 2.5 |
-| Critical CVSS 10.0 CVEs | 10 | 1.5 |
-| Admins without MFA | 30 | 2.5 |
-| Critical alerts | 10 | 1.5 |
-| Critical non-compliance | 10 | 1.0 |
+```
+postureScore = max(0, round(100 − mean(findingRiskScores) − secretCount × 0.5))
+```
+
+| Category | Risk Weight |
+|----------|:-----------:|
+| Critical Alerts | 95 (in mean) |
+| Critical CVEs (risk ≥ 9.0) | `riskScore × 10` (in mean) |
+| Compliance Violations | 80 (in mean) |
+| Identity Risk (no MFA) | `risk_score × 100` (in mean) |
+| Secrets (per detected secret) | −0.5 pts (outside mean) |
 
 | Score | Band | Color |
 |:-----:|------|:-----:|
-| 0–19 | Proactive Security | 🟢 |
-| 20–49 | Progressing Cloud Security Posture | 🔵 |
-| 50–79 | Some Attention Needed | 🟠 |
-| 80–100 | Immediate Attention Needed | 🔴 |
+| 90–100 | Proactive Security | 🟢 |
+| 60–89 | Some Attention Needed | 🟠 |
+| 0–59 | URGENT – Attention Needed | 🔴 |
 
 See [SCORING_GUIDE.md](SCORING_GUIDE.md) for the full formula and worked example.
 

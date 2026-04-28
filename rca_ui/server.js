@@ -1086,17 +1086,18 @@ function nav(name){
 let _lastData=null;
 
 // Cloud Security Posture Score (Rick Score): higher = better posture (0–100).
-// postureScore = 100 − mean(findingRiskScores).  No findings → 100 (perfect).
-// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80  |  Secret: 90
+// postureScore = 100 − mean(findingRiskScores) − (secretCount × 0.5).  No findings → 100.
+// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
+// Secrets penalty: −0.5 pts per detected secret (applied after mean, excluded from mean pool)
 function calcPostureScore(d){
   const risks=[];
   (d.alerts||[]).forEach(()=>risks.push(95));
   (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
   (d.compliance||[]).forEach(()=>risks.push(80));
   (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
-  (d.secretsAll||[]).forEach(()=>risks.push(90));
-  if(!risks.length) return 100;
-  return Math.round(100 - risks.reduce((s,v)=>s+v,0)/risks.length);
+  const secretPenalty=(d.secretsAll||[]).length*0.5;
+  const base=risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100;
+  return Math.max(0, Math.round(base - secretPenalty));
 }
 // 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
 function scoreColor(p){return p>=90?'#22c55e':p>=60?'#f59e0b':'#ef4444';}
@@ -1336,8 +1337,9 @@ function calcScore(d){
   (d.vulns||[]).forEach(function(r){risks.push(Math.min(100,parseFloat(r.riskScore||0)*10));});
   (d.compliance||[]).forEach(function(){risks.push(80);});
   (d.identities||[]).forEach(function(r){risks.push(Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100));});
-  if(!risks.length)return 100;
-  return Math.round(100-risks.reduce(function(s,v){return s+v;},0)/risks.length);
+  var secretPenalty=(d.secretsAll||[]).length*0.5;
+  var base=risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100;
+  return Math.max(0,Math.round(base-secretPenalty));
 }
 function buildSteps(d,p){
   var items=[];
@@ -2057,9 +2059,9 @@ function buildReportHtml(data, meta) {
     (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
     (d.compliance||[]).forEach(() => r.push(80));
     (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
-    (d.secretsAll||[]).forEach(() => r.push(90));
-    if (!r.length) return 100;
-    return Math.round(100 - r.reduce((s,v) => s+v, 0) / r.length);
+    const secretPenalty = (d.secretsAll||[]).length * 0.5;
+    const base = r.length ? 100 - r.reduce((s,v) => s+v, 0) / r.length : 100;
+    return Math.max(0, Math.round(base - secretPenalty));
   }
   const score  = calcScore(data);
   const sBand  = score>=90 ? 'Proactive Security' : score>=60 ? 'Some Attention Needed' : 'URGENT – Attention Needed';

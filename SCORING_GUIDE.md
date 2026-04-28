@@ -29,24 +29,24 @@ Both tools (Live Dashboard and CSA Report) share the same **Cloud Security Postu
 ## Formula
 
 ```
-postureScore = 100 − mean(findingRiskScores)
+postureScore = max(0, round(100 − mean(findingRiskScores) − secretCount × 0.5))
 ```
 
-Each active finding contributes a **risk weight** to the pool. The mean of all weights is subtracted from 100. No findings → score **100** (perfect posture).
+Each active finding contributes a **risk weight** to the mean pool. Secrets are treated separately — they apply a **−0.5 pt penalty per detected secret** on top of the mean, so they always reduce the score regardless of the existing finding pool size.
 
-| Category | Risk Weight per Finding | Notes |
-|----------|:-----------------------:|-------|
-| Critical Alerts | 95 | Open, unresolved critical alerts |
-| Critical CVEs | `riskScore × 10` (max 100) | CVEs with risk score ≥ 9.0 |
-| Compliance Violations | 80 | Critical control violations |
-| Identity Risk | `risk_score × 100` (max 100) | Admin identities with MFA gaps |
-| Secrets | 90 | Each secret detected via `LW_HE_SECRETS_ALL` |
+| Category | Risk Weight / Penalty | Notes |
+|----------|:---------------------:|-------|
+| Critical Alerts | 95 (in mean) | Open, unresolved critical alerts |
+| Critical CVEs | `riskScore × 10` (max 100, in mean) | CVEs with risk score ≥ 9.0 |
+| Compliance Violations | 80 (in mean) | Critical control violations |
+| Identity Risk | `risk_score × 100` (max 100, in mean) | Admin identities with MFA gaps |
+| Secrets | **−0.5 pts each** (outside mean) | Each secret detected via `LW_HE_SECRETS_ALL` |
 
 ---
 
 ## Worked Example
 
-A tenant with 3 alerts, 5 CVEs (avg risk score 9.5), 4 compliance violations, 2 risky identities (risk_score 0.8):
+A tenant with 3 alerts, 5 CVEs (avg risk score 9.5), 4 compliance violations, 2 risky identities (risk_score 0.8), and 6 discovered secrets:
 
 ```
 findings = [
@@ -60,7 +60,9 @@ mean = (8×95 + 6×80) / 14
      = (760 + 480) / 14
      = 1240 / 14 ≈ 88.6
 
-postureScore = round(100 − 88.6) = 11   → 🔴 URGENT – Attention Needed
+secretPenalty = 6 × 0.5 = 3.0
+
+postureScore = round(100 − 88.6 − 3.0) = round(8.4) = 8   → 🔴 URGENT – Attention Needed
 ```
 
 ---
