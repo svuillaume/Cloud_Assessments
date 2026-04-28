@@ -2004,8 +2004,6 @@ function buildReportHtml(data, meta) {
     const cls = m[(c||'').toLowerCase()] || 'badge-info';
     return '<span class="badge '+cls+'">'+esc((c||'').toUpperCase()||'—')+'</span>';
   }
-  const mx  = Math.max(alerts.length, vulns.length, compliance.length, identities.length, 1);
-  function bar(n) { return '<div class="chart-bar" style="width:'+Math.max(4,Math.round(n/mx*100))+'%"></div>'; }
 
   // ── Alerts rows
   const alertRows = alerts.length ? alerts.map(function(r,i) {
@@ -2072,14 +2070,6 @@ function buildReportHtml(data, meta) {
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
   ].filter(Boolean).join('\n      ');
 
-  const chartRows = [
-    ['Critical Alerts', alerts.length],
-    ['Critical CVEs (Risk ≥ 9)', vulns.length],
-    ['Non-Compliance Findings', compliance.length],
-    ['Identity Risk Findings', identities.length],
-  ].map(function(pair) {
-    return '<div class="chart-row"><div class="chart-row-label">'+esc(pair[0])+'</div><div class="chart-track">'+bar(pair[1])+'</div><div class="chart-row-value">'+pair[1]+'</div></div>';
-  }).join('\n      ');
 
   const alertSection = alerts.length ? (
     '<section id="alerts" class="pagebreak">\n' +
@@ -2170,7 +2160,6 @@ function buildReportHtml(data, meta) {
   '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
   '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
   '</div>\n' +
-  '<div class="apple-chart"><div class="apple-chart-title">Risk Finding Summary</div>\n      '+chartRows+'\n</div>\n' +
   '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
   'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
