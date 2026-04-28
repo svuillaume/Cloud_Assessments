@@ -2152,7 +2152,7 @@ function buildReportHtml(data, meta) {
       '    <text x="-8" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">0</text>\n'+
       '    <text x="408" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">100</text>\n'+
       '  </svg>\n'+
-      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:'+sColor+';margin-top:4px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:4px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
       '  </div>\n';
   })()+
   '  <div class="meta-row">\n' +
