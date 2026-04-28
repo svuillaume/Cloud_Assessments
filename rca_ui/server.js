@@ -258,6 +258,23 @@ async function fetchIdentities() {
     .slice(0, 10);
 }
 
+// ── 5. Secrets — POST /api/v2/Queries/execute (LQL) ──────────────────────────
+// LW_HE_SECRETS_SSH_PRIVATE_KEYS dataset — SSH private keys detected on hosts
+
+async function fetchSecrets() {
+  const tf = timeFilter();
+  const queryText = `{source { LW_HE_SECRETS_SSH_PRIVATE_KEYS } return {HOSTNAME, FILE_PATH, SSH_KEY_TYPE}}`;
+  const rows = await post('Queries/execute', {
+    query: { queryText },
+    arguments: [
+      { name: 'StartTimeRange', value: tf.startTime },
+      { name: 'EndTimeRange',   value: tf.endTime   },
+    ],
+  });
+  console.log(`  [secrets] total returned: ${rows.length}`);
+  return rows;
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 
 function calcRiskScore(alerts, vulns, identities) {
@@ -272,10 +289,11 @@ async function refreshData() {
   const errors = {};
 
   // Phase 1: fast parallel fetch — update cache immediately so UI is responsive
-  const [a, v, i] = await Promise.allSettled([
+  const [a, v, i, s] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
+    fetchSecrets(),
   ]);
 
   function unwrap(res, key) {
@@ -288,16 +306,17 @@ async function refreshData() {
   const alerts     = unwrap(a, 'alerts');
   const vulns      = unwrap(v, 'vulns');
   const identities = unwrap(i, 'identities');
+  const secrets    = unwrap(s, 'secrets');
 
   // Publish fast data right away; compliance will update the cache when ready
   cache = {
     ...cache,
-    alerts, vulns, identities,
+    alerts, vulns, identities, secrets,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
     riskScore: calcRiskScore(alerts, vulns, identities),
-    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length },
+    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length },
   };
 
   // Phase 2: compliance runs after (avoids rate-limit collision with identities LQL)
@@ -315,6 +334,7 @@ async function refreshData() {
       vulns:      vulns.length,
       compliance: compliance.length,
       identities: identities.length,
+      secrets:    secrets.length,
     },
   };
 
@@ -1972,6 +1992,7 @@ function buildReportHtml(data, meta) {
   const vulns      = data.vulns      || [];
   const compliance = data.compliance || [];
   const identities = data.identities || [];
+  const secrets    = data.secrets    || [];
 
   // Server-side posture score (mirrors client calcPostureScore)
   function calcScore(d) {
@@ -2117,6 +2138,7 @@ function buildReportHtml(data, meta) {
     compliance.length ? '<a href="#compliance" class="toc-card"><div class="tc-num">02 — Compliance</div><div class="tc-title">Critical Non-Compliance</div><div class="tc-sub">'+compliance.length+' control failure'+(compliance.length===1?'':'s')+'.</div></a>' : '',
     vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
+    secrets.length    ? '<a href="#secrets" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Exposed SSH Keys</div><div class="tc-sub">'+secrets.length+' SSH private key'+(secrets.length===1?'':'s')+' detected.</div></a>' : '',
   ].filter(Boolean).join('\n      ');
 
 
@@ -2157,6 +2179,61 @@ function buildReportHtml(data, meta) {
     '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
     '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
     '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
+  ) : '';
+
+  function inferCsp(hostname) {
+    const h = (hostname || '').toLowerCase();
+    if (/^ip-\d+|^i-[0-9a-f]{8,17}$|ec2|\.aws\.|amazon/.test(h)) return 'AWS';
+    if (/azure|-vm$|azurevm|msft/.test(h)) return 'Azure';
+    if (/gcp|google|^instance-[0-9]/.test(h)) return 'GCP';
+    return 'Unknown';
+  }
+  function permRisk(path) {
+    const p = path || '';
+    if (/\\/. test(p) || (p.length > 2 && p[1] === ':')) return 'Windows — restrict to owner account; remove Users/Everyone ACE';
+    if (p.startsWith('/tmp/')) return 'Linux /tmp — CRITICAL: world-readable directory; move immediately';
+    if (p.startsWith('/etc/')) return 'Linux /etc — root:root 600 required; no world/group read';
+    if (p.startsWith('/root/')) return 'Linux /root — root:root 600; accessible only by root';
+    if (p.startsWith('/home/')) return 'Linux /home — owner:owner 600; no group or world permissions';
+    if (/\.(pem|key|p12|pfx|crt)$/.test(p)) return 'Key/cert file — 600 (owner read-only); never world or group readable';
+    return 'Linux/Unix — verify 600 (owner read-only); audit with: stat -c "%a %U %G" &lt;path&gt;';
+  }
+  function secretRec(keyType) {
+    return (keyType || '').toLowerCase() === 'ssh-rsa'
+      ? 'Upgrade to ssh-ed25519 — stronger, faster, and immune to RSA timing attacks'
+      : '—';
+  }
+  function isRsaRisk(keyType) { return (keyType || '').toLowerCase() === 'ssh-rsa'; }
+
+  const secretRows = secrets.length ? secrets.map(function(r, i) {
+    const risky = isRsaRisk(r.SSH_KEY_TYPE);
+    const bg = risky ? ' style="background:#FDECEA;"' : (i % 2 ? ' style="background:#FAFAFA;"' : '');
+    return '<tr'+bg+'>' +
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>' +
+      '<td><span class="badge '+(inferCsp(r.HOSTNAME)==='AWS'?'badge-aws':inferCsp(r.HOSTNAME)==='Azure'?'badge-azure':inferCsp(r.HOSTNAME)==='GCP'?'badge-gcp':'badge-high')+'">'+esc(inferCsp(r.HOSTNAME))+'</span></td>' +
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.FILE_PATH||'—')+'</code></td>' +
+      '<td><span class="badge '+(risky?'badge-critical':'badge-mfa-on')+'">'+esc(r.SSH_KEY_TYPE||'—')+'</span></td>' +
+      '<td class="wide">'+esc(permRisk(r.FILE_PATH))+'</td>' +
+      '<td class="wide">'+esc(secretRec(r.SSH_KEY_TYPE))+'</td>' +
+      '</tr>';
+  }).join('') : '';
+
+  const rsaCount = secrets.filter(r => isRsaRisk(r.SSH_KEY_TYPE)).length;
+  const secretSummary = secrets.length === 0 ? '' :
+    '<div class="section-summary"><div class="ss-title">&#9650; Risk Summary — Secrets Posture</div>' +
+    (rsaCount > 0
+      ? '<p><strong style="color:#DA291C;">&#9888; Key Algorithm Risk:</strong> '+rsaCount+' of '+secrets.length+' detected SSH key'+(secrets.length===1?'':'s')+' use the legacy <code>ssh-rsa</code> algorithm. Migrate to <code>ssh-ed25519</code> — run <code>ssh-keygen -t ed25519</code> to generate replacements, then rotate and revoke legacy keys.</p>'
+      : '<p><strong style="color:#1E7A3E;">&#10003; No algorithm risk.</strong> All '+secrets.length+' detected key'+(secrets.length===1?'':'s')+' use modern algorithms. Verify file permissions are 600 (owner read-only) and rotate on a scheduled basis.</p>'
+    ) + '</div>';
+
+  const secretSection = secrets.length ? (
+    '<section id="secrets" class="pagebreak">\n<h2>5. Secrets — Exposed SSH Keys</h2>\n' +
+    '<table class="exec-table"><thead><tr>' +
+    '<th style="width:160px">Hostname</th><th style="width:70px">CSP</th>' +
+    '<th style="width:200px">File Path</th><th style="width:100px">SSH Key Type</th>' +
+    '<th style="width:200px">Permission Risk</th><th style="width:200px">Recommendation</th>' +
+    '</tr></thead><tbody>'+secretRows+'</tbody></table>\n' +
+    secretSummary + '\n</section>'
   ) : '';
 
   return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
@@ -2210,12 +2287,13 @@ function buildReportHtml(data, meta) {
   '<div class="kpi-card high"><div class="kpi-number">'+vulns.length+'</div><div class="kpi-label">Critical CVEs (Risk ≥ 9)</div></div>' +
   '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
   '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
+  (secrets.length ? '<div class="kpi-card info"><div class="kpi-number">'+secrets.length+'</div><div class="kpi-label">SSH Keys Detected</div></div>' : '') +
   '</div>\n' +
   '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
   'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
   '</section>\n' +
-  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' +
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretSection + '\n' +
   '<footer><p>RAPID CLOUD ASSESSMENT REPORT — Powered by FortiCNAPP · Prepared for '+esc(customer)+' · '+dateStr+'</p>' +
   '<p style="opacity:.55;font-size:.72rem;margin-top:.4rem">Confidential — for named recipient only. Alpha feature — generated from live dashboard cache.</p>' +
   '</footer>\n</body>\n</html>';

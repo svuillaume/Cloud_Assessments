@@ -2215,6 +2215,16 @@
             }
         }
     ],
+    "secrets": [
+        { "HOSTNAME": "FortiNac-node2",                              "FILE_PATH": "root/.ssh/id_rsa",                        "SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "ip-10-1-5-192.us-east-2.compute.internal",   "FILE_PATH": "Users/emoran/.ssh/fsoar-linux-key.pem",   "SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "ip-172-31-18-225.ca-central-1.compute.internal","FILE_PATH": "home/ubuntu/.ssh/samv_ssh.pem",         "SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "ip-10-1-5-192.us-east-2.compute.internal",   "FILE_PATH": "Users/adm_ana/.ssh/fsoar-linux-key.pem",  "SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "ip-10-1-5-192.us-east-2.compute.internal",   "FILE_PATH": "Users/fosterr_adm/.ssh/fsoar-linux-key.pem","SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "ip-172-31-18-225.ca-central-1.compute.internal","FILE_PATH": "home/ubuntu/.ssh/samv-ssh.pem",         "SSH_KEY_TYPE": "ssh-ed25519" },
+        { "HOSTNAME": "ip-10-0-5-149.ec2.internal",                  "FILE_PATH": "opt/zimbra/.ssh/zimbra_identity",         "SSH_KEY_TYPE": "ssh-rsa" },
+        { "HOSTNAME": "FortiNac-node1",                              "FILE_PATH": "root/.ssh/id_rsa",                        "SSH_KEY_TYPE": "ssh-rsa" }
+    ],
     "fetchedAt": "2026-04-20T20:41:11.740Z",
     "errors": {},
     "account": "partner-demo.lacework.net",
@@ -2223,6 +2233,7 @@
         "alerts": 4,
         "vulns": 10,
         "compliance": 7,
-        "identities": 9
+        "identities": 9,
+        "secrets": 8
     }
 }
