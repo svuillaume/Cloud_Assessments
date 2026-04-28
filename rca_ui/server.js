@@ -2008,59 +2008,108 @@ function buildReportHtml(data, meta) {
   // ── Alerts rows
   const alertRows = alerts.length ? alerts.map(function(r,i) {
     const desc = ((r.alertInfo && r.alertInfo.description)||'').replace(/\s+/g,' ').slice(0,200);
+    const timeStr = r.startTime ? new Date(r.startTime).toLocaleString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
     return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
-      '<td style="font-size:.75rem;color:#5A5A5A">'+esc(r.alertId||'—')+'</td>'+
+      '<td><small class="text-muted">'+esc(r.alertId||'—')+'</small></td>'+
       '<td><span class="badge badge-critical">Critical</span></td>'+
-      '<td><strong>'+esc(r.alertName||'—')+'</strong><br><small class="text-muted">'+esc(r.alertType||'')+'</small></td>'+
-      '<td style="white-space:nowrap">'+fmt(r.startTime)+'</td>'+
+      '<td class="wide"><strong>'+esc(r.alertName||'—')+'</strong></td>'+
+      '<td class="med"><small class="text-muted">'+esc(r.alertType||'—')+'</small></td>'+
+      '<td><small>'+esc(timeStr)+'</small></td>'+
+      '<td><span class="badge badge-critical" title="Attacker activity">Malicious</span></td>'+
       '<td class="wide">'+esc(desc||'—')+'</td>'+
+      '<td class="wide">This alert indicates anomalous behavior that may represent an active security incident or policy violation.</td>'+
+      '<td class="wide">Investigate the alert in FortiCNAPP; correlate with cloud activity logs; escalate if the activity is unauthorized.</td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">No critical alerts</td></tr>';
+  }).join('') : '<tr><td colspan="10" style="text-align:center;color:#999;padding:1.5rem">No critical alerts</td></tr>';
 
   // ── Vuln rows
   const vulnRows = vulns.length ? vulns.map(function(r,i) {
     const rs  = parseFloat(r.riskScore||0);
-    const fix = (r.fixInfo && r.fixInfo.fixed_version) ? '→ '+r.fixInfo.fixed_version :
-                (r.fixInfo && r.fixInfo.fix_available)  ? 'Fix available' : 'No fix yet';
+    const pkg = (r.featureKey && r.featureKey.name) || '—';
+    const ver = (r.featureKey && r.featureKey.version) || '';
+    const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
+    const fixCell = fixVer ? 'Update <strong>'+esc(pkg)+'</strong> to '+esc(fixVer) :
+                    (r.fixInfo && r.fixInfo.fix_available) ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
+    const outcome = rs >= 10
+      ? 'Full system compromise enabling ransomware deployment, data exfiltration, or lateral movement.'
+      : 'Remote code execution enabling host compromise, data exfiltration, or privilege escalation.';
     return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
       '<td><span class="badge badge-critical">Critical</span></td>'+
-      '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong></td>'+
-      '<td><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
+      '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong><br><small class="text-muted">'+esc((r.evalCtx&&r.evalCtx.imageId)?'Container':'Host')+'</small></td>'+
+      '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
       '<td class="med">'+esc((r.evalCtx&&r.evalCtx.hostname)||r.mid||'—')+'</td>'+
-      '<td><strong>'+esc((r.featureKey&&r.featureKey.name)||'—')+'</strong></td>'+
-      '<td>'+esc(fix)+'</td>'+
+      '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
+      '<td class="wide">'+esc(outcome)+'</td>'+
+      '<td class="med">'+fixCell+'</td>'+
+      '<td><span class="badge badge-critical">Immediate</span></td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No critical CVEs</td></tr>';
+  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No critical CVEs</td></tr>';
 
   // ── Compliance rows
+  function compServiceArea(title) {
+    const t = (title||'').toLowerCase();
+    if (/mfa|multi.factor|authenticat|iam|identity|access|password/.test(t)) return 'Identity &amp; Access';
+    if (/encrypt|kms|key|tls|ssl/.test(t)) return 'Data Protection';
+    if (/s3|bucket|storage|object/.test(t)) return 'Storage Security';
+    if (/network|vpc|sg|security.group|firewall|port/.test(t)) return 'Network Security';
+    if (/log|audit|trail|monitor|cloudtrail/.test(t)) return 'Logging &amp; Audit';
+    if (/backup|snapshot|recovery/.test(t)) return 'Resilience';
+    return 'Cloud Security';
+  }
   const compRows = compliance.length ? compliance.map(function(r,i) {
-    const bg = (r.severity||'').toLowerCase()==='critical' ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    const isCrit = (r.severity||'').toLowerCase()==='critical';
+    const bg = isCrit ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    const svcArea = compServiceArea(r.title);
+    const ctxRisk = 'Misconfigured or non-compliant control expands the attack surface, enabling unauthorized access or data exposure across '+((r.cloud||'cloud').toUpperCase())+' resources.';
+    const bizImpact = 'Regulatory non-compliance, potential data breach, audit failure, and reputational risk.';
+    const recFix = (r.description||'').slice(0,200) || 'Remediate the control violation per the policy guidance and re-evaluate in FortiCNAPP.';
     return '<tr'+bg+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
       '<td>'+sevBadge(r.severity)+'</td>'+
-      '<td>'+cspBadge(r.cloud)+'</td>'+
-      '<td class="med"><strong>'+esc(r.title||'—')+'</strong><br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
-      '<td class="wide">'+esc((r.description||'—').slice(0,240))+'</td>'+
-      '<td style="text-align:center;font-weight:700">'+esc(r.violations||0)+'</td>'+
+      '<td class="wide"><strong>'+esc(r.title||'—')+'</strong></td>'+
+      '<td class="med">'+cspBadge(r.cloud)+'<br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
+      '<td class="med">'+svcArea+'</td>'+
+      '<td class="wide">'+esc(ctxRisk)+'</td>'+
+      '<td class="wide">'+esc(bizImpact)+'</td>'+
+      '<td class="wide">'+esc(recFix)+'</td>'+
+      '<td><span class="badge badge-critical">Immediate</span></td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">No compliance findings</td></tr>';
+  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No compliance findings</td></tr>';
 
   // ── Identity rows
   const idRows = identities.length ? identities.map(function(r,i) {
-    const rs    = (r.METRICS && r.METRICS.risk_score) || 0;
-    const rsVal = Math.round(rs*100);
-    const mfa   = r.MFA_ENABLED ? '<span class="badge badge-mfa-on">MFA ON</span>' : '<span class="badge badge-mfa-off">NO MFA</span>';
-    const bg    = rs>0.6 ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+    const risks   = (r.METRICS && r.METRICS.risks) || [];
+    const rs      = (r.METRICS && r.METRICS.risk_score) || 0;
+    const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
+    const noMfa   = risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+    const unusedCnt = (r.ENTITLEMENT_COUNTS && r.ENTITLEMENT_COUNTS.entitlements_unused_count);
+    const totalCnt  = (r.ENTITLEMENT_COUNTS && r.ENTITLEMENT_COUNTS.entitlements_count);
+    const idlePct = (unusedCnt != null && totalCnt) ? ((unusedCnt/totalCnt)*100).toFixed(0)+'%' : (unusedCnt != null ? unusedCnt : '—');
+    const privBadge = isAdmin ? '<span class="badge badge-critical">Admin</span>' : '<span class="badge badge-high">Privileged</span>';
+    const mfaBadge  = noMfa   ? '<span class="badge badge-mfa-off">No MFA</span>' : '<span class="badge badge-mfa-on">MFA ON</span>';
+    const riskNarr  = isAdmin && noMfa
+      ? '<strong class="text-critical">CRITICAL:</strong> Full admin with no MFA — single credential theft enables complete environment compromise.'
+      : isAdmin
+        ? '<strong class="text-critical">HIGH:</strong> Full admin privileges — any compromise allows unrestricted access to all resources.'
+        : '<strong class="text-critical">HIGH:</strong> No MFA on privileged account — credential theft risk with no second factor protection.';
+    const recFix = isAdmin && noMfa
+      ? 'Enforce MFA immediately. Replace standing admin with JIT privilege escalation.'
+      : isAdmin
+        ? 'Apply least-privilege policy; remove wildcard permissions; audit all actions.'
+        : 'Enable MFA immediately; rotate credentials; review recent activity.';
+    const bg = rs>0.6 ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
     return '<tr'+bg+'>'+
-      '<td class="narrow">'+(i+1)+'</td>'+
-      '<td><strong>'+esc(r.NAME||r.PRINCIPAL_ID||'—')+'</strong><br><small class="text-muted">'+esc(r.PROVIDER_TYPE||'')+'</small></td>'+
-      '<td>'+mfa+'</td>'+
-      '<td><span class="risk-chip'+(rsVal<80?' high':'')+'">'+rsVal+'</span></td>'+
-      '<td>'+fmt(r.LAST_USED_TIME)+'</td>'+
+      '<td><strong>'+esc(r.NAME||r.PRINCIPAL_ID||'—')+'</strong><br><small class="text-muted">'+esc(r.PRINCIPAL_ID||r.PROVIDER_TYPE||'')+'</small></td>'+
+      '<td>'+privBadge+'</td>'+
+      '<td>'+mfaBadge+'</td>'+
+      '<td>'+(r.LAST_USED_TIME ? fmt(r.LAST_USED_TIME) : '<span class="text-muted">Never / Unknown</span>')+'</td>'+
+      '<td style="text-align:center">'+(unusedCnt!=null ? '<strong class="text-critical">'+idlePct+'</strong><br><small class="text-muted">idle</small>' : '—')+'</td>'+
+      '<td class="wide">'+riskNarr+'</td>'+
+      '<td class="wide">'+esc(recFix)+'</td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
+  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
 
   // ── Build HTML ──────────────────────────────────────────────────────────────
   const tocCards = [
@@ -2072,39 +2121,41 @@ function buildReportHtml(data, meta) {
 
 
   const alertSection = alerts.length ? (
-    '<section id="alerts" class="pagebreak">\n' +
-    '<h2>1. Critical Alerts</h2>\n' +
+    '<section id="alerts" class="pagebreak">\n<h2>1. Critical Alerts</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:65px">Alert ID</th><th style="width:75px">Severity</th>' +
-    '<th style="width:210px">Alert Name</th><th style="width:110px">Date</th><th>Description</th>' +
+    '<th class="narrow">#</th><th style="width:50px">ID</th><th style="width:55px">Severity</th>' +
+    '<th style="width:150px">Alert</th><th style="width:100px">Type</th><th style="width:105px">Time</th>' +
+    '<th style="width:130px">IP or Domain Reputation</th><th style="width:160px">Description</th>' +
+    '<th style="width:150px">Why It Matters</th><th style="width:160px">Recommended Next Action</th>' +
     '</tr></thead><tbody>'+alertRows+'</tbody></table>\n</section>'
   ) : '';
 
   const compSection = compliance.length ? (
-    '<section id="compliance" class="pagebreak">\n' +
-    '<h2>2. Critical Non-Compliance Findings</h2>\n' +
+    '<section id="compliance" class="pagebreak">\n<h2>2. Critical Non-Compliance Findings</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:80px">Severity</th><th style="width:70px">Cloud</th>' +
-    '<th style="width:210px">Policy / Finding</th><th>Description</th><th style="width:80px;text-align:center">Violations</th>' +
+    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:200px">Finding</th>' +
+    '<th style="width:120px">Cloud Scope</th><th style="width:90px">Service Area</th>' +
+    '<th style="width:180px">Contextual Risk</th><th style="width:180px">Business Impact</th>' +
+    '<th style="width:180px">Recommended Fix</th><th style="width:70px">Priority</th>' +
     '</tr></thead><tbody>'+compRows+'</tbody></table>\n</section>'
   ) : '';
 
   const vulnSection = vulns.length ? (
-    '<section id="vulnerabilities" class="pagebreak">\n' +
-    '<h2>3. Critical CVE Vulnerabilities</h2>\n' +
+    '<section id="vulnerabilities" class="pagebreak">\n<h2>3. Critical CVE Vulnerabilities</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:75px">Severity</th><th style="width:150px">CVE</th>' +
-    '<th style="width:75px">Risk Score</th><th style="width:150px">Affected Host</th>' +
-    '<th style="width:130px">Package</th><th style="width:120px">Fix Version</th>' +
+    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+    '<th style="width:60px">Risk Score</th><th style="width:140px">Affected Resource</th>' +
+    '<th style="width:130px">Package / Version</th><th style="width:200px">Attacker Outcome if Exploited</th>' +
+    '<th style="width:130px">Recommended Fix</th><th style="width:65px">Priority</th>' +
     '</tr></thead><tbody>'+vulnRows+'</tbody></table>\n</section>'
   ) : '';
 
   const idSection = identities.length ? (
-    '<section id="identity" class="pagebreak">\n' +
-    '<h2>4. Identity Risk</h2>\n' +
+    '<section id="identity" class="pagebreak">\n<h2>4. Identity Risk</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:220px">Identity</th>' +
-    '<th style="width:90px">MFA</th><th style="width:90px">Risk Score</th><th style="width:130px">Last Active</th>' +
+    '<th style="width:160px">Identity</th><th style="width:80px">Privilege</th><th style="width:65px">MFA</th>' +
+    '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
+    '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
     '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
   ) : '';
 
