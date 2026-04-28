@@ -701,7 +701,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="view active" id="view-overview">
   <div class="pie-section">
     <div style="text-align:center;line-height:1.3">
-      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Fortinet Cloud Risk IQ</div>
+      <div style="font-size:15px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C">Cloud Security Posture Score</div>
     </div>
     <svg id="gauge-svg" viewBox="0 0 400 230" style="display:block;width:100%;max-width:420px;overflow:visible;margin:0 auto">
       <defs>
@@ -725,9 +725,8 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <!-- White divider ticks at band boundaries 50 / 80 -->
       <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
       <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
-      <!-- Band description label -->
-      <text id="gauge-band" x="200" y="178" text-anchor="middle" font-size="15" font-weight="700"
-            letter-spacing="0.4" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
+      <text id="gauge-score" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900"
+            letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="#94a3b8">—</text>
     </svg>
     <div class="rs-band" id="rs-band" style="display:none">—</div>
     <!-- Findings summary below gauge -->
@@ -986,7 +985,7 @@ function nav(name){
 
 let _lastData=null;
 
-// Fortinet Cloud Risk IQ (Rick Score): higher = better posture (0–100).
+// Cloud Security Posture Score (Rick Score): higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100 (perfect).
 // CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
 function calcPostureScore(d){
@@ -1006,8 +1005,6 @@ function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const rn=document.getElementById('rf-num');if(rn){rn.textContent=p;rn.style.color=color;}
-  const rb=document.getElementById('rf-band');if(rb){rb.textContent=band;rb.style.color=color;}
   const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
@@ -1045,7 +1042,7 @@ function renderLab(d){
   if((d.alerts||[]).length) actions.push({cls:'p2',n:actions.length+1,tab:'alerts',text:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length) actions.push({cls:'p3',n:actions.length+1,tab:'vulns',text:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) actions.push({cls:'p4',n:actions.length+1,tab:'compliance',text:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Fortinet Cloud Risk IQ: '+p+'/100'});
+  if(!actions.length) actions.push({cls:'p4',n:1,tab:'overview',text:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
   const clrMap={p1:'var(--cr)',p2:'var(--hi)',p3:'var(--me)',p4:'var(--ok)'};
   document.getElementById('lab-actions').innerHTML=actions.map(a=>'<div class="lab-step"><div class="lab-step-bar" style="background:'+clrMap[a.cls]+'"></div><div class="lab-step-n">'+a.n+'</div><div><div class="lab-step-title"><a href="#" data-tab="'+a.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor;cursor:pointer">'+a.text+'</a></div><div class="lab-step-sub">'+e(a.sub)+'</div></div></div>').join('');
 }
@@ -1081,13 +1078,12 @@ async function load(){
 
 function updateRiskScore(p){
   const color=scoreColor(p);
-  const band=scoreBand(p);
   const arcLen=550;
   const fill=(p/100)*arcLen;
   const arc=document.getElementById('gauge-arc');
   if(arc){arc.setAttribute('stroke-dasharray',fill+' '+arcLen);}
-  const gb=document.getElementById('gauge-band');
-  if(gb){gb.textContent=band;gb.setAttribute('fill',color);}
+  const gs=document.getElementById('gauge-score');
+  if(gs){gs.textContent=p;gs.setAttribute('fill',color);}
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
@@ -1141,7 +1137,7 @@ const MOBILE_HTML = `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Fortinet Cloud Risk IQ</title>
+<title>Cloud Security Posture Score</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 16px 48px}
@@ -1173,7 +1169,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </head>
 <body>
 <div class="logo">Fortinet</div>
-<div class="subtitle">Your current Fortinet Cloud Risk IQ</div>
+<div class="subtitle">Your current Cloud Security Posture Score</div>
 <div class="gauge-wrap">
   <svg viewBox="0 0 400 230" style="display:block;width:100%;overflow:visible">
     <defs>
@@ -1190,9 +1186,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
     <line x1="200" y1="47" x2="200" y2="13"  stroke="white" stroke-width="3" stroke-linecap="round"/>
     <line x1="328" y1="112" x2="355" y2="92" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
   </svg>
 </div>
-<div class="band" id="band">—</div>
 <div class="tiles">
   <div class="tile tile-a"><div class="tile-lbl">Critical Alerts</div><div class="tile-val" id="t-a">—</div></div>
   <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
@@ -1224,7 +1220,7 @@ function buildSteps(d,p){
   if((d.alerts||[]).length)     items.push({color:'#f97316',title:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
   if((d.vulns||[]).length)      items.push({color:'#f59e0b',title:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
   if((d.compliance||[]).length) items.push({color:'#3b82f6',title:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if(!items.length) items.push({color:'#22c55e',title:'Security posture is excellent — keep monitoring',sub:'Fortinet Cloud Risk IQ: '+p+'/100'});
+  if(!items.length) items.push({color:'#22c55e',title:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
   document.getElementById('steps').innerHTML=items.map(function(a,i){
     return '<div class="step"><div class="step-bar" style="background:'+a.color+'"></div><div class="step-n">'+(i+1)+'</div><div class="step-body"><div class="step-title">'+a.title+'</div><div class="step-sub">'+a.sub+'</div></div></div>';
   }).join('');
@@ -1234,8 +1230,7 @@ function refresh(){
     var p=calcScore(d);
     var color=scoreColor(p);
     document.getElementById('garc').setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
-    var band=document.getElementById('band');
-    band.textContent=scoreBand(p);band.style.color=color;
+    var ms=document.getElementById('mscore');if(ms){ms.textContent=p;ms.setAttribute('fill',color);}
     document.getElementById('t-a').textContent=(d.alerts||[]).length;
     document.getElementById('t-v').textContent=(d.vulns||[]).length;
     document.getElementById('t-i').textContent=(d.identities||[]).length;
