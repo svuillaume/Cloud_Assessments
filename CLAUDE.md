@@ -74,7 +74,7 @@ Score is 0–100, **higher = better posture**:
 ```
 postureScore = 100 − mean(findingRiskScores)
 ```
-Per-category risk weights fed into the mean: alerts→95, vulns→`riskScore×10` (capped 100), compliance→80, identities→`risk_score×100` (capped 100). No findings → score 100.
+Per-category risk weights fed into the mean: alerts→95, vulns→`riskScore×10` (capped 100), compliance→80, identities→`risk_score×100` (capped 100), secrets→90. No findings → score 100.
 
 Bands: ≥90 Green (Proactive Security) · 60–89 Orange (Some Attention Needed) · 0–59 Red (URGENT – Attention Needed).
 

@@ -40,6 +40,7 @@ Each active finding contributes a **risk weight** to the pool. The mean of all w
 | Critical CVEs | `riskScore × 10` (max 100) | CVEs with risk score ≥ 9.0 |
 | Compliance Violations | 80 | Critical control violations |
 | Identity Risk | `risk_score × 100` (max 100) | Admin identities with MFA gaps |
+| Secrets | 90 | Each secret detected via `LW_HE_SECRETS_ALL` |
 
 ---
 

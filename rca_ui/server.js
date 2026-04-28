@@ -705,6 +705,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Identities
   </div>
+  <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
+    <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    Secrets
+  </div>
   <div class="sb-sect">Risk Center</div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
@@ -782,24 +786,20 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   </div>
   <!-- Score legend — grey area, left-aligned -->
   <div style="padding:20px 28px 4px">
-    <div style="max-width:360px;border-radius:10px;overflow:hidden;border:1px solid #dde2ea;font-family:-apple-system,Inter,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.05)">
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;background:#eaecf2;padding:5px 12px;border-bottom:1px solid #dde2ea">
-        <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">SCORE</div>
+    <div style="max-width:280px;border-radius:10px;overflow:hidden;border:1px solid #dde2ea;font-family:-apple-system,Inter,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.05)">
+      <div style="display:grid;grid-template-columns:1fr 68px;background:#eaecf2;padding:5px 12px;border-bottom:1px solid #dde2ea">
         <div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:.08em;padding-left:4px">POSTURE</div>
         <div style="font-size:10px;font-weight:700;color:#64748b;text-align:center;letter-spacing:.08em">COLOR</div>
       </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">90–100</div>
+      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
         <div style="font-size:12px;color:#334155;padding-left:4px">Proactive Security</div>
         <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#22c55e">Green</span></div>
       </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">60–89</div>
+      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;border-bottom:1px solid #e2e8f0;align-items:center;background:#ffffff">
         <div style="font-size:12px;color:#334155;padding-left:4px">Some Attention Needed</div>
         <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#f59e0b">Orange</span></div>
       </div>
-      <div style="display:grid;grid-template-columns:72px 1fr 68px;padding:6px 12px;align-items:center;background:#ffffff">
-        <div style="font-size:12px;font-weight:700;color:#0f172a;text-align:center">0–59</div>
+      <div style="display:grid;grid-template-columns:1fr 68px;padding:6px 12px;align-items:center;background:#ffffff">
         <div style="font-size:12px;color:#334155;padding-left:4px">URGENT – Attention Needed</div>
         <div style="display:flex;align-items:center;justify-content:center;gap:4px"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0"></div><span style="font-size:11px;font-weight:600;color:#ef4444">Red</span></div>
       </div>
@@ -859,6 +859,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <span class="vh-badge" id="cnt-i">—</span>
   </div>
   <div id="body-i"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Secrets ═══ -->
+<div class="view" id="view-secrets-all">
+  <div class="view-hdr vha-purple">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Discovered Secrets</div>
+      <div class="vh-sub">LW_HE_SECRETS_ALL · SSH keys, API tokens &amp; credentials detected on hosts</div>
+    </div>
+    <span class="vh-badge" id="cnt-sa">—</span>
+  </div>
+  <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
 <!-- ═══ View: Risk Findings ═══ -->
@@ -1044,6 +1057,25 @@ function renderIdentities(rows,err){
     }).join('')+'</tbody></table></div>');
 }
 
+function renderSecretsAll(rows,err){
+  const el=document.getElementById('t-sa');if(el)el.textContent=rows?rows.length:'—';
+  setCount('cnt-sa',rows?rows.length:0,true);
+  if(err){state('body-sa','',err);return}
+  if(!rows||!rows.length){state('body-sa','','No secrets detected');return}
+  setBody('body-sa','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Instance ID</th><th>OS</th><th>Secret Type</th><th>Secret Identifier</th><th>Last Seen</th></tr></thead><tbody>'
+    +rows.map((r,i)=>{
+      const lastSeen=r.END_TIME?fmtDate(r.END_TIME):'—';
+      return'<tr class="'+(i%2?'':'')+(r.SECRET_TYPE?.toLowerCase().includes('key')||r.SECRET_TYPE?.toLowerCase().includes('token')?'strip-cr':'strip-hi')+'">'
+        +'<td class="p">'+e(r.HOSTNAME||'—')+'</td>'
+        +'<td class="m"><small>'+e(r.MID||'—')+'</small></td>'
+        +'<td>'+e(r.OS||'—')+'</td>'
+        +'<td><span class="b b-cr">'+e(r.SECRET_TYPE||'—')+'</span></td>'
+        +'<td class="p"><code style="font-size:11px">'+e(r.SECRET_IDENTIFIER||'—')+'</code></td>'
+        +'<td class="m">'+lastSeen+'</td>'
+      +'</tr>';
+    }).join('')+'</tbody></table></div>');
+}
+
 function nav(name){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('active'));
@@ -1055,13 +1087,14 @@ let _lastData=null;
 
 // Cloud Security Posture Score (Rick Score): higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100 (perfect).
-// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80
+// CVE: riskScore×10  |  Identity: METRICS.risk_score×100  |  Alert: 95  |  Compliance: 80  |  Secret: 90
 function calcPostureScore(d){
   const risks=[];
   (d.alerts||[]).forEach(()=>risks.push(95));
   (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
   (d.compliance||[]).forEach(()=>risks.push(80));
   (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
+  (d.secretsAll||[]).forEach(()=>risks.push(90));
   if(!risks.length) return 100;
   return Math.round(100 - risks.reduce((s,v)=>s+v,0)/risks.length);
 }
@@ -1123,6 +1156,7 @@ async function load(){
     renderVulns(d.vulns,d.errors?.vulns);
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
+    renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
     updateRiskScore(calcPostureScore(d));
     renderRiskFindings(d);
     renderLab(d);
@@ -1284,6 +1318,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
   <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
   <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
+  <div class="tile tile-i" onclick="nav('secrets-all')" style="cursor:pointer"><div class="tile-lbl">Secrets</div><div class="tile-val" id="t-sa">—</div></div>
 </div>
 <hr class="divider">
 <div class="sec-title">Recommended Next Steps</div>
@@ -2022,6 +2057,7 @@ function buildReportHtml(data, meta) {
     (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
     (d.compliance||[]).forEach(() => r.push(80));
     (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
+    (d.secretsAll||[]).forEach(() => r.push(90));
     if (!r.length) return 100;
     return Math.round(100 - r.reduce((s,v) => s+v, 0) / r.length);
   }
