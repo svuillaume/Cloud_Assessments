@@ -3,16 +3,14 @@
 !.env.example
 *.json
 
+# OS
+.DS_Store
+
 # Runtime data
 rca_ui/contacts.csv
 rca_ui/users.json
 
 # Generated outputs
+*.png
 *.pdf
 rca.html
-
-# Python
-venv/
-__pycache__/
-*.pyc
-*.log
