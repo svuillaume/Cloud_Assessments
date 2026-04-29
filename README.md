@@ -1,6 +1,6 @@
 # Fortinet Rapid Cloud Assessment
 
-A live security dashboard and customer-ready PDF report powered by the FortiCNAPP API.
+A live security dashboard and customer-ready report powererd by FortiCNAPP.
 
 ---
 
