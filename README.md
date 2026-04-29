@@ -1,6 +1,6 @@
 # Fortinet Rapid Cloud Assessment
 
-A live security dashboard and customer-ready report powererd by FortiCNAPP.
+A live security dashboard and Customer-ready Cloud Rapid Assessment Report powererd by FortiCNAPP.
 
 ---
 
