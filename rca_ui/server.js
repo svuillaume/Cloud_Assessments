@@ -750,10 +750,18 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     CSPM Score
   </div>
+  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
+    Risk Findings Inventory
+  </div>
   <div class="sb-sect">Threat Center</div>
   <div class="sb-item" id="nav-alerts" onclick="nav('alerts')">
     <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
     High Fidelity Alerts
+  </div>
+  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
+    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
+    Correlated Risk / Asset
   </div>
   <div class="sb-sect">Risk Findings</div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
@@ -771,14 +779,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
-  </div>
-  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
-    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
-    Correlated Risk / Asset
-  </div>
-  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
-    Risk Findings Inventory
   </div>
   <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-lab" onclick="nav('lab')">
@@ -1713,6 +1713,7 @@ setInterval(()=>{
   const el=document.getElementById('countdown');
   if(el)el.textContent='Next refresh in '+fmtSec(cd);
 },1000);
+(function(){var h=location.hash.replace('#','');if(h&&document.getElementById('view-'+h))nav(h);})();
 
 </script>
 
@@ -1736,32 +1737,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .subtitle{font-size:20px;font-weight:800;color:#0f172a;text-align:center;line-height:1.3;margin-bottom:20px;max-width:320px}
 .gauge-wrap{width:100%;max-width:340px;margin:0 auto}
 .band{font-size:15px;font-weight:700;text-align:center;margin-top:2px;min-height:22px;transition:color .4s}
-.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%;max-width:340px;margin-top:20px}
-.tile{background:#fff;border-radius:12px;padding:14px 12px;box-shadow:0 1px 4px rgba(0,0,0,.07);text-align:center}
-.tile-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
-.tile-val{font-size:32px;font-weight:900;color:#0f172a;line-height:1}
-.tile-a .tile-lbl{color:#ef4444}
-.tile-v .tile-lbl{color:#f97316}
-.tile-i .tile-lbl{color:#8b5cf6}
-.tile-c .tile-lbl{color:#f59e0b}
 .divider{width:100%;max-width:340px;border:none;border-top:1px solid #e2e8f0;margin:28px 0 20px}
 .sec-title{font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#64748b;width:100%;max-width:340px;margin-bottom:12px}
 .steps{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px}
 .step{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.07);display:flex;gap:12px;align-items:flex-start}
+a.step{text-decoration:none;color:inherit;display:flex;transition:box-shadow .15s}
+a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
 .step-bar{width:4px;border-radius:4px;flex-shrink:0;align-self:stretch;min-height:36px}
 .step-n{font-size:13px;font-weight:900;color:#94a3b8;flex-shrink:0;padding-top:1px}
 .step-body{}
 .step-title{font-size:13px;font-weight:700;color:#0f172a;line-height:1.4}
 .step-sub{font-size:11px;color:#94a3b8;margin-top:3px;line-height:1.4}
-.assets{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px}
-.asset-card{background:#fff;border-radius:12px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
-.asset-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.asset-rank{font-size:17px;font-weight:900;width:28px;flex-shrink:0}
-.asset-name{font-size:12px;font-weight:700;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.asset-score{font-size:20px;font-weight:900;flex-shrink:0}
-.asset-bar-bg{height:6px;background:#f1f5f9;border-radius:4px;margin-bottom:8px}
-.asset-bar{height:6px;border-radius:4px;transition:width .8s}
-.asset-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;border:1px solid;margin-right:4px}
 .meta{margin-top:28px;font-size:11px;color:#94a3b8;text-align:center;line-height:2}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#94a3b8;margin-right:4px;vertical-align:middle}
 .dot.ok{background:#22c55e}.dot.err{background:#ef4444}
@@ -1792,16 +1778,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </svg>
 </div>
 <div id="m-band" class="band" style="font-size:13px;font-weight:800;text-align:center;margin-top:-4px;margin-bottom:8px;letter-spacing:.04em">—</div>
-<div class="tiles">
-  <div class="tile tile-a"><div class="tile-lbl">High Fidelity Alerts</div><div class="tile-val" id="t-a">—</div></div>
-  <div class="tile tile-v"><div class="tile-lbl">Critical CVEs</div><div class="tile-val" id="t-v">—</div></div>
-  <div class="tile tile-i"><div class="tile-lbl">Risky Identities</div><div class="tile-val" id="t-i">—</div></div>
-  <div class="tile tile-c"><div class="tile-lbl">Non-Compliance</div><div class="tile-val" id="t-c">—</div></div>
-  <div class="tile tile-i" onclick="nav('secrets-all')" style="cursor:pointer"><div class="tile-lbl">Secrets</div><div class="tile-val" id="t-sa">—</div></div>
-</div>
-<hr class="divider">
-<div class="sec-title">Correlated Risk Findings per Asset</div>
-<div class="assets" id="m-assets"><div style="font-size:12px;color:#94a3b8;text-align:center;padding:8px 0">Loading…</div></div>
 <hr class="divider">
 <div class="sec-title">Recommended Next Steps</div>
 <div class="steps" id="steps"></div>
@@ -1821,52 +1797,23 @@ function calcScore(d){
   (d.secretsAll||[]).forEach(function(){risks.push(75);});
   return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
-function buildAssets(d){
-  var map={};
-  function get(host,mid){var k=host||mid||'?';if(!map[k])map[k]={name:host||mid||'?',vulns:[],secrets:[],risk:0};return map[k];}
-  (d.vulns||[]).forEach(function(r){
-    var host=r.evalCtx&&(r.evalCtx.hostname||r.evalCtx.mid)||'';if(!host)return;
-    var w=Math.min(100,parseFloat(r.riskScore||0)*10);
-    get(host).vulns.push(r.vulnId||'');get(host).risk+=w;
-  });
-  (d.secretsAll||[]).forEach(function(r){
-    var host=r.HOSTNAME||r.MID||'';if(!host)return;
-    get(host).secrets.push(r.SECRET_TYPE||'');get(host).risk+=50;
-  });
-  var all=Object.values(map).filter(function(a){return a.risk>0;}).sort(function(a,b){return b.risk-a.risk;});
-  var maxRisk=all.length?all[0].risk:1;
-  var sorted=all.filter(function(a){return Math.round(a.risk/maxRisk*100)>20;}).slice(0,6);
-  var el=document.getElementById('m-assets');if(!el)return;
-  if(!sorted.length){el.innerHTML='<div style="font-size:12px;color:#94a3b8;text-align:center;padding:8px 0">No significant asset risk detected</div>';return;}
-  var medalColor=['#ef4444','#f97316','#f59e0b','#94a3b8'];
-  el.innerHTML=sorted.map(function(a,i){
-    var score=Math.round(a.risk/maxRisk*100);
-    var col=score>=60?'#ef4444':score>=30?'#f59e0b':'#22c55e';
-    var rank=medalColor[Math.min(i,3)];
-    var badges='';
-    if(a.vulns.length)badges+='<span class="asset-badge" style="color:#f97316;border-color:#fed7aa">'+a.vulns.length+' CVE</span>';
-    if(a.secrets.length)badges+='<span class="asset-badge" style="color:#0ea5e9;border-color:#bae6fd">'+a.secrets.length+' Secret'+(a.secrets.length>1?'s':'')+'</span>';
-    return'<div class="asset-card">'
-      +'<div class="asset-row">'
-        +'<div class="asset-rank" style="color:'+rank+'">#'+(i+1)+'</div>'
-        +'<div class="asset-name" title="'+a.name+'">'+a.name+'</div>'
-        +'<div class="asset-score" style="color:'+col+'">'+score+'</div>'
-      +'</div>'
-      +'<div class="asset-bar-bg"><div class="asset-bar" style="width:'+score+'%;background:'+col+'"></div></div>'
-      +(badges?'<div style="margin-top:4px">'+badges+'</div>':'')
-    +'</div>';
-  }).join('');
-}
 function buildSteps(d,p){
   var items=[];
-  if((d.identities||[]).length) items.push({color:'#ef4444',title:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA & Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
-  if((d.alerts||[]).length)     items.push({color:'#f97316',title:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
-  if((d.vulns||[]).length)      items.push({color:'#f59e0b',title:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
-  if((d.compliance||[]).length) items.push({color:'#3b82f6',title:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
-  if((d.secretsAll||[]).length) items.push({color:'#0ea5e9',title:'Rotate '+d.secretsAll.length+' exposed secret'+(d.secretsAll.length===1?'':'s')+' detected on hosts',sub:'API keys, tokens & credentials — revoke and re-issue immediately'});
-  if(!items.length) items.push({color:'#22c55e',title:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
+  var hostRisk={};
+  (d.vulns||[]).forEach(function(r){var h=r.evalCtx&&(r.evalCtx.hostname||r.evalCtx.mid)||'';if(!h)return;hostRisk[h]=(hostRisk[h]||0)+Math.min(100,parseFloat(r.riskScore||0)*10);});
+  (d.secretsAll||[]).forEach(function(r){var h=r.HOSTNAME||r.MID||'';if(!h)return;hostRisk[h]=(hostRisk[h]||0)+50;});
+  var riskVals=Object.values(hostRisk);
+  var maxRisk=riskVals.length?Math.max.apply(null,riskVals):1;
+  var assetCount=riskVals.filter(function(v){return Math.round(v/maxRisk*100)>20;}).length;
+  if(assetCount>=1) items.push({color:'#6366f1',href:'/desktop#asset-risk',title:'Investigate '+assetCount+' asset'+(assetCount===1?'':'s')+' with Correlated Risk Findings',sub:'Hosts with combined CVEs and exposed secrets — highest priority targets'});
+  if((d.identities||[]).length) items.push({color:'#ef4444',href:'/desktop#identities',title:'Fix '+d.identities.length+' High Permissive '+(d.identities.length===1?'identity':'identities')+' — enable MFA & Apply Least Privilege Access',sub:'Priority 1 · Identity compromise is the #1 breach vector'});
+  if((d.alerts||[]).length)     items.push({color:'#f97316',href:'/desktop#alerts',title:'Investigate '+d.alerts.length+' open critical alert'+(d.alerts.length===1?'':'s'),sub:'Threat Center · Some may indicate an active breach'});
+  if((d.vulns||[]).length)      items.push({color:'#f59e0b',href:'/desktop#vulns',title:'Patch '+d.vulns.length+' critical CVE'+(d.vulns.length===1?'':'s')+' with risk score ≥ 9.0',sub:'Focus on internet-exposed hosts first'});
+  if((d.compliance||[]).length) items.push({color:'#3b82f6',href:'/desktop#compliance',title:'Remediate '+d.compliance.length+' non-compliant critical control'+(d.compliance.length===1?'':'s'),sub:'Compliance · Cloud misconfigurations'});
+  if((d.secretsAll||[]).length) items.push({color:'#0ea5e9',href:'/desktop#secrets-all',title:'Rotate '+d.secretsAll.length+' exposed secret'+(d.secretsAll.length===1?'':'s')+' detected on hosts',sub:'API keys, tokens & credentials — revoke and re-issue immediately'});
+  if(!items.length) items.push({color:'#22c55e',href:'/desktop',title:'Security posture is excellent — keep monitoring',sub:'Cloud Security Posture Score: '+p+'/100'});
   document.getElementById('steps').innerHTML=items.map(function(a,i){
-    return '<div class="step"><div class="step-bar" style="background:'+a.color+'"></div><div class="step-n">'+(i+1)+'</div><div class="step-body"><div class="step-title">'+a.title+'</div><div class="step-sub">'+a.sub+'</div></div></div>';
+    return '<a class="step" href="'+a.href+'"><div class="step-bar" style="background:'+a.color+'"></div><div class="step-n">'+(i+1)+'</div><div class="step-body"><div class="step-title">'+a.title+'</div><div class="step-sub">'+a.sub+'</div></div></a>';
   }).join('');
 }
 function refresh(){
@@ -1876,13 +1823,7 @@ function refresh(){
     document.getElementById('garc').setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
     var ms=document.getElementById('mscore');if(ms){ms.textContent=p;ms.setAttribute('fill',color);}
     var mb=document.getElementById('m-band');if(mb){mb.textContent=scoreBand(p);mb.style.color=color;}
-    document.getElementById('t-a').textContent=(d.alerts||[]).length;
-    document.getElementById('t-v').textContent=(d.vulns||[]).length;
-    document.getElementById('t-i').textContent=(d.identities||[]).length;
-    document.getElementById('t-c').textContent=(d.compliance||[]).length;
-    var tsa=document.getElementById('t-sa');if(tsa)tsa.textContent=(d.secretsAll||[]).length;
-    buildAssets(d);
-    buildSteps(d,p);
+buildSteps(d,p);
     document.getElementById('ldot').className='dot ok';
     document.getElementById('ltime').textContent=new Date().toLocaleTimeString();
   }).catch(function(){document.getElementById('ldot').className='dot err';});
