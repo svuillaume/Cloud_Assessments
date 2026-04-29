@@ -68,7 +68,7 @@ function request(method, hostname, path, headers, body) {
         resolve({ status: res.statusCode, body: parsed, raw });
       });
     });
-    req.setTimeout(12000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
     req.on('error', reject);
     if (payload) req.write(payload);
     req.end();
@@ -99,10 +99,15 @@ async function ensureToken() {
 
 async function withRetry(fn, label, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    const result = await fn();
-    if (result.status < 500) return result;
-    console.log(`  [retry] ${label} got ${result.status}, attempt ${i + 1}/${retries}`);
-    if (i < retries - 1) await new Promise(r => setTimeout(r, 1500 * (i + 1)));
+    try {
+      const result = await fn();
+      if (result.status < 500) return result;
+      console.log(`  [retry] ${label} got ${result.status}, attempt ${i + 1}/${retries}`);
+    } catch (e) {
+      console.log(`  [retry] ${label} error: ${e.message}, attempt ${i + 1}/${retries}`);
+      if (i === retries - 1) throw e;
+    }
+    await new Promise(r => setTimeout(r, 2000 * (i + 1)));
   }
   return fn();
 }
@@ -718,8 +723,39 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </div>
     </div>
     <div class="login-field">
-      <div class="login-label">Company</div>
-      <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
+      <div class="login-label">Job Title</div>
+      <select class="login-select" id="li-title">
+        <option value="">— Select your title —</option>
+        <option>CISO</option>
+        <option>CTO</option>
+        <option>CIO</option>
+        <option>VP of Engineering</option>
+        <option>VP of Security</option>
+        <option>Director of Security</option>
+        <option>Director of IT</option>
+        <option>Security Architect</option>
+        <option>Cloud Architect</option>
+        <option>Security Engineer</option>
+        <option>Cloud Security Engineer</option>
+        <option>DevOps / Platform Engineer</option>
+        <option>IT Manager</option>
+        <option>System Administrator</option>
+        <option>Security Analyst</option>
+        <option>Compliance Officer</option>
+        <option>Risk Manager</option>
+        <option>Sales / Pre-Sales Engineer</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div class="login-row">
+      <div class="login-field">
+        <div class="login-label">Company</div>
+        <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
+      </div>
+      <div class="login-field">
+        <div class="login-label">Email</div>
+        <input class="login-input" id="li-email" type="text" placeholder="jane@acme.com" autocomplete="email"/>
+      </div>
     </div>
     <button class="login-btn" onclick="submitLogin()">Access Dashboard</button>
     <div class="login-err" id="login-err"></div>
@@ -1608,7 +1644,7 @@ function showUserBadge(user){
   const initials=((user.first||'?')[0]+(user.last||'?')[0]).toUpperCase();
   document.getElementById('tb-avatar').textContent=initials;
   document.getElementById('tb-name').textContent=(user.first||'')+' '+(user.last||'');
-  document.getElementById('tb-role').textContent=user.company||'';
+  document.getElementById('tb-role').textContent=(user.title?user.title+' · ':'')+( user.company||'');
   document.getElementById('tb-admin-badge').style.display='none';
   document.getElementById('top-bar').style.display='flex';
   const acct=document.getElementById('acct-lbl');
@@ -1621,7 +1657,9 @@ function logout(){
   document.getElementById('login-overlay').style.display='flex';
   document.getElementById('li-first').value='';
   document.getElementById('li-last').value='';
+  document.getElementById('li-title').value='';
   document.getElementById('li-company').value='';
+  document.getElementById('li-email').value='';
   document.getElementById('login-err').textContent='';
 }
 
@@ -1638,16 +1676,20 @@ function logout(){
 function submitLogin(){
   const first=document.getElementById('li-first').value.trim();
   const last=document.getElementById('li-last').value.trim();
+  const title=document.getElementById('li-title').value;
   const company=document.getElementById('li-company').value.trim();
+  const email=document.getElementById('li-email').value.trim();
   const err=document.getElementById('login-err');
   if(!first||!last){err.textContent='Please enter your first and last name.';return;}
+  if(!title){err.textContent='Please select your job title.';return;}
   if(!company){err.textContent='Please enter your company name.';return;}
+  if(!email){err.textContent='Please enter your email address.';return;}
   err.textContent='';
   const handle=(first+(last.charAt(0))).toLowerCase();
-  const user={first,last,company,handle};
+  const user={first,last,title,company,email,handle};
   const userJson=JSON.stringify(user);
   sessionStorage.setItem('rca_user',userJson);
-  setCookie('rca_user',userJson,30);
+  setCookie('rca_user',userJson,30/1440);
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
   document.getElementById('login-overlay').style.display='none';
   wireReportBtn(user);
@@ -1656,6 +1698,7 @@ function submitLogin(){
 }
 
 document.getElementById('li-company').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
+document.getElementById('li-title').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
 
 setInterval(load,REFRESH*1000);
 
@@ -2864,14 +2907,14 @@ function requestHandler(req, res) {
     req.on('data', c => body += c);
     req.on('end', () => {
       try {
-        const { first, last, company } = JSON.parse(body);
+        const { first, last, title, company, email } = JSON.parse(body);
         const handle = ((first||'')+(last||'').charAt(0)).toLowerCase();
         const ts = new Date().toISOString();
-        const row = [ts, first, last, company, handle]
+        const row = [ts, first, last, title, company, email, handle]
           .map(v => `"${(v||'').replace(/"/g,'""')}"`)
           .join(',') + '\n';
         fs.appendFileSync(CONTACTS_CSV, row);
-        console.log(`[register] ${handle} — ${first} ${last} @ ${company}`);
+        console.log(`[register] ${handle} — ${first} ${last} (${title}) @ ${company} <${email}>`);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify({ ok: true }));
       } catch (e) {
