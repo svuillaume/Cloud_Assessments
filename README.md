@@ -1,385 +1,290 @@
-<div align="center">
+# Fortinet Rapid Cloud Assessment
 
-# 🛡️ FortiCNAPP Rapid Cloud Assessment
-
-**A beginner-friendly toolkit to assess the security of any cloud environment using [FortiCNAPP](https://www.fortinet.com/products/forticnapp) (Lacework CNAPP).**
-
-In 10 minutes you'll have a live security dashboard — powered by the **Fortinet Cloud Risk IQ** score — and a customer-ready PDF report.
-
-[![📄 View Sample Report](https://img.shields.io/badge/📄_View-Sample_Report-blue?style=for-the-badge)](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html)
-
-</div>
+A live security dashboard and customer-ready PDF report powered by the FortiCNAPP API.
 
 ---
 
-## 📖 Table of Contents
+## Table of Contents
 
-1. [What is this?](#-what-is-this)
-2. [Before you start](#-before-you-start)
-3. [Step 1 — Get your API Keys](#-step-1--get-your-api-keys)
-4. [Step 2 — Run the Live Dashboard](#-step-2--run-the-live-dashboard)
-5. [Step 3 — Generate a CSA Report](#-step-3--generate-a-csa-report)
-6. [Collecting Visitor Contacts](#-collecting-visitor-contacts)
-7. [Project Files](#-project-files)
-8. [Troubleshooting](#-troubleshooting)
-9. [FAQ](#-faq)
-
----
-
-## 🧭 What is this?
-
-This repository contains **two tools** that work together to help you assess a cloud environment:
-
-| # | Tool | File | What it does | When to use it |
-|---|------|------|--------------|----------------|
-| 1 | **Live Dashboard** | `rca_ui/server.js` | Real-time white-theme UI showing the **Fortinet Cloud Risk IQ** score, alerts, CVEs, identities, and compliance | Demos, workshops, live customer reviews |
-| 2 | **CSA Report Generator** | `lw_report_gen.py` | Generates a professional Cloud Security Assessment report in PDF or HTML | Leave-behinds, executive summaries, audits |
-
-> 💡 **New to CNAPP?** Start with the Dashboard in **mock mode** (no credentials required — see [Step 2](#-step-2--run-the-live-dashboard)).
-
-### Fortinet Cloud Risk IQ
-
-The dashboard computes a **0–100 risk score** — lower is better — from five live inputs:
-
-| Input | Saturates at | Max weight |
-|-------|:------------:|:----------:|
-| Critical CVEs (risk ≥ 9.0) | 15 | 2.5 |
-| Critical CVSS 10.0 CVEs | 10 | 1.5 |
-| Admins without MFA | 30 | 2.5 |
-| Critical alerts | 10 | 1.5 |
-| Critical non-compliance | 10 | 1.0 |
-
-| Score | Band | Color |
-|:-----:|------|:-----:|
-| 0–19 | Proactive Security | 🟢 |
-| 20–49 | Progressing Cloud Security Posture | 🔵 |
-| 50–79 | Some Attention Needed | 🟠 |
-| 80–100 | Immediate Attention Needed | 🔴 |
-
-See [SCORING_GUIDE.md](SCORING_GUIDE.md) for the full formula and worked example.
+1. [Overview](#overview)
+2. [Prerequisites](#prerequisites)
+3. [Quick Start](#quick-start)
+4. [Step-by-Step Setup](#step-by-step-setup)
+5. [Production Deployment with HTTPS](#production-deployment-with-https)
+6. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+7. [Updating the Dashboard](#updating-the-dashboard)
+8. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+9. [Troubleshooting](#troubleshooting)
+10. [Additional Resources](#additional-resources)
 
 ---
 
-## ✅ Before you start
+## Overview
 
-You'll need these installed on your machine. Click a link if you don't have one yet.
+This project provides two tools that work together to deliver cloud security insights from FortiCNAPP:
 
-| Tool | Why you need it | Install |
-|------|-----------------|---------|
-| 🐳 **Docker** | Runs the dashboard in a container so you don't have to install Node.js | [Get Docker](https://docs.docker.com/get-docker/) |
-| 🐍 **Python 3.10+** | Runs the CSA report generator | [Get Python](https://www.python.org/downloads/) |
-| 🔑 **FortiCNAPP account** | Source of the security data (skip if you only use mock mode) | Ask your admin |
-| 💻 **Terminal / shell** | To run the commands below | Built into macOS/Linux; Windows users: use WSL or Git Bash |
+| Tool | File | Purpose |
+|------|------|---------|
+| Live Dashboard | `rca_ui/server.js` | Real-time web UI displaying Cloud Security Posture Management score, alerts, CVEs, secrets, identities, and compliance data |
+| PDF Report | (generated from dashboard) | Customer-ready report exported from the live data |
 
-Verify everything is installed:
+The dashboard is a single Node.js file with no npm dependencies. You can run it directly with Node.js or inside a Docker container.
+
+---
+
+## Prerequisites
+
+Before you begin, make sure you have the following ready.
+
+### 1. Runtime Environment
+
+Choose one of the following:
+
+| Option | Download Link |
+|--------|---------------|
+| Node.js 18 or higher | https://nodejs.org |
+| Docker | https://docs.docker.com/get-docker/ |
+
+### 2. FortiCNAPP API Key
+
+1. Log in to your FortiCNAPP console
+2. Go to **Settings** → **API Keys**
+3. Click **Download** to save the JSON file
+4. Keep this file safe — you will need the values inside it
+
+> If you only want to test the dashboard, you can skip this step and run in mock mode.
+
+### 3. Public Domain Name (for production HTTPS only)
+
+You will need a domain name that points to your server's public IP address. Any DNS provider works. A free option is [DuckDNS](https://www.duckdns.org).
+
+---
+
+## Quick Start
+
+If you just want to see the dashboard running locally as fast as possible:
 
 ```bash
-docker --version     # should print: Docker version 2x.x.x
-python3 --version    # should print: Python 3.10+ or higher
+cd rca_ui
+node server.js
 ```
+
+Then open `http://localhost:8080` in your browser.
+
+For a production deployment with HTTPS, follow the full step-by-step guide below.
 
 ---
 
-## 🔑 Step 1 — Get your API Keys
+## Step-by-Step Setup
 
-> ⏭ **Want to skip this step?** You can — run the dashboard in **mock mode** (see Step 2). Come back here when you're ready to connect to a real account.
+### Step 1: Get the Code
 
-### 1.1 Log in to FortiCNAPP
-
-Open your FortiCNAPP console in a browser:
-
-```
-https://<your-account>.lacework.net
-```
-
-Replace `<your-account>` with your tenant name (e.g. `partner-demo.lacework.net`).
-
-### 1.2 Create an API Key
-
-Inside the console, navigate to:
-
-> **Settings → Configuration → API Keys → `+ Create New`**
-
-Give it a clear name (e.g. *"RCA Assessment — Sebastien"*) and click **Save**.
-
-### 1.3 Download the JSON file
-
-After creation, click **Download**. You'll get a JSON file that looks like this:
-
-```json
-{
-  "keyId":   "FORTINET_67A1D371ABCDEF1234567890",
-  "secret":  "_8dd983bbcac9a1b2c3d4e5f6g7h8",
-  "account": "partner-demo"
-}
-```
-
-### 1.4 Note the three values you'll need
-
-These are the three pieces of information the tools use to connect:
-
-| Variable | Where to find it | Example |
-|----------|-----------------|---------|
-| `LW_ACCOUNT` | Your console hostname (the part before `.lacework.net`) | `partner-demo.lacework.net` |
-| `LW_KEY_ID` | `keyId` field in the JSON file | `FORTINET_67A1D371...` |
-| `LW_SECRET` | `secret` field in the JSON file | `_8dd983bbcac9...` |
-
-> ⚠️ **Keep this JSON file secret.** Never commit it to git or paste it into Slack. Treat it like a password.
-
----
-
-## 🖥️ Step 2 — Run the Live Dashboard
-
-The dashboard is a web app that runs inside a Docker container. You'll build it once, then run it either with real credentials or in mock mode.
-
-### 2.1 Enter the dashboard folder
+Clone or download the repository to your server, then move into the dashboard folder:
 
 ```bash
 cd rca_ui
 ```
 
-### 2.2 Build the Docker image
+### Step 2: Create Your Configuration File
 
-This downloads everything the dashboard needs and packages it up. Only needs to be done **once** (or again after code updates).
-
-```bash
-docker build -t forticnapp-dashboard .
-```
-
-☕ *First build can take 1–3 minutes. Later runs are instant.*
-
-### 2.3 Choose how to run it
-
-#### Option A — Live mode (connects to FortiCNAPP)
-
-Use the keys from [Step 1](#-step-1--get-your-api-keys):
+Create a file named `.env` in the `rca_ui` folder. This file holds your settings and secrets.
 
 ```bash
-docker run -d --name rca -p 8080:8080 \
-  -e LW_ACCOUNT=your-account.lacework.net \
-  -e LW_KEY_ID=YOUR_KEY_ID \
-  -e LW_SECRET=YOUR_SECRET \
-  forticnapp-dashboard
+PORT=80
+DOMAIN=domain.yourdomain.com
+LE_EMAIL=you@example.com
+LW_ACCOUNT=your-tenant.lacework.net
+LW_KEY_ID=FORTINET_XXXXXXXXXXXXXXXX
+LW_SECRET=_xxxxxxxxxxxxxxxxxxxx
 ```
 
-#### Option B — Mock mode (no credentials needed)
+**Important rules for the `.env` file:**
 
-Perfect for first-time users, demos, or offline presentations:
+- Do NOT put quotes around any values. Docker reads the file literally.
+- Replace `domain.yourdomain.com` with your real domain
+- Replace `you@example.com` with your real email (used by Let's Encrypt)
+- Replace `LW_ACCOUNT`, `LW_KEY_ID`, and `LW_SECRET` with values from your FortiCNAPP API key JSON file
+
+### Step 3: Choose Your Deployment Path
+
+You now have two options:
+
+- **Option A:** Production deployment with automatic HTTPS — see [Production Deployment with HTTPS](#production-deployment-with-https)
+- **Option B:** Use your own existing TLS certificate — see [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+
+---
+
+## Production Deployment with HTTPS
+
+This option uses Let's Encrypt to automatically obtain a signed TLS certificate.
+
+### How It Works
+
+When you set the `DOMAIN` variable, the container's `entrypoint.sh` script does the following:
+
+1. Runs `certbot` to perform the Let's Encrypt HTTP-01 challenge on port 80
+2. Obtains a signed certificate for your domain
+3. Starts the Node.js server in HTTPS mode on port 8443
+4. Redirects all HTTP traffic on port 80 to HTTPS
+
+### Requirements Checklist
+
+Before running the container, confirm:
+
+- [ ] Your public domain points to your server's IP address
+- [ ] Port **80** is publicly reachable (required for the ACME HTTP-01 challenge)
+- [ ] Port **443** is open for incoming HTTPS traffic
+- [ ] Your `.env` file is filled in correctly (see Step 2 above)
+
+### Step 1: Build the Docker Image
+
+From inside the `rca_ui` folder, run:
 
 ```bash
-docker run -d --name rca -p 8080:8080 \
-  -e MOCK_FILE=/app/mock_data.json \
-  forticnapp-dashboard
+sudo docker build -t rca-dashboard .
 ```
 
-### 2.4 Open the dashboard
+### Step 2: Run the Container
+
+```bash
+sudo docker run --rm -d \
+    --name rca \
+    -p 80:80 \
+    -p 443:8443 \
+    --env-file .env \
+    -v letsencrypt:/etc/letsencrypt \
+    rca-dashboard
+```
+
+**Explanation of the flags:**
+
+| Flag | Purpose |
+|------|---------|
+| `--rm` | Removes the container automatically when stopped |
+| `-d` | Runs in detached (background) mode |
+| `--name rca` | Names the container `rca` for easy reference |
+| `-p 80:80` | Maps host port 80 to container port 80 (HTTP / ACME) |
+| `-p 443:8443` | Maps host port 443 to container port 8443 (HTTPS) |
+| `--env-file .env` | Loads your configuration |
+| `-v letsencrypt:/etc/letsencrypt` | Persists certificates across restarts so certbot does not re-issue every time |
+
+### Step 3: Verify It Is Running
+
+Watch the container logs:
+
+```bash
+sudo docker logs -f rca
+```
+
+You should see output similar to:
+
+```
+[tls] Domain: rapidassessment.yourdomain.com — running certbot …
+[tls] Cert obtained: /etc/letsencrypt/live/rapidassessment.yourdomain.com/fullchain.pem
+[tls] HTTPS mode — cert: /etc/letsencrypt/live/…/fullchain.pem
+│  Open : https://domain.yourdomain.com:8443
+```
+
+### Step 4: Open the Dashboard
 
 In your browser, go to:
 
-👉 **[http://localhost:8080](http://localhost:8080)**
-
-You should see alerts, CVEs, identity risks, and compliance widgets.
-
-> 💡 **What do the flags mean?**
-> - `-d` → run in the background (detached)
-> - `--name rca` → give the container a name so you can stop or copy from it
-> - `-p 8080:8080` → expose port 8080 on your machine
-> - `-e VAR=value` → pass an environment variable into the container
-
-### 2.5 Stop or restart the dashboard
-
-```bash
-docker stop rca        # stops it
-docker start rca       # restarts it
-docker rm -f rca       # deletes the container (use before re-running with new keys)
 ```
+https://domain.yourdomain.com
+```
+
+(Replace with your actual domain.)
 
 ---
 
-## 📑 Step 3 — Generate a CSA Report
+## Using Your Own TLS Certificate
 
-The CSA (Cloud Security Assessment) report is a polished deliverable you can email to customers or executives.
+If you already have a signed certificate and want to skip certbot, use this command instead.
 
-### 3.1 Create a Python virtual environment
+### Step 1: Place Your Certificates
 
-A virtual environment keeps this project's Python packages isolated from the rest of your system.
+Make sure your certificate and key files are on the host, for example at `/path/to/certs/`:
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
+- `fullchain.pem` — the certificate
+- `privkey.pem` — the private key
 
-> On Windows (PowerShell), use: `venv\Scripts\Activate.ps1`
-
-You'll know it's active because your prompt will change to show `(venv)`.
-
-### 3.2 Install dependencies
+### Step 2: Run the Container
 
 ```bash
-pip install -r requirements.txt
+sudo docker run --rm -d \
+    --name rca \
+    -p 80:80 \
+    -p 8443:8443 \
+    -v /path/to/certs:/certs:ro \
+    -e TLS_CERT=/certs/fullchain.pem \
+    -e TLS_KEY=/certs/privkey.pem \
+    --env-file .env \
+    rca-dashboard
 ```
 
-### 3.3 Generate a report
-
-The minimum command you need:
-
-```bash
-python lw_report_gen.py \
-  --author "John Smith" \
-  --customer "Acme Corp" \
-  --api-key-file "lw_foo.json"
-```
-
-This produces an HTML report in the current folder. Open it in any browser.
-
-### 3.4 Useful flags
-
-| Flag | Description | Example |
-|------|-------------|---------|
-| `--report-format` | Output format: `html` or `pdf` (default: `html`) | `--report-format pdf` |
-| `--api-key-file` | Path to the JSON key file from Step 1 (alternative to env vars) | `--api-key-file ./my_key.json` |
-| `--cache-data` | Reuse previously downloaded data (faster, offline-friendly) | `--cache-data` |
-| `--compliance-framework` | Which framework to score against | `--compliance-framework CIS` |
-
-**Supported frameworks:** `CIS` · `PCI` · `NIST_CSF` · `SOC2` · `HIPAA` · `ISO_27001` · `CSA_CCM`
-
-### 3.5 Example: Full PDF report against CIS
-
-```bash
-python lw_report_gen.py \
-  --author "John Smith" \
-  --customer "Acme Corp" \
-  --report-format pdf \
-  --compliance-framework CIS
-```
+The `:ro` flag mounts the certificate folder read-only for safety.
 
 ---
 
-## 📇 Collecting Visitor Contacts
+## Updating the Dashboard
 
-Every time someone logs into the dashboard, their details are saved automatically into a CSV file inside the container. Here's how to retrieve it.
-
-### Step 1 — Find the container
+To deploy a change to `server.js` without rebuilding the entire image:
 
 ```bash
-docker ps -a
+docker cp rca_ui/server.js rca:/app/server.js
+docker restart rca
 ```
 
-Look for the one named `rca` (or whatever `--name` you used).
+This copies your updated file into the running container and restarts it.
 
-### Step 2 — Copy the file out of the container
+---
+
+## Collecting Visitor Contacts
+
+Every login on the dashboard is automatically saved inside the container in `contacts.csv`.
+
+To export the contacts file to your host:
 
 ```bash
 docker cp rca:/app/contacts.csv ./contacts.csv
-```
-
-### Step 3 — View the results
-
-```bash
 cat contacts.csv
 ```
 
-The file columns are:
+---
 
-```
-Timestamp, FirstName, LastName, Company, Role, Email
-```
+## Troubleshooting
 
-> 💡 Open `contacts.csv` in Excel, Numbers, or Google Sheets for a cleaner view.
+### Authentication Failed
+
+If the dashboard cannot connect to FortiCNAPP, check the following:
+
+- Confirm `LW_ACCOUNT` is the full hostname, for example `xxx.lacework.net`
+- Confirm `LW_KEY_ID` and `LW_SECRET` match the downloaded JSON file exactly
+- Verify the API key has not been revoked in the FortiCNAPP console
+
+### Dashboard Shows No Data or a Spinner
+
+- Check the container logs:
+  ```bash
+  docker logs -f rca
+  ```
+- Phase 2 (compliance data) can take 30 to 60 seconds to load. Wait for the live indicator dot to turn green.
+
+### HTTPS Certificate Not Issued
+
+- Verify port 80 is reachable from the public internet (required for the ACME challenge)
+- Confirm your domain's DNS A record points to the server's public IP
+- Check that `LE_EMAIL` in `.env` is a valid email address
 
 ---
 
-## 📂 Project Files
+## Additional Resources
 
-Quick reference for what each file does:
-
-| File | What it's for |
-|------|----------------|
-| `rca_ui/server.js` | Dashboard web server — white Fortinet-themed UI, Fortinet Cloud Risk IQ gauge |
-| `rca_ui/Dockerfile` | Build instructions for the dashboard container |
-| `rca_ui/mock_data.json` | Sample data used in mock mode |
-| `rca_ui/report_runner.js` | Runs reports from the dashboard UI |
-| `lw_report_gen.py` | Python script that generates CSA reports |
-| `SCORING_GUIDE.md` | Fortinet Cloud Risk IQ formula, bands, and worked example |
-| `requirements.txt` | Python dependencies for the report generator |
+- See `SCORING_GUIDE.md` for the full scoring formula and a worked example
+- FortiCNAPP documentation: https://docs.fortinet.com
+- Let's Encrypt: https://letsencrypt.org
+- DuckDNS (free DNS): https://www.duckdns.org
 
 ---
 
-## 🛠️ Troubleshooting
-
-<details>
-<summary><strong>Port 8080 is already in use</strong></summary>
-
-Another process is using that port. Either stop it, or map a different port:
-
-```bash
-docker run -d --name rca -p 9090:8080 ... forticnapp-dashboard
-```
-
-Then open [http://localhost:9090](http://localhost:9090) instead.
-</details>
-
-<details>
-<summary><strong>Dashboard shows "Authentication failed"</strong></summary>
-
-- Double-check `LW_ACCOUNT` includes the full hostname (`xxx.lacework.net`)
-- Check `LW_KEY_ID` and `LW_SECRET` match exactly what's in the JSON file
-- Make sure the API key hasn't been revoked in the FortiCNAPP console
-</details>
-
-<details>
-<summary><strong>Python says "command not found: python"</strong></summary>
-
-Use `python3` instead of `python` on most macOS/Linux systems.
-</details>
-
-<details>
-<summary><strong>PDF generation fails</strong></summary>
-
-PDF export requires a headless Chromium. Install it via:
-
-```bash
-pip install weasyprint
-```
-
-Or generate an HTML report instead (`--report-format html`).
-</details>
-
-<details>
-<summary><strong>How do I see dashboard logs?</strong></summary>
-
-```bash
-docker logs -f rca
-```
-
-Press `Ctrl+C` to stop watching.
-</details>
-
----
-
-## ❓ FAQ
-
-**Q: Do I need a FortiCNAPP account to try this?**
-No. Use mock mode — see [Step 2.3 Option B](#option-b--mock-mode-no-credentials-needed).
-
-**Q: Is this an official Fortinet product?**
-No, it's a community/partner toolkit built on top of the FortiCNAPP API.
-
-**Q: Can I customize the report branding?**
-Yes — edit the templates referenced by `lw_report_gen.py`. See `SCORING_GUIDE.md` for scoring internals.
-
-**Q: Where is my data stored?**
-Nowhere external. The dashboard runs entirely on your machine in Docker. Reports are saved locally.
-
-**Q: Can I share the dashboard with a customer over the internet?**
-Only if you expose it securely (e.g., via a reverse proxy with HTTPS and authentication). By default it's local-only.
-
----
-
-<div align="center">
-
-Made with ❤️ for the FortiCNAPP community
-
-[📄 Sample Report](https://svuillaume.github.io/FortiCNAPP_RapidCloudAssessment/rca.html) · [🐛 Issues](../../issues) · [⭐ Star this repo](../../stargazers)
-
-</div>
+Made for the FortiCNAPP community.
