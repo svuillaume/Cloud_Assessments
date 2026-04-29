@@ -90,6 +90,7 @@ cd rca_ui
 Create a file named `.env` in the `rca_ui` folder. This file holds your settings and secrets.
 
 ```bash
+DUCKDNS_TOKEN=your-token-here
 PORT=80
 DOMAIN=domain.yourdomain.com
 LE_EMAIL=you@example.com
