@@ -2729,6 +2729,41 @@ function buildReportHtml(data, meta) {
       '</tr>';
   }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
 
+  // ── Recommended Next Steps (mirrors mobile buildSteps logic) ────────────────
+  const nextSteps = (function buildNextSteps() {
+    const hostRisk = {};
+    vulns.forEach(r => { const h=(r.evalCtx&&(r.evalCtx.hostname||r.evalCtx.mid))||''; if(h) hostRisk[h]=(hostRisk[h]||0)+Math.min(100,parseFloat(r.riskScore||0)*10); });
+    secretsAll.forEach(r => { const h=r.HOSTNAME||r.MID||''; if(h) hostRisk[h]=(hostRisk[h]||0)+50; });
+    const riskVals=Object.values(hostRisk);
+    const maxRisk=riskVals.length?Math.max(...riskVals):1;
+    const assetCount=riskVals.filter(v=>Math.round(v/maxRisk*100)>20).length;
+    const steps=[];
+    if(assetCount>=1)   steps.push({color:'#6366f1',title:'Investigate '+assetCount+' asset'+(assetCount===1?'':'s')+' with Correlated Risk Findings',sub:'Hosts with combined CVEs and exposed secrets represent the highest-priority attack surface. Begin remediation here.',action:'Cross-reference CVE and secrets findings by hostname in the CVE and Secrets sections of this report. Prioritise internet-facing hosts.'});
+    if(identities.length) steps.push({color:'#ef4444',title:'Fix '+identities.length+' High-Permissive '+(identities.length===1?'Identity':'Identities')+' — Enable MFA & Apply Least Privilege',sub:'Identity compromise is the #1 cloud breach vector. Over-permissive accounts with no MFA are easily weaponised.',action:'Review the Identity Risk section. Enforce MFA on all human identities and apply least-privilege scoping to service accounts.'});
+    if(alerts.length)     steps.push({color:'#f97316',title:'Investigate '+alerts.length+' Open Critical Alert'+(alerts.length===1?'':'s'),sub:'Critical alerts may indicate an active breach or ongoing threat. Each alert warrants immediate triage.',action:'Review every alert in the Critical Alerts section. Correlate with cloud activity logs and escalate any confirmed malicious activity.'});
+    if(vulns.length)      steps.push({color:'#f59e0b',title:'Patch '+vulns.length+' Critical CVE'+(vulns.length===1?'':'s')+' with Risk Score ≥ 9.0',sub:'Internet-exposed hosts running known critical CVEs are primary targets for automated exploitation.',action:'Prioritise patching on internet-exposed hosts. Review the Critical Vulnerabilities section for affected packages and versions.'});
+    if(compliance.length) steps.push({color:'#3b82f6',title:'Remediate '+compliance.length+' Non-Compliant Critical Control'+(compliance.length===1?'':'s'),sub:'Cloud misconfigurations and policy violations create systematic risk that compounds over time.',action:'Review the Compliance section. Focus on controls flagged as Critical first; many can be remediated with a single configuration change.'});
+    if(secretsAll.length) steps.push({color:'#0ea5e9',title:'Rotate '+secretsAll.length+' Exposed Secret'+(secretsAll.length===1?'':'s')+' Detected on Hosts',sub:'API keys, tokens and credentials found on hosts must be considered compromised and replaced immediately.',action:'Review the Secrets section. Revoke each exposed credential at the source, re-issue with restricted scope, and audit access logs for misuse.'});
+    if(!steps.length)     steps.push({color:'#22c55e',title:'Security Posture is Excellent — Maintain Continuous Monitoring',sub:'No critical findings were detected during this assessment window.',action:'Continue scheduled assessments and ensure alerting is configured for new resources added to the environment.'});
+    return steps;
+  })();
+
+  const nextStepsSection =
+    '<section id="next-steps" class="pagebreak">\n<h2>Recommended Next Steps</h2>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:24px">The following prioritised actions are derived from the findings in this report. Address them in order — each step reduces your attack surface and improves your Cloud Security Posture Score.</p>' +
+    '<table style="width:100%;border-collapse:collapse">' +
+    '<thead><tr style="background:#f5f5f5"><th style="padding:10px 14px;text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#5A5A5A;width:32px">#</th>' +
+    '<th style="padding:10px 14px;text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#5A5A5A">Action</th>' +
+    '<th style="padding:10px 14px;text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#5A5A5A;width:280px">How to Execute</th></tr></thead><tbody>' +
+    nextSteps.map((s,i) =>
+      '<tr style="border-bottom:1px solid #e5e7eb">' +
+      '<td style="padding:14px;vertical-align:top"><div style="width:28px;height:28px;border-radius:50%;background:'+s.color+';color:#fff;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;line-height:1">'+(i+1)+'</div></td>' +
+      '<td style="padding:14px;vertical-align:top"><div style="font-size:13px;font-weight:700;color:#1A1A1A;margin-bottom:4px">'+esc(s.title)+'</div><div style="font-size:12px;color:#5A5A5A;line-height:1.5">'+esc(s.sub)+'</div></td>' +
+      '<td style="padding:14px;vertical-align:top;font-size:12px;color:#374151;line-height:1.5;border-left:1px solid #e5e7eb">'+esc(s.action)+'</td>' +
+      '</tr>'
+    ).join('') +
+    '</tbody></table>\n</section>';
+
   // ── Build HTML ──────────────────────────────────────────────────────────────
   const tocCards = [
     alerts.length     ? '<a href="#alerts" class="toc-card"><div class="tc-num">01 — Alerts</div><div class="tc-title">Critical Alerts</div><div class="tc-sub">'+alerts.length+' open critical alert'+(alerts.length===1?'':'s')+'.</div></a>' : '',
@@ -2736,6 +2771,7 @@ function buildReportHtml(data, meta) {
     vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
     secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
+    '<a href="#next-steps" class="toc-card"><div class="tc-num">06 — Next Steps</div><div class="tc-title">Recommended Next Steps</div><div class="tc-sub">'+nextSteps.length+' prioritised action'+(nextSteps.length===1?'':'s')+' to improve your posture.</div></a>',
   ].filter(Boolean).join('\n      ');
 
 
@@ -2857,7 +2893,7 @@ function buildReportHtml(data, meta) {
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
   'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
   '</section>\n' +
-  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' +
+  alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' + nextStepsSection + '\n' +
   '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
   '<div style="text-align:center">' +
   '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT REPORT &mdash; Powered by FortiCNAPP</div>' +
