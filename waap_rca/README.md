@@ -1,3 +1,3 @@
-# FortiWAAP — Rapid Cloud Assessment
+# WAAP — Rapid Cloud Assessment
 
 Coming soon.
