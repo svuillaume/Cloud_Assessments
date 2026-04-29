@@ -4,13 +4,13 @@
 *.json
 
 # OS
-.DS_Store
+
 
 # Runtime data
-rca_ui/contacts.csv
-rca_ui/users.json
+contacts.csv
+
 
 # Generated outputs
 *.png
 *.pdf
-rca.html
+
