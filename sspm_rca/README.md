@@ -1,3 +1,3 @@
-# FortiCASB / SSPM — Rapid Cloud Assessment
+# SSPM — Rapid Cloud Assessment
 
 Coming soon.
