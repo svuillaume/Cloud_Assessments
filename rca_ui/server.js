@@ -2950,6 +2950,26 @@ function requestHandler(req, res) {
       return;
     }
     const reportHtml = buildReportHtml(cache, { customer, author });
+    const reportPath = path.join(__dirname, 'rca.html');
+    const pdfPath    = path.join(__dirname, 'rca.pdf');
+    fs.writeFile(reportPath, reportHtml, err => {
+      if (err) { console.error('[report] html save failed:', err.message); return; }
+      console.log('[report] saved html to', reportPath);
+      const { execFile } = require('child_process');
+      execFile('chromium-browser', [
+        '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+        '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+      ], (err2) => {
+        if (err2) execFile('chromium', [
+          '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+          '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+        ], (err3) => {
+          if (err3) console.error('[report] pdf generation failed:', err3.message);
+          else console.log('[report] saved pdf to', pdfPath);
+        });
+        else console.log('[report] saved pdf to', pdfPath);
+      });
+    });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
     res.end(reportHtml);
   } else if (isMobile && req.url === '/') {
