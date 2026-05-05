@@ -48,6 +48,8 @@ let cache = {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
+const badIPs = new Set(); // IPs that failed ETIMEDOUT — excluded from DNS pool
+
 function request(method, hostname, path, headers, body) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
@@ -55,8 +57,9 @@ function request(method, hostname, path, headers, body) {
       hostname, port: 443, path, method,
       lookup(host, _opts, cb) {
         dns.resolve4(host, (err, addrs) => {
-          if (err || !addrs?.length) return cb(err || new Error('DNS failed'));
-          cb(null, addrs[Math.floor(Math.random() * addrs.length)], 4);
+          if (err || !addrs?.length) return dns.lookup(host, { family: 4 }, cb);
+          const good = addrs.filter(a => !badIPs.has(a));
+          cb(null, (good.length ? good : addrs)[Math.floor(Math.random() * (good.length || addrs.length))], 4);
         });
       },
       headers: {
@@ -76,7 +79,10 @@ function request(method, hostname, path, headers, body) {
       });
     });
     req.setTimeout(30000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
-    req.on('error', reject);
+    req.on('error', e => {
+      if (e.code === 'ETIMEDOUT' && e.address) { badIPs.add(e.address); console.log(`[dns] blacklisted ${e.address}`); }
+      reject(e);
+    });
     if (payload) req.write(payload);
     req.end();
   });
