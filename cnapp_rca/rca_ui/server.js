@@ -6,6 +6,7 @@
 'use strict';
 const http  = require('http');
 const https = require('https');
+const dns   = require('dns');
 const fs    = require('fs');
 const path  = require('path');
 
@@ -52,6 +53,12 @@ function request(method, hostname, path, headers, body) {
     const payload = body ? JSON.stringify(body) : null;
     const opts = {
       hostname, port: 443, path, method,
+      lookup(host, _opts, cb) {
+        dns.resolve4(host, (err, addrs) => {
+          if (err || !addrs?.length) return cb(err || new Error('DNS failed'));
+          cb(null, addrs[Math.floor(Math.random() * addrs.length)], 4);
+        });
+      },
       headers: {
         'Content-Type': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
