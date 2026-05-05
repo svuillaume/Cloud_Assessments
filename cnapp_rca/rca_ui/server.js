@@ -7,6 +7,7 @@
 const http  = require('http');
 const https = require('https');
 const dns   = require('dns');
+const net   = require('net');
 const fs    = require('fs');
 const path  = require('path');
 
@@ -48,22 +49,38 @@ let cache = {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-const BAD_IP_TTL = 12 * 60 * 60 * 1000; // 12 hours
-const badIPs = new Map(); // ip → blacklisted-at timestamp
-function isBadIP(ip) { const t = badIPs.get(ip); return t && (Date.now() - t < BAD_IP_TTL); }
+let accountIP = null; // resolved + verified reachable IP for LW_ACCOUNT
+
+function tcpReachable(ip, port) {
+  return new Promise(resolve => {
+    const sock = net.createConnection({ host: ip, port });
+    sock.setTimeout(3000);
+    sock.on('connect', () => { sock.destroy(); resolve(true); });
+    sock.on('error',   () => resolve(false));
+    sock.on('timeout', () => { sock.destroy(); resolve(false); });
+  });
+}
+
+async function resolveReachableIP(hostname) {
+  const addrs = await new Promise(res => dns.resolve4(hostname, (e, a) => res(e ? [] : a)));
+  for (const ip of addrs) {
+    if (await tcpReachable(ip, 443)) {
+      console.log(`[dns] ${hostname} → ${ip} (reachable, cached for container lifetime)`);
+      return ip;
+    }
+    console.log(`[dns] ${hostname} → ${ip} unreachable, skipping`);
+  }
+  console.log(`[dns] ${hostname}: all IPs unreachable, falling back to system resolver`);
+  return null;
+}
 
 function request(method, hostname, path, headers, body) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
+    const resolvedIP = hostname === LW_ACCOUNT ? accountIP : null;
     const opts = {
       hostname, port: 443, path, method,
-      lookup(host, _opts, cb) {
-        dns.resolve4(host, (err, addrs) => {
-          if (err || !addrs?.length) return dns.lookup(host, { family: 4 }, cb);
-          const good = addrs.filter(a => !isBadIP(a));
-          cb(null, (good.length ? good : addrs)[Math.floor(Math.random() * (good.length || addrs.length))], 4);
-        });
-      },
+      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, resolvedIP, 4) } : {}),
       headers: {
         'Content-Type': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
@@ -81,10 +98,7 @@ function request(method, hostname, path, headers, body) {
       });
     });
     req.setTimeout(30000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
-    req.on('error', e => {
-      if (e.code === 'ETIMEDOUT' && e.address) { badIPs.set(e.address, Date.now()); console.log(`[dns] blacklisted ${e.address} for 12h`); }
-      reject(e);
-    });
+    req.on('error', reject);
     if (payload) req.write(payload);
     req.end();
   });
@@ -3099,8 +3113,11 @@ function startApp(listeningPort, protocol) {
       console.error(`[mock] Failed to load ${MOCK_FILE}:`, e.message);
     }
   } else {
-    refreshData().catch(e => console.error('[startup]', e.message));
-    startRefreshTimer();
+    resolveReachableIP(LW_ACCOUNT).then(ip => { accountIP = ip; }).catch(() => {})
+      .finally(() => {
+        refreshData().catch(e => console.error('[startup]', e.message));
+        startRefreshTimer();
+      });
   }
 }
 
