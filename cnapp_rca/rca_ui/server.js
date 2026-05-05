@@ -3118,6 +3118,9 @@ function startApp(listeningPort, protocol) {
         refreshData().catch(e => console.error('[startup]', e.message));
         startRefreshTimer();
       });
+    setInterval(() => {
+      resolveReachableIP(LW_ACCOUNT).then(ip => { if (ip) accountIP = ip; }).catch(() => {});
+    }, 24 * 60 * 60 * 1000);
   }
 }
 
