@@ -48,7 +48,9 @@ let cache = {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-const badIPs = new Set(); // IPs that failed ETIMEDOUT — excluded from DNS pool
+const BAD_IP_TTL = 12 * 60 * 60 * 1000; // 12 hours
+const badIPs = new Map(); // ip → blacklisted-at timestamp
+function isBadIP(ip) { const t = badIPs.get(ip); return t && (Date.now() - t < BAD_IP_TTL); }
 
 function request(method, hostname, path, headers, body) {
   return new Promise((resolve, reject) => {
@@ -58,7 +60,7 @@ function request(method, hostname, path, headers, body) {
       lookup(host, _opts, cb) {
         dns.resolve4(host, (err, addrs) => {
           if (err || !addrs?.length) return dns.lookup(host, { family: 4 }, cb);
-          const good = addrs.filter(a => !badIPs.has(a));
+          const good = addrs.filter(a => !isBadIP(a));
           cb(null, (good.length ? good : addrs)[Math.floor(Math.random() * (good.length || addrs.length))], 4);
         });
       },
@@ -80,7 +82,7 @@ function request(method, hostname, path, headers, body) {
     });
     req.setTimeout(30000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
     req.on('error', e => {
-      if (e.code === 'ETIMEDOUT' && e.address) { badIPs.add(e.address); console.log(`[dns] blacklisted ${e.address}`); }
+      if (e.code === 'ETIMEDOUT' && e.address) { badIPs.set(e.address, Date.now()); console.log(`[dns] blacklisted ${e.address} for 12h`); }
       reject(e);
     });
     if (payload) req.write(payload);
