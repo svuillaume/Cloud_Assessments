@@ -108,11 +108,30 @@ The dashboard JS (starting ~line 1604 inside the template literal) fetches `/api
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache
 
-**Scoring formula**
+**Posture score formula**
 ```
 postureScore = max(0, round(100 − mean(findingRiskScores) − min(20, secretCount × 0.5)))
 ```
 Risk weights: alerts→95, CVEs→`riskScore×10` (max 100), compliance→80, identities→`risk_score×100` (max 100). Secrets apply a separate −0.5 pt penalty each, capped at −20 pts.
+
+**Correlated Risk Findings per Asset — scoring formula**
+
+Four factors ranked Critical → Low, summed per host then normalized 0–100:
+
+| Factor | Severity | Points | Data source |
+|--------|----------|--------|-------------|
+| CIEM High-Perm credential | Critical | +100 per secret | `secretsAll` where `SECRET_TYPE` ∈ SSH key / AWS / GCP / Azure credential types |
+| Secret (generic) | High | +50 per secret | `secretsAll` — all other secret types |
+| CVE Internet Threat Exposure | Medium | `riskScore × 10` per CVE (max 100) | `vulns` — Lacework composite score (CVSS + exploitability + network exposure) |
+| Critical Misconfiguration | Low | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide critical policies; same boost applied to every at-risk host |
+
+```
+assetRawRisk = Σ(CIEM×100) + Σ(secret×50) + Σ(cve.riskScore×10) + min(60, critCompliance×10)
+normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
+```
+
+Assets with `normalizedScore ≤ 20` or `powerState = stopped/terminated` are excluded.
+CIEM and Misconfig are account-wide (no per-host data in the API); Threat Exposure and Secrets are per-host.
 
 ## Collect artefacts from a running container
 

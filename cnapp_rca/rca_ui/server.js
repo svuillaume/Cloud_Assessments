@@ -53,6 +53,8 @@ let cache = {
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
 };
 
+const geoIpCache = {}; // ip → ipinfo.io response, cached for container lifetime
+
 
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -386,6 +388,7 @@ async function fetchIdentities() {
     return distinct {
       PRINCIPAL_ID,
       PROVIDER_TYPE,
+
       NAME,
       LAST_USED_TIME,
       CREATED_TIME,
@@ -404,20 +407,23 @@ async function fetchIdentities() {
   });
 
   console.log(`  [identities] total returned: ${rows.length}`);
-  if (rows.length) console.log(`  [identities] sample: ${JSON.stringify(rows[0]).slice(0, 200)}`);
+  if (rows.length) console.log(`  [identities] sample: ${JSON.stringify(rows[0]).slice(0, 300)}`);
 
-  // Filter: no MFA AND (admin OR high risk)
+  // Include all high-permissive identities: full admin OR high/critical risk severity
+  const HIGH_SEV = new Set(['critical', 'high']);
   return rows
     .filter(r => {
       const risks = r.METRICS?.risks ?? [];
-      return risks.includes('PASSWORD_LOGIN_NO_MFA');
+      const sev   = (r.METRICS?.risk_severity || '').toLowerCase();
+      return risks.includes('ALLOWS_FULL_ADMIN') || HIGH_SEV.has(sev);
     })
     .sort((a, b) => {
       const aAdmin = (a.METRICS?.risks ?? []).includes('ALLOWS_FULL_ADMIN') ? 0 : 1;
       const bAdmin = (b.METRICS?.risks ?? []).includes('ALLOWS_FULL_ADMIN') ? 0 : 1;
-      return aAdmin - bAdmin;
+      if (aAdmin !== bAdmin) return aAdmin - bAdmin;
+      return (b.METRICS?.risk_score || 0) - (a.METRICS?.risk_score || 0);
     })
-    .slice(0, 10);
+    .slice(0, 25);
 }
 
 // ── 5. Secrets All — POST /api/v2/Queries/execute (LQL) ──────────────────────
@@ -1284,6 +1290,20 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div id="body-ar"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
+<!-- GeoIP detail panel -->
+<div id="geo-overlay" style="display:none;position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.55);align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;width:min(480px,96vw);box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden">
+    <div style="background:linear-gradient(135deg,#0369a1,#0ea5e9);padding:18px 22px;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:15px;font-weight:800;color:#fff" id="geo-title">GeoIP Lookup</div>
+        <div style="font-size:11px;color:#bae6fd;margin-top:2px" id="geo-sub">Powered by ipinfo.io</div>
+      </div>
+      <button onclick="closeGeoPanel()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;color:#fff;font-size:18px;width:32px;height:32px;cursor:pointer;line-height:1">✕</button>
+    </div>
+    <div id="geo-body" style="padding:20px 22px;font-size:13px;min-height:80px"></div>
+  </div>
+</div>
+
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
   <div style="text-align:center;padding:24px 32px 16px;background:#fff;border-bottom:1px solid var(--border)">
@@ -1695,8 +1715,8 @@ function renderAlerts(rows,err){
         +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+aid+'">'+cpIcon+'</button></td>'
         +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertName||'—')+'</a></td>'
         +'<td style="white-space:nowrap"><button class="ai-inv-btn" data-aid="'+aid+'" data-aname="'+e(r.alertName||'')+'" data-asev="'+e(r.severity||'')+'" '
-          +'style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:10px;font-weight:700;background:#DA291C;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap" '
-          +'title="Investigate with FortiCNAPP Agent AI">&#x1F916; Investigate</button></td>'
+          +'style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:10px;font-weight:700;background:#94a3b8;color:#fff;border:none;border-radius:6px;cursor:not-allowed;white-space:nowrap;opacity:.7" '
+          +'disabled title="AI triage preparing…">🤖 Triage</button></td>'
         +'<td class="desc">'+e(desc||'—')+'</td>'
         +'<td>'+status(r.status)+'</td>'
         +'<td class="m">'+fmtDate(r.startTime)+'</td>'
@@ -1745,25 +1765,99 @@ function renderCompliance(rows,err){
 function renderIdentities(rows,err){
   if(err){state('body-i','',err);return}
   setKpi('kpi-i',rows.length);setCount('cnt-i',rows.length,true);
-  if(!rows.length){state('body-i','','No high-risk no-MFA identities found');return}
-  setBody('body-i','<div class="tbl-wrap"><table><thead><tr><th>Identity</th><th>Cloud</th><th>Risk</th><th>Unused</th><th>MFA</th><th>Last Used</th><th></th></tr></thead><tbody>'
+  if(!rows.length){state('body-i','','No high-permissive identities found');return}
+
+  // Derive principal type and short name from PRINCIPAL_ID / NAME
+  function identType(r){
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    const nm=(r.NAME||'').toLowerCase();
+    if(pid.includes(':root')||nm==='root')return{label:'Root Account',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+    if(pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com'))return{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+    if(pid.includes(':assumed-role/')||pid.includes('/sts:'))return{label:'Assumed Role',color:'#b45309',bg:'#fffbeb',border:'#fde68a'};
+    if(pid.includes(':role/')||nm.includes('role'))return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
+    if(pid.includes(':user/')||nm.includes('user'))return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    const pt=(r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'').toLowerCase();
+    if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+    if(pt.includes('user'))return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    return{label:'Identity',color:'#475569',bg:'#f8fafc',border:'#e2e8f0'};
+  }
+
+  // Parse assigned-to from PRINCIPAL_ID path segments
+  function assignedTo(r){
+    const pid=r.PRINCIPAL_ID||'';
+    // AWS: arn:aws:iam::ACCOUNT:role/NAME or arn:aws:iam::ACCOUNT:user/NAME
+    const arnMatch=pid.match(/arn:[^:]+:[^:]+::[^:]*:(?:role|user|group|policy)\\/(.+)/i);
+    if(arnMatch)return arnMatch[1];
+    // GCP service account: name@project.iam.gserviceaccount.com
+    const gcpMatch=pid.match(/^([^@]+)@([^.]+)/);
+    if(gcpMatch)return gcpMatch[1]+' @ '+gcpMatch[2];
+    // Azure: show last segment after /
+    const azureMatch=pid.match(/\\/([^\\/]+)$/);
+    if(azureMatch)return azureMatch[1];
+    return r.NAME||pid;
+  }
+
+  const iHref='https://'+(_lastData?.account||'')+'/ui/insights';
+
+  setBody('body-i','<div style="padding:8px 0">'
     +rows.map(r=>{
       const risks=r.METRICS?.risks??[];
       const isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
+      const noMfa=risks.includes('PASSWORD_LOGIN_NO_MFA')||r.MFA_ENABLED===false||r.MFA_ENABLED==='false';
       const riskSev=(r.METRICS?.risk_severity||'').toLowerCase();
-      const unused=r.ENTITLEMENT_COUNTS?.entitlements_unused_count??'\\u2014';
-      const iHref='https://'+(_lastData?.account||'')+'/ui/insights';
+      const riskScore=Math.round((r.METRICS?.risk_score||0)*100);
+      const unused=r.ENTITLEMENT_COUNTS?.entitlements_unused_count??null;
+      const total=r.ENTITLEMENT_COUNTS?.entitlements_total_count??null;
       const iName=r.NAME||r.PRINCIPAL_ID||'';
-      return'<tr class="'+(isAdmin?'strip-cr':'strip-hi')+'">'
-        +'<td class="p" title="'+e(iName)+'"><a class="rf-link" href="'+e(iHref)+'" target="_blank">'+e(tr(iName,28))+'</a><button class="cp-btn" data-cp="'+e(iName)+'" title="Copy identity">'+cpIcon+'</button></td>'
-        +'<td><span class="b b-nt">'+e(r.PROVIDER_TYPE||'\\u2014')+'</span></td>'
-        +'<td>'+(isAdmin?'<span class="tag-admin">FULL ADMIN</span>':sev(riskSev))+'</td>'
-        +'<td class="r">'+unused+'</td>'
-        +'<td><span class="tag-nomfa">NO MFA</span></td>'
-        +'<td class="m">'+fmtDate(r.LAST_USED_TIME)+'</td>'
-        +'<td><button class="ident-det-btn" data-pid="'+e(r.PRINCIPAL_ID||'')+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#8b5cf6;color:#fff;font-weight:700" title="Identity details">Details</button></td>'
-      +'</tr>';
-    }).join('')+'</tbody></table></div>');
+      const assigned=assignedTo(r);
+      const type=identType(r);
+      const provider=(r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'').toUpperCase().replace(/_/g,' ');
+      const keys=Array.isArray(r.ACCESS_KEYS)?r.ACCESS_KEYS:[];
+      const activeKeys=keys.filter(k=>(k.active||k.status||'').toString().toLowerCase()==='true'||k.active===true);
+
+      // Risk flag chips
+      const RISK_LABELS={'ALLOWS_FULL_ADMIN':'Full Admin','PASSWORD_LOGIN_NO_MFA':'No MFA','UNUSED_ACCESS_KEY_90_DAYS':'Key Unused 90d','UNUSED_PERMISSION_90_DAYS':'Perms Unused 90d','HAS_CONSOLE_ACCESS':'Console Access','EXCESSIVE_PERMISSIONS':'Excessive Perms','CROSS_ACCOUNT_ACCESS':'Cross-Account'};
+      const riskChips=risks.map(rk=>{
+        const lbl=RISK_LABELS[rk]||(rk.replace(/_/g,' ').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()));
+        const isRed=rk==='ALLOWS_FULL_ADMIN';
+        const isAmber=rk==='PASSWORD_LOGIN_NO_MFA'||rk==='CROSS_ACCOUNT_ACCESS';
+        const bg=isRed?'#fef2f2':isAmber?'#fffbeb':'#f8fafc';
+        const col=isRed?'#dc2626':isAmber?'#b45309':'#475569';
+        const brd=isRed?'#fecaca':isAmber?'#fde68a':'#e2e8f0';
+        return'<span style="font-size:10px;font-weight:700;background:'+bg+';color:'+col+';border:1px solid '+brd+';border-radius:4px;padding:1px 7px">'+e(lbl)+'</span>';
+      }).join('');
+
+      return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
+        // Header row: type badge + name + cloud + score
+        +'<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">'
+          +'<span style="font-size:10px;font-weight:700;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:5px;padding:2px 8px;white-space:nowrap;flex-shrink:0">'+e(type.label)+'</span>'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+              +'<a class="rf-link" href="'+e(iHref)+'" target="_blank" style="font-weight:700;font-size:13px;color:#0f172a;text-decoration:none;word-break:break-all" title="'+e(r.PRINCIPAL_ID||'')+'">'+e(tr(iName,40))+'</a>'
+              +'<button class="cp-btn" data-cp="'+e(iName)+'" title="Copy identity">'+cpIcon+'</button>'
+            +'</div>'
+            // Assigned-to line
+            +(assigned&&assigned!==iName?'<div style="font-size:11px;color:#475569;margin-top:2px">Assigned to: <strong>'+e(assigned)+'</strong></div>':'')
+            +(r.PRINCIPAL_ID&&r.PRINCIPAL_ID!==iName?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace;word-break:break-all">'+e(tr(r.PRINCIPAL_ID,60))+'</div>':'')
+          +'</div>'
+          +'<div style="text-align:right;flex-shrink:0">'
+            +(riskScore?'<div style="font-size:18px;font-weight:900;color:'+(riskScore>=70?'#dc2626':riskScore>=40?'#f59e0b':'#475569')+'">'+riskScore+'</div><div style="font-size:9px;color:#94a3b8">risk</div>':'')
+          +'</div>'
+        +'</div>'
+        // Meta row: provider, last used, unused entitlements, access keys
+        +'<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:10px;color:#64748b;margin-bottom:8px">'
+          +(provider?'<span>☁️ '+e(provider)+'</span>':'')
+          +(r.LAST_USED_TIME?'<span>Last used: '+fmtDate(r.LAST_USED_TIME)+'</span>':'<span style="color:#ef4444">Never used</span>')
+          +(unused!==null&&total!==null?'<span>Unused perms: <strong style="color:#f59e0b">'+unused+' / '+total+'</strong></span>':'')
+          +(activeKeys.length?'<span style="color:#dc2626">'+activeKeys.length+' active access key'+(activeKeys.length>1?'s':'')+'</span>':'')
+        +'</div>'
+        // Risk flag chips
+        +(riskChips?'<div style="display:flex;gap:5px;flex-wrap:wrap">'+riskChips+'</div>':'')
+        +(noMfa&&!risks.includes('PASSWORD_LOGIN_NO_MFA')?'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px"><span style="font-size:10px;font-weight:700;background:#fffbeb;color:#b45309;border:1px solid #fde68a;border-radius:4px;padding:1px 7px">No MFA</span></div>':'')
+      +'</div>';
+    }).join('')
+    +'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">Showing up to 25 high-permissive identities — Full Admin &amp; High/Critical risk · sorted by privilege level then risk score</div>'
+    +'</div>');
 }
 
 function renderSecretsAll(rows,err){
@@ -1867,39 +1961,91 @@ function renderAssetRisk(d){
   const map={};
   const get=(host,mid)=>{
     const key=host||mid||'unknown';
-    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],secrets:[],risk:0,powerState:null};
+    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],ciemSecrets:[],genericSecrets:[],risk:0,ciem:0,secretRisk:0,threatRisk:0,powerState:null,publicIP:null,internetExposed:undefined};
     return map[key];
   };
-  // Helper: extract PowerState from evalCtx.machineTags array [{key,value}]
   const getPowerState=r=>{
     const tags=r.evalCtx?.machineTags;
     if(!Array.isArray(tags))return null;
     const t=tags.find(t=>(t.key||'').toLowerCase()==='powerstate');
     return t?(t.value||'').toLowerCase():null;
   };
+  // Scan machineTags for public IP / internet-exposure indicators
+  // Returns { exposed: bool|null, ip: string|null }
+  const getNetInfo=r=>{
+    const tags=r.evalCtx?.machineTags;
+    const INET_KEY=/public.?ip|external.?ip|internet.?exp|public.?dns|public.?host/i;
+    const IP_RE=/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    let ip=null;
+    // Also check evalCtx top-level fields some providers populate
+    for(const f of['externalIp','publicIp','public_ip','externalIP','publicIP']){
+      const v=(r.evalCtx?.[f]||'').trim();
+      if(IP_RE.test(v)){ip=v;break;}
+    }
+    if(Array.isArray(tags)){
+      for(const t of tags){
+        const k=t.key||'';const v=(t.value||'').trim();
+        if(INET_KEY.test(k)){
+          if(!v||v==='false'||v==='no'||v==='none'||v==='N/A'||v==='null')return{exposed:false,ip:null};
+          if(IP_RE.test(v))ip=v;
+          return{exposed:true,ip};
+        }
+      }
+    }
+    return{exposed:ip?true:null,ip};
+  };
+
+  // Factor 3 — CVE Internet Threat Exposure (per host, Medium weight: riskScore×10)
   (d.vulns||[]).forEach(r=>{
     const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
     if(!host)return;
     const w=Math.min(100,parseFloat(r.riskScore||0)*10);
     const a=get(host,r.evalCtx?.mid||'');
     a.vulns.push({id:r.vulnId||'',score:r.riskScore,w});
+    a.threatRisk+=w;
     a.risk+=w;
-    // Record confirmed PowerState (running wins; any non-null tag locks it)
     const ps=getPowerState(r);
     if(ps&&a.powerState!=='running')a.powerState=ps;
+    const ni=getNetInfo(r);
+    if(ni.exposed===true)a.internetExposed=true;
+    else if(ni.exposed===false&&a.internetExposed===undefined)a.internetExposed=false;
+    if(ni.ip&&!a.publicIP)a.publicIP=ni.ip;
   });
+
+  // Factor 1 — CIEM High-Perm (Critical, +100) via privileged credential proxy
+  // Factor 2 — Secrets (High, +50 each)
+  const HIGH_PERM_TYPES=new Set(['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
+    'AWS_SECRET_ACCESS_KEY','AWS_ACCESS_KEY','AWS_CREDENTIALS','AWS_SECRET',
+    'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN']);
   (d.secretsAll||[]).forEach(r=>{
     const host=r.HOSTNAME||r.MID||'';
     if(!host)return;
     const a=get(host,r.MID||'');
-    a.secrets.push({type:r.SECRET_TYPE||''});
-    a.risk+=50;
+    const t=(r.SECRET_TYPE||'').toUpperCase();
+    if(HIGH_PERM_TYPES.has(t)){
+      a.ciemSecrets.push(r.SECRET_TYPE||t);
+      a.ciem+=100;
+      a.risk+=100;
+    } else {
+      a.genericSecrets.push(r.SECRET_TYPE||t);
+      a.secretRisk+=50;
+      a.risk+=50;
+    }
   });
-  // Only include assets that are confirmed running, or where PowerState is unknown (no tag data)
+
+  // Factor 4 — Critical Misconfiguration (account-wide, Low weight)
+  // Compliance has no per-host data — applied as flat boost to all at-risk assets
+  const critMisconfig=(d.compliance||[]).filter(r=>(r.severity||'').toLowerCase()==='critical').length;
+  const miscBoost=Math.min(60,critMisconfig*10);
+  if(miscBoost>0){
+    Object.values(map).forEach(a=>{if(a.risk>0){a.miscRisk=miscBoost;a.risk+=miscBoost;}});
+  }
+
+  // Filter: running or unknown power state, rank by raw risk
   const all=Object.values(map).filter(a=>a.risk>0&&(a.powerState===null||a.powerState==='running')).sort((a,b)=>b.risk-a.risk);
   const maxRisk=all[0]?.risk||1;
-  // Only show assets whose normalized score > 20
   const sorted=all.filter(a=>Math.round(a.risk/maxRisk*100)>20);
+
   const el=document.getElementById('cnt-ar');if(el)el.textContent=sorted.length||'0';
   const labAction=document.getElementById('lab-asset-action');
   if(labAction)labAction.style.display=sorted.length?'flex':'none';
@@ -1907,26 +2053,35 @@ function renderAssetRisk(d){
   if(nd0)nd0.textContent=sorted.length||'0';
   const circle=document.getElementById('jnd0-circle');
   if(circle){
-    if(sorted.length>0){
-      circle.style.animation='step1-flash 2.5s ease-in-out infinite';
-    } else {
-      circle.style.animation='';
-      circle.style.boxShadow='0 6px 24px rgba(239,68,68,.38)';
-    }
+    if(sorted.length>0){circle.style.animation='step1-flash 2.5s ease-in-out infinite';}
+    else{circle.style.animation='';circle.style.boxShadow='0 6px 24px rgba(239,68,68,.38)';}
   }
-  if(!sorted.length){state('body-ar','','No significant host-level risk detected (all assets score ≤ 20)');return;}
+  if(!sorted.length){state('body-ar','','No significant host-level risk detected');return;}
+
   const medalColor=i=>i===0?'#ef4444':i===1?'#f97316':i===2?'#f59e0b':'#94a3b8';
   const barColor=s=>s>=60?'#ef4444':s>=30?'#f59e0b':'#22c55e';
-  setBody('body-ar','<div style="padding:8px 0">'+sorted.map((a,i)=>{
+
+  setBody('body-ar','<div style="padding:8px 0">'
+    // Legend
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 16px 10px;font-size:10px;font-weight:700">'
+      +'<span style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:4px;padding:2px 8px">CIEM +100</span>'
+      +'<span style="background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:4px;padding:2px 8px">Secret +50</span>'
+      +'<span style="background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:4px;padding:2px 8px">Threat Exp riskScore×10</span>'
+      +(critMisconfig?'<span style="background:#fefce8;color:#ca8a04;border:1px solid #fde68a;border-radius:4px;padding:2px 8px">Misconfig +'+miscBoost+' ('+critMisconfig+' critical)</span>':'')
+    +'</div>'
+    +sorted.map((a,i)=>{
     const score=Math.round(a.risk/maxRisk*100);
     const color=barColor(score);
-    const avgCveRisk=a.vulns.length?(' · avg CVSS '+(a.vulns.reduce((s,v)=>s+parseFloat(v.score||0),0)/a.vulns.length).toFixed(1)):'';
+    const avgCveRisk=a.vulns.length?(' · avg '+( a.vulns.reduce((s,v)=>s+parseFloat(v.score||0),0)/a.vulns.length).toFixed(1)):'';
     return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
       +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
         +'<div style="font-size:20px;font-weight:900;color:'+medalColor(i)+';width:30px;text-align:center;flex-shrink:0">#'+(i+1)+'</div>'
         +'<div style="flex:1;min-width:0">'
-          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span><button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button>'
-            +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#6366f1;color:#fff;font-weight:700;flex-shrink:0" title="Host details">Details</button></div>'
+          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+            +'<span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span>'
+            +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button>'
+            +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#6366f1;color:#fff;font-weight:700;flex-shrink:0">Details</button>'
+          +'</div>'
           +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace">'+e(a.mid)+'</div>':'')
         +'</div>'
         +'<div style="font-size:24px;font-weight:900;color:'+color+';flex-shrink:0">'+score+'</div>'
@@ -1934,12 +2089,21 @@ function renderAssetRisk(d){
       +'<div style="background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px">'
         +'<div style="height:6px;border-radius:4px;background:'+color+';width:'+score+'%"></div>'
       +'</div>'
+      // Internet exposure flag + 4 factor badges
       +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
-        +(a.vulns.length?'<span style="font-size:10px;font-weight:700;background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:5px;padding:2px 8px">'+a.vulns.length+' CVE'+avgCveRisk+'</span>':'')
-        +(a.secrets.length?'<span style="font-size:10px;font-weight:700;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px">'+a.secrets.length+' Secret'+(a.secrets.length>1?'s':'')+'</span>':'')
+        +(a.internetExposed===true
+          ?'<span style="font-size:10px;font-weight:700;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:5px;padding:2px 8px">🌐 Internet Exposed'+(a.publicIP?' · '+e(a.publicIP):'')+'</span>'
+            +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:10px;font-weight:700;background:#0ea5e9;color:#fff;border:none;border-radius:5px;padding:2px 9px;cursor:pointer">🌍 GeoIP</button>':'')
+          :'<span style="font-size:10px;font-weight:700;background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;border-radius:5px;padding:2px 8px">No Int Exp</span>')
+        +(a.ciemSecrets.length?'<span title="'+e(a.ciemSecrets.join(', '))+'" style="font-size:10px;font-weight:700;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:5px;padding:2px 8px">CIEM: '+a.ciemSecrets.length+' high-perm cred'+(a.ciemSecrets.length>1?'s':'')+'</span>':'')
+        +(a.genericSecrets.length?'<span style="font-size:10px;font-weight:700;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px">Secret: '+a.genericSecrets.length+'</span>':'')
+        +(a.vulns.length?'<span style="font-size:10px;font-weight:700;background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:5px;padding:2px 8px">Threat Exp: '+a.vulns.length+' CVE'+avgCveRisk+'</span>':'')
+        +(a.miscRisk?'<span style="font-size:10px;font-weight:700;background:#fefce8;color:#ca8a04;border:1px solid #fde68a;border-radius:5px;padding:2px 8px">Misconfig: '+critMisconfig+' critical</span>':'')
       +'</div>'
     +'</div>';
-  }).join('')+'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">Risk score: CVE riskScore×10 + 50 per secret &nbsp;·&nbsp; Critical Alerts &amp; Compliance are account-wide (no per-host data)</div></div>');
+  }).join('')
+  +'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">CIEM &amp; Misconfig are account-wide · Threat Exposure and Secrets are per-host</div>'
+  +'</div>');
 }
 
 function nav(name){
@@ -2491,8 +2655,23 @@ const _aiTriageCache={};
 
 function _aiMarkBtn(alertId,ready){
   document.querySelectorAll('.ai-inv-btn[data-aid="'+alertId+'"]').forEach(function(b){
-    b.textContent=ready?'⚡ Investigate':'🤖 Investigate';
-    b.classList.toggle('ai-ready',!!ready);
+    if(ready){
+      b.textContent='⚡ Triage';
+      b.disabled=false;
+      b.style.background='#16a34a';
+      b.style.cursor='pointer';
+      b.style.opacity='1';
+      b.title='AI triage ready — click to start';
+      b.classList.add('ai-ready');
+    }else{
+      b.textContent='🤖 Triage';
+      b.disabled=true;
+      b.style.background='#94a3b8';
+      b.style.cursor='not-allowed';
+      b.style.opacity='.7';
+      b.title='AI triage preparing…';
+      b.classList.remove('ai-ready');
+    }
   });
 }
 
@@ -2541,7 +2720,10 @@ document.addEventListener('mouseover',function(ev){
 
 document.addEventListener('click',function(ev){
   const btn=ev.target.closest('.ai-inv-btn');
-  if(btn)openAiChat(btn.dataset.aid,btn.dataset.aname,btn.dataset.asev);
+  if(!btn||btn.disabled)return;
+  openAiChat(btn.dataset.aid,btn.dataset.aname,btn.dataset.asev);
+  // Auto-start triage text immediately — no second click required
+  setTimeout(function(){pickAiPrompt('triage');},80);
 });
 
 function _aiStartThread(alertId){
@@ -2568,12 +2750,12 @@ function openAiChat(alertId,alertName,severity){
   document.getElementById('ai-chat-sub').textContent='Alert ID: '+alertId+(severity?' · '+severity:'');
   document.getElementById('ai-chat-body').innerHTML='';
   document.getElementById('ai-chat-input').value='';
-  document.getElementById('ai-prompt-row').style.display='flex';
-  document.getElementById('ai-btn-triage').disabled=false;
+  // Hide prompt-row — triage fires automatically on open
+  document.getElementById('ai-prompt-row').style.display='none';
+  document.getElementById('ai-btn-triage').disabled=true;
   document.getElementById('ai-chat-input').style.display='none';
   document.getElementById('ai-send-btn').style.display='none';
   document.getElementById('ai-chat-overlay').style.display='flex';
-  // Pre-warm thread in background while user reads the button
   _aiStartPromise=_aiWarmCache[alertId]||_aiStartThread(alertId);
   delete _aiWarmCache[alertId];
 }
@@ -2725,6 +2907,68 @@ document.addEventListener('click',function(ev){
 });
 
 function closeMachPanel(){document.getElementById('mach-overlay').style.display='none';}
+
+// ── GeoIP panel ───────────────────────────────────────────────────────────────
+function closeGeoPanel(){document.getElementById('geo-overlay').style.display='none';}
+document.getElementById('geo-overlay').addEventListener('click',function(ev){if(ev.target===this)closeGeoPanel();});
+
+const _geoCache={};
+async function openGeoPanel(ip,hostname){
+  const ov=document.getElementById('geo-overlay');
+  const body=document.getElementById('geo-body');
+  document.getElementById('geo-title').textContent='GeoIP: '+ip;
+  document.getElementById('geo-sub').textContent=(hostname||ip)+' · Powered by ipinfo.io';
+  body.innerHTML='<div style="color:#94a3b8;text-align:center;padding:20px">🌍 Looking up location…</div>';
+  ov.style.display='flex';
+  if(_geoCache[ip]){renderGeo(body,_geoCache[ip]);return;}
+  try{
+    const r=await fetch('/api/geoip?ip='+encodeURIComponent(ip));
+    const d=await r.json();
+    _geoCache[ip]=d;
+    renderGeo(body,d);
+  }catch(ex){
+    body.innerHTML='<div style="color:#ef4444">Lookup failed: '+ex.message+'</div>';
+  }
+}
+
+function renderGeo(body,d){
+  if(d.error||d.status==='fail'){
+    body.innerHTML='<div style="color:#ef4444;padding:8px">'+e(d.message||d.error||'Lookup failed')+'</div>';
+    return;
+  }
+  const flag=d.country?'https://flagcdn.com/24x18/'+d.country.toLowerCase()+'.png':'';
+  const rows=[
+    ['IP',d.ip],
+    ['Country',(flag?'<img src="'+flag+'" style="vertical-align:middle;margin-right:6px;border-radius:2px" width="24" height="18" alt=""/>':'')+e(d.country||'—')],
+    ['Region',d.region],
+    ['City',d.city],
+    ['Coordinates',d.loc?'<a href="https://maps.google.com/?q='+encodeURIComponent(d.loc)+'" target="_blank" style="color:#0ea5e9">'+e(d.loc)+' ↗</a>':null],
+    ['Organisation',d.org],
+    ['ASN / ISP',d.org],
+    ['Timezone',d.timezone],
+    ['Hostname',d.hostname],
+  ];
+  // dedupe ASN/ISP and Organisation if same value
+  const seen=new Set();
+  const dedupedRows=rows.filter(([k,v])=>{
+    const val=typeof v==='string'?v:(d[k.toLowerCase()]||'');
+    if(!val)return false;
+    if(seen.has(val))return false;
+    seen.add(val);
+    return true;
+  });
+  body.innerHTML='<table style="width:100%;border-collapse:collapse">'
+    +dedupedRows.map(([k,v])=>'<tr style="border-bottom:1px solid #f1f5f9">'
+      +'<td style="padding:7px 4px;font-size:11px;font-weight:700;color:#64748b;width:110px;vertical-align:top">'+e(k)+'</td>'
+      +'<td style="padding:7px 4px;font-size:12px;color:#0f172a;word-break:break-word">'+(typeof v==='string'&&v.startsWith('<')?v:e(v||'—'))+'</td>'
+    +'</tr>').join('')
+    +'</table>';
+}
+
+document.addEventListener('click',function(ev){
+  const btn=ev.target.closest('.geo-btn');
+  if(btn)openGeoPanel(btn.dataset.ip,btn.dataset.host);
+});
 
 async function openCveDetails(cveId){
   const ov=document.getElementById('mach-overlay');
@@ -4364,6 +4608,32 @@ function requestHandler(req, res) {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url.startsWith('/api/geoip') && req.method === 'GET') {
+    (async () => {
+      const ip = (req.url.split('ip=')[1] || '').split('&')[0];
+      const clean = decodeURIComponent(ip).trim();
+      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(clean)) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: 'invalid ip' })); return;
+      }
+      if (geoIpCache[clean]) {
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify(geoIpCache[clean])); return;
+      }
+      try {
+        const data = await get(`https://ipinfo.io/${clean}/json`);
+        geoIpCache[clean] = data;
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify(data));
+      } catch (e) {
+        console.log(`[geoip] lookup failed for ${clean}: ${e.message}`);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: e.message }));
       }
     })();
     return;
