@@ -284,18 +284,67 @@ async function fetchAlerts() {
 }
 
 // ── 2. Vulns — POST /api/v2/Vulnerabilities/Hosts/search ─────────────────────
-// riskScore >= 9 filtered client-side (not cveProps.cvssV3Score)
+// Field mapping (confirmed via API exploration):
+//   machineTags.lw_InternetExposure = "Yes"  → internet-exposed filter (client-side)
+//   hostRiskScore >= 8                        → host risk filter (client-side; API rejects it)
+//   cveRiskScore                              → CVSS-based score (sort key)
+//   featureKey.version_installed              → installed package version
+//   machineTags.Hostname                      → display hostname
+// Server-side filters: status=Active, severity=Critical|High only.
 
 async function fetchVulns() {
-  const rows = await post('Vulnerabilities/Hosts/search', {
-    timeFilter: timeFilter(7), // API hard-caps at 7 days
-    filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }],
-    paging: { rows: 100 },
+  function vulnQuery(sev) {
+    return post('Vulnerabilities/Hosts/search', {
+      timeFilter: timeFilter(7),
+      filters: [
+        { field: 'severity', expression: 'eq', value: sev      },
+        { field: 'status',   expression: 'eq', value: 'Active' },
+      ],
+      returns: [
+        'vulnId', 'severity', 'hostRiskScore', 'cveRiskScore', 'riskScore',
+        'featureKey', 'fixInfo', 'evalCtx', 'machineTags', 'mid',
+        'hostRiskInfo', 'startTime',
+      ],
+      paging: { rows: 5000 },
+    });
+  }
+
+  const [crits, highs] = await Promise.all([
+    vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); return []; }),
+    vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); return []; }),
+  ]);
+
+  const rows = [...crits, ...highs];
+
+  // Client-side filters (API does not support these as server-side expressions):
+  //   Hosts > Machine status in (Online, Launched)  — exclude stopped/terminated hosts
+  //   hostRiskScore >= 8                             — host risk threshold
+  //   machineTags.lw_InternetExposure === "Yes"      — primary internet exposure check
+  //   Fallback: hostRiskInfo.host_risk_factors_breakdown.internet_reachability !== "None"
+  const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
+  const filtered = rows.filter(r => {
+    // Machine status: Online or Launched (exclude Stopped/Terminated/Deallocated)
+    const mt = r.machineTags;
+    const mtObj = mt && typeof mt === 'object' && !Array.isArray(mt) ? mt : null;
+    const mtArr = Array.isArray(mt) ? mt : null;
+    const state = mtObj
+      ? (mtObj.State || mtObj.PowerState || mtObj.status || '')
+      : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
+    if (state && OFFLINE_RE.test(state)) return false;
+
+    // Host risk score >= 8 (fallback: riskScore → cveRiskScore as impact proxy)
+    const hs = parseFloat(r.hostRiskScore ?? r.riskScore ?? r.cveRiskScore ?? 0);
+    if (hs < 8) return false;
+
+    // Internet exposure: machineTags.lw_InternetExposure === "Yes" only
+    const lwInet = mtObj ? (mtObj.lw_InternetExposure || '') : (mtArr?.find(t => t.key === 'lw_InternetExposure')?.value || '');
+    return lwInet === 'Yes';
   });
-  return rows
-    .filter(r => parseFloat(r.riskScore ?? 0) >= 9)
-    .sort((a, b) => parseFloat(b.riskScore ?? 0) - parseFloat(a.riskScore ?? 0))
-    .slice(0, 10);
+
+  console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → hostRisk>=8 & internet-exposed: ${filtered.length}`);
+  return filtered
+    .sort((a, b) => parseFloat(b.cveRiskScore ?? b.hostRiskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.hostRiskScore ?? 0))
+    .slice(0, 500);
 }
 
 // ── 3. Top Critical Non-Compliance ───────────────────────────────────────────
@@ -379,16 +428,16 @@ async function fetchCompliance() {
 }
 
 // ── 4. Identities — POST /api/v2/Queries/execute (LQL) ───────────────────────
-// LW_CE_IDENTITIES dataset — filters for PASSWORD_LOGIN_NO_MFA + ALLOWS_FULL_ADMIN
+// LW_CE_IDENTITIES — main identity data, with optional TRUST_POLICY enrichment
 
 async function fetchIdentities() {
   const tf = timeFilter();
-  const queryText = `{
+
+  const mainQuery = `{
     source { LW_CE_IDENTITIES }
     return distinct {
       PRINCIPAL_ID,
       PROVIDER_TYPE,
-
       NAME,
       LAST_USED_TIME,
       CREATED_TIME,
@@ -398,32 +447,99 @@ async function fetchIdentities() {
     }
   }`;
 
-  const rows = await post('Queries/execute', {
-    query: { queryText },
-    arguments: [
-      { name: 'StartTimeRange', value: tf.startTime },
-      { name: 'EndTimeRange',   value: tf.endTime   },
-    ],
-  });
+  // Try to also fetch TRUST_POLICY for role→principal correlation
+  const trustQuery = `{
+    source { LW_CE_IDENTITIES }
+    return distinct {
+      PRINCIPAL_ID,
+      TRUST_POLICY
+    }
+  }`;
 
-  console.log(`  [identities] total returned: ${rows.length}`);
-  if (rows.length) console.log(`  [identities] sample: ${JSON.stringify(rows[0]).slice(0, 300)}`);
+  const [rows, trustRows] = await Promise.all([
+    post('Queries/execute', {
+      query: { queryText: mainQuery },
+      arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
+    }).catch(() => []),
+    post('Queries/execute', {
+      query: { queryText: trustQuery },
+      arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
+    }).catch(() => []),
+  ]);
 
-  // Include all high-permissive identities: full admin OR high/critical risk severity
-  const HIGH_SEV = new Set(['critical', 'high']);
-  return rows
+  // Build trust map: PRINCIPAL_ID → TRUST_POLICY
+  const trustMap = {};
+  for (const t of trustRows) {
+    if (t.PRINCIPAL_ID && t.TRUST_POLICY) trustMap[t.PRINCIPAL_ID] = t.TRUST_POLICY;
+  }
+  console.log(`  [identities] total: ${rows.length}  trust policies: ${Object.keys(trustMap).length}`);
+
+  console.log(`  [identities] total: ${rows.length}`);
+  if (rows.length) console.log(`  [identities] sample: ${JSON.stringify(rows[0]).slice(0, 200)}`);
+
+  // Filter criteria (any match qualifies):
+  //   1. Risk severity = Critical
+  //   2. Unused permissions >= 75%
+  //   3. Full Admin flag (always include)
+  // Identity type: limit to AWS/Azure/GCP role, user, service account (skip generic/unknown)
+  const CLOUD_ROLE_TYPES = new Set(['aws','azure','gcp','google']);
+  const filtered = rows
     .filter(r => {
-      const risks = r.METRICS?.risks ?? [];
-      const sev   = (r.METRICS?.risk_severity || '').toLowerCase();
-      return risks.includes('ALLOWS_FULL_ADMIN') || HIGH_SEV.has(sev);
+      const risks  = r.METRICS?.risks ?? [];
+      const sev    = (r.METRICS?.risk_severity || '').toLowerCase();
+      const unused = r.ENTITLEMENT_COUNTS?.entitlements_unused_count ?? null;
+      const total  = r.ENTITLEMENT_COUNTS?.entitlements_total_count  ?? null;
+      const highUnused = unused !== null && total !== null && total > 0 && (unused / total) >= 0.75;
+      const isCritical = sev === 'critical';
+
+      // Identity type must be a cloud role/user/service (not a bare generic entry)
+      const pid = (r.PRINCIPAL_ID || '').toLowerCase();
+      const pt  = (r.PROVIDER_TYPE || '').toLowerCase();
+      const nm  = (r.NAME || '').toLowerCase();
+      const isTypedIdentity =
+        pid.includes(':role/') || pid.includes(':user/') ||
+        pid.includes('serviceaccount') || pid.includes('.iam.gserviceaccount.com') ||
+        pid.includes(':root') || nm === 'root' ||
+        pt.includes('serviceprincipal') || pt.includes('aad') ||
+        CLOUD_ROLE_TYPES.has(pt.split('_')[0]);
+
+      return isTypedIdentity && (risks.includes('ALLOWS_FULL_ADMIN') || isCritical || highUnused);
     })
     .sort((a, b) => {
+      // Sort: Full Admin first, then by risk_score desc
       const aAdmin = (a.METRICS?.risks ?? []).includes('ALLOWS_FULL_ADMIN') ? 0 : 1;
       const bAdmin = (b.METRICS?.risks ?? []).includes('ALLOWS_FULL_ADMIN') ? 0 : 1;
       if (aAdmin !== bAdmin) return aAdmin - bAdmin;
       return (b.METRICS?.risk_score || 0) - (a.METRICS?.risk_score || 0);
     })
-    .slice(0, 25);
+    .slice(0, 50);
+
+  // Parse TRUST_POLICY (from trustMap) into trust principals for the Correlated tab
+  filtered.forEach(r => {
+    const principals = [];
+    try {
+      const raw = trustMap[r.PRINCIPAL_ID];
+      if (raw) {
+        const tp = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const stmts = tp?.Statement || tp?.statement || [];
+        for (const stmt of stmts) {
+          const p = stmt?.Principal || stmt?.principal;
+          if (!p) continue;
+          if (typeof p === 'string') { principals.push({ type: 'AWS', principal: p }); continue; }
+          for (const [k, v] of Object.entries(p)) {
+            const vals = Array.isArray(v) ? v : [v];
+            vals.forEach(vv => principals.push({ type: k, principal: vv }));
+          }
+        }
+      }
+      // Also surface lateral movement principals from METRICS if available
+      const lateral = r.METRICS?.lateral_movement_principals || [];
+      lateral.forEach(lp => principals.push({ type: 'Lateral', principal: lp }));
+    } catch (_) {}
+    r._trustPrincipals = principals;
+  });
+
+  return filtered;
 }
 
 // ── 5. Secrets All — POST /api/v2/Queries/execute (LQL) ──────────────────────
@@ -431,24 +547,34 @@ async function fetchIdentities() {
 
 async function fetchSecretsAll() {
   const tf = timeFilter();
-  const queryText = `{source { LW_HE_SECRETS_ALL } return distinct {BATCH_START_TIME, BATCH_END_TIME, BATCH_ID, RECORD_CREATED_TIME, MID, HOSTNAME, IS_IN_CONTAINER, CONTAINER_KEY, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
   const tok = await ensureToken();
+  const timeArgs = [
+    { name: 'StartTimeRange', value: tf.startTime },
+    { name: 'EndTimeRange',   value: tf.endTime   },
+  ];
+
+  // Run secrets fetch + machine state query in parallel
+  const secretsQueryText = `{source { LW_HE_SECRETS_ALL } return distinct {BATCH_START_TIME, BATCH_END_TIME, BATCH_ID, RECORD_CREATED_TIME, MID, HOSTNAME, IS_IN_CONTAINER, CONTAINER_KEY, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
+  const machQueryText    = `{source { LW_HE_MACHINES } return { MID, HOSTNAME, TAGS }}`;
+
+  const [r1resp, machResp] = await Promise.all([
+    request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+      { Authorization: `Bearer ${tok}` },
+      { query: { queryText: secretsQueryText }, arguments: timeArgs }),
+    request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+      { Authorization: `Bearer ${tok}` },
+      { query: { queryText: machQueryText }, arguments: timeArgs })
+      .catch(() => ({ status: 0, body: null })),
+  ]);
+
+  if (r1resp.status !== 200 && r1resp.status !== 201)
+    throw new Error(`Queries/execute → HTTP ${r1resp.status}`);
+
   const all = [];
+  if (Array.isArray(r1resp.body?.data)) all.push(...r1resp.body.data);
 
-  // First page
-  const { status: s1, body: r1 } = await request(
-    'POST', LW_ACCOUNT, '/api/v2/Queries/execute',
-    { Authorization: `Bearer ${tok}` },
-    { query: { queryText }, arguments: [
-      { name: 'StartTimeRange', value: tf.startTime },
-      { name: 'EndTimeRange',   value: tf.endTime   },
-    ] },
-  );
-  if (s1 !== 200 && s1 !== 201) throw new Error(`Queries/execute → HTTP ${s1}`);
-  if (Array.isArray(r1?.data)) all.push(...r1.data);
-
-  // Follow pages
-  let nextUrl = r1?.paging?.urls?.nextPage || null;
+  // Follow secrets pages
+  let nextUrl = r1resp.body?.paging?.urls?.nextPage || null;
   while (nextUrl) {
     const u = new URL(nextUrl);
     const { status: sN, body: rN } = await request(
@@ -460,22 +586,47 @@ async function fetchSecretsAll() {
     nextUrl = rN?.paging?.urls?.nextPage || null;
   }
 
-  const filtered = all.filter(r => {
+  // Build stopped-host sets from LW_HE_MACHINES TAGS
+  const STOPPED_STATES = new Set(['stopped','terminated','deallocated','stopping',
+    'shutting-down','powered_off','off','poweroff','deallocating']);
+  const stoppedMIDs   = new Set();
+  const stoppedHosts  = new Set();
+  (machResp.body?.data || []).forEach(m => {
+    const tags = m.TAGS;
+    let ps = '';
+    if (Array.isArray(tags)) {
+      const t = tags.find(t => (t.key || '').toLowerCase() === 'powerstate');
+      ps = (t?.value || '').toLowerCase();
+    } else if (tags && typeof tags === 'object') {
+      ps = String(tags.powerState || tags.PowerState || '').toLowerCase();
+    }
+    if (STOPPED_STATES.has(ps)) {
+      if (m.MID)      stoppedMIDs.add(String(m.MID));
+      if (m.HOSTNAME) stoppedHosts.add(m.HOSTNAME);
+    }
+  });
+
+  let filtered = all.filter(r => {
     const path = (r.FILE_PATH || '');
     const meta = (typeof r.SECRET_METADATA === 'object' && r.SECRET_METADATA) ? r.SECRET_METADATA : {};
     const p = meta.file_permissions;
-
-    // Always drop system SSH host keys — server identity keys, not user secrets
     if (/etc\/ssh\/ssh_host_/i.test(path)) return false;
-
-    // For secrets with known permissions, only surface those more permissive than
-    // chmod 400 (owner read-only). (p & 0o377) !== 0 = any bit beyond owner-read is set.
     if (p !== undefined && p !== null) return (p & 0o377) !== 0;
-
-    // Permissions not available — include (conservative: don't miss real findings)
     return true;
   });
-  console.log(`  [secrets-all] total: ${all.length}, after exclusions: ${filtered.length}`);
+
+  // Exclude secrets whose host is explicitly stopped/terminated
+  const beforeStop = filtered.length;
+  if (stoppedMIDs.size || stoppedHosts.size) {
+    filtered = filtered.filter(r => {
+      if (r.MID      && stoppedMIDs.has(String(r.MID)))  return false;
+      if (r.HOSTNAME && stoppedHosts.has(r.HOSTNAME))     return false;
+      return true;
+    });
+  }
+  console.log(`  [secrets-ssh] total permissive (>chmod 400): ${all.length}`);
+  console.log(`  [secrets-all] total: ${all.length}, after exclusions: ${filtered.length}` +
+    (beforeStop - filtered.length ? ` (${beforeStop - filtered.length} on stopped hosts removed)` : ''));
   return filtered;
 }
 
@@ -582,326 +733,340 @@ function buildHtml(_account, intervalSec) {
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#f5f7fa;--surface:#ffffff;--card:#f0f2f6;--card2:#eaecf2;
-  --border:#dde2ea;--border2:#c8cfd9;
-  --text:#0f172a;--sub:#475569;--muted:#94a3b8;
-  --accent:#DA291C;--accent-l:#e84038;--accent-dim:rgba(218,41,28,.1);
-  --cr:#ef4444;--cr-bg:rgba(239,68,68,.08);--cr-bd:rgba(239,68,68,.3);
-  --hi:#f97316;--hi-bg:rgba(249,115,22,.08);--hi-bd:rgba(249,115,22,.3);
-  --me:#d97706;--me-bg:rgba(217,119,6,.08);
-  --ok:#16a34a;--ok-bg:rgba(22,163,74,.08);--ok-bd:rgba(22,163,74,.3);
+  /* ── Console palette ── */
+  --bg:#f3f4f6;--surface:#ffffff;--card:#f9fafb;--card2:#f3f4f6;
+  --border:#e5e7eb;--border2:#d1d5db;
+  --text:#111827;--sub:#374151;--muted:#6b7280;
+  --accent:#da291c;--accent-l:#c42418;--accent-dim:rgba(218,41,28,.07);
+  /* risk — desaturated, GitHub-scale */
+  --cr:#b91c1c;--cr-bg:#fef2f2;--cr-bd:#fca5a5;
+  --hi:#c2410c;--hi-bg:#fff7ed;--hi-bd:#fdba74;
+  --me:#92400e;--me-bg:#fffbeb;--me-bd:#fcd34d;
+  --ok:#166534;--ok-bg:#f0fdf4;--ok-bd:#86efac;
 }
-body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:#c8cfd9;border-radius:2px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+/* ── Animations ── */
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes step1-flash{0%,100%{box-shadow:0 0 0 0 rgba(185,28,28,.6)}50%{box-shadow:0 0 0 14px rgba(185,28,28,0)}}
+@keyframes snake-flow{to{stroke-dashoffset:-26}}
+@keyframes path-flow{to{stroke-dashoffset:-20}}
+@keyframes fg-arrow{0%,100%{transform:translateX(0)}50%{transform:translateX(4px)}}
+
+/* ── App shell ── */
+.app-layout{display:flex;min-height:100vh}
+.main{flex:1;min-width:0}
+
+/* ── Sidebar ── */
+.sidebar{width:210px;background:#0d1117;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column;border-right:1px solid #21262d}
+.sb-brand{padding:14px 14px 12px;border-bottom:1px solid #21262d}
+.sb-logo{display:none}
+.sb-name{font-size:12px;font-weight:600;color:#c9d1d9;letter-spacing:-.1px}
+.sb-sect{padding:14px 14px 4px;font-size:9px;font-weight:700;letter-spacing:.12em;color:#30363d;text-transform:uppercase}
+.sb-item{display:flex;align-items:center;gap:8px;padding:7px 12px;margin:1px 6px;border-radius:5px;cursor:pointer;color:#8b949e;font-size:12px;font-weight:400;transition:background .1s,color .1s;user-select:none;white-space:nowrap}
+.sb-item:hover{background:#161b22;color:#c9d1d9}
+.sb-item.active{background:#21262d;color:#f0f6fc;font-weight:600;border-left:2px solid var(--accent);padding-left:10px}
+.sb-item svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;opacity:.7}
+.sb-item.active svg{opacity:1}
+.sb-sep{margin:6px 12px;border:none;border-top:1px solid #21262d}
+.sb-spacer{flex:1}
+
+/* ── Top bar ── */
+.top-bar{display:flex;align-items:center;justify-content:flex-end;padding:6px 20px;background:var(--surface);border-bottom:1px solid var(--border);gap:12px;position:sticky;top:0;z-index:100}
+.tb-user{display:flex;align-items:center;gap:8px}
+.tb-avatar{width:28px;height:28px;border-radius:4px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.tb-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.2}
+.tb-role-lbl{font-size:10px;color:var(--muted);line-height:1.2}
+.tb-badge{font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:var(--me-bg);color:var(--me);border:1px solid var(--me-bd);border-radius:3px;padding:1px 6px}
+
+/* ── Views ── */
+.view{display:none}.view.active{display:block}
 
 /* ── Report header ── */
-.rpt-header{background:#ffffff;border-bottom:1px solid var(--border);padding:18px 28px}
-.rpt-top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:0}
-.rpt-brand{display:flex;align-items:center;gap:14px}
-.logo{width:46px;height:46px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.logo svg{width:24px;height:24px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.rpt-title{font-size:20px;font-weight:700;color:var(--text);letter-spacing:-.3px}
-.rpt-sub{font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.12em;margin-top:2px}
-.rpt-meta{text-align:right;font-size:11px;color:var(--muted);line-height:1.9;justify-self:end}
+.rpt-header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px}
+.rpt-top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}
+.rpt-brand{display:flex;align-items:center;gap:12px}
+.logo{width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo svg{width:20px;height:20px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.rpt-title{font-size:15px;font-weight:700;color:var(--text)}
+.rpt-sub{font-size:10px;color:var(--accent);text-transform:uppercase;letter-spacing:.1em;margin-top:1px}
+.rpt-meta{text-align:right;font-size:11px;color:var(--muted);line-height:1.8;justify-self:end}
 .rpt-meta b{color:var(--sub)}
-.live-row{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);justify-content:flex-end}
+.live-row{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);justify-content:flex-end}
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--muted)}
-.live-dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(52,211,153,.5);animation:blink 2.5s ease-in-out infinite}
+.live-dot.ok{background:#238636;animation:blink 2.5s ease-in-out infinite}
 .live-dot.err{background:var(--cr)}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-@keyframes step1-flash{0%,100%{box-shadow:0 6px 24px rgba(239,68,68,.38),0 0 0 0 rgba(239,68,68,.7)}50%{box-shadow:0 6px 24px rgba(239,68,68,.38),0 0 0 18px rgba(239,68,68,0)}}
 
-/* ── Risk Score Mountain ── */
-.rs-block{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 36px;border-left:1px solid var(--border2);border-right:1px solid var(--border2)}
-.rs-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-bottom:6px}
-.rs-num{font-size:48px;font-weight:900;line-height:1;letter-spacing:-3px;color:var(--text);transition:color .4s}
-.mountain{display:flex;align-items:flex-end;gap:5px;height:28px;margin:8px 0 6px}
-.mt-bar{width:14px;border-radius:3px 3px 0 0;background:var(--border2);transition:background .4s}
+/* ── Posture score ── */
+.rs-block{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 32px;border-left:1px solid var(--border);border-right:1px solid var(--border)}
+.rs-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin-bottom:4px}
+.rs-num{font-size:44px;font-weight:800;line-height:1;letter-spacing:-2px;color:var(--text);font-variant-numeric:tabular-nums;transition:color .4s}
+.mountain{display:flex;align-items:flex-end;gap:4px;height:24px;margin:6px 0 4px}
+.mt-bar{width:12px;border-radius:2px 2px 0 0;background:var(--border2);transition:background .4s}
 .mt-bar.lit{background:currentColor}
-.mt-1{height:7px}.mt-2{height:14px}.mt-3{height:21px}.mt-4{height:28px}
-.rs-band{font-size:12px;font-weight:700;letter-spacing:.1em;transition:color .4s}
+.mt-1{height:6px}.mt-2{height:12px}.mt-3{height:18px}.mt-4{height:24px}
+.rs-band{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;transition:color .4s}
 
-/* ── KPI summary bar ── */
-.kpi-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
-.kpi{background:var(--surface);padding:16px 22px;position:relative;overflow:hidden;cursor:default;transition:background .15s;box-shadow:0 1px 3px rgba(15,23,42,.06)}
-.kpi:hover{background:var(--card2)}
-.kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px}
+/* ── KPI bar ── */
+.kpi-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid var(--border)}
+.kpi{background:var(--surface);padding:14px 20px;position:relative;overflow:hidden;cursor:default;border-right:1px solid var(--border)}
+.kpi:last-child{border-right:none}
+.kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px}
 .kpi.red::before{background:var(--cr)}
 .kpi.orange::before{background:var(--hi)}
 .kpi.yellow::before{background:var(--me)}
 .kpi.teal::before{background:var(--accent)}
-.kpi-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
-.kpi-val{font-size:32px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text)}
+.kpi-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:5px}
+.kpi-val{font-size:28px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text);font-variant-numeric:tabular-nums}
 .kpi.red .kpi-val{color:var(--cr)}
 .kpi.orange .kpi-val{color:var(--hi)}
 .kpi.yellow .kpi-val{color:var(--me)}
-.kpi.teal .kpi-val{color:var(--accent-l)}
-.kpi-desc{font-size:11px;color:var(--muted);margin-top:5px}
+.kpi.teal .kpi-val{color:var(--accent)}
+.kpi-desc{font-size:10px;color:var(--muted);margin-top:4px}
 
 /* ── Error notice ── */
-.err-notice{background:var(--cr-bg);border-bottom:1px solid var(--cr-bd);padding:8px 28px;font-size:11px;color:var(--cr);display:none}
+.err-notice{background:var(--cr-bg);border-bottom:1px solid var(--cr-bd);padding:6px 24px;font-size:11px;color:var(--cr);display:none}
 .err-notice.show{display:block}
 
-/* ── Section layout ── */
+/* ── Section layout (overview grid) ── */
 .sections{display:grid;grid-template-columns:repeat(2,1fr);gap:0;border-top:1px solid var(--border)}
 @media(max-width:1000px){.sections{grid-template-columns:1fr}}
 .section{border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface)}
 .section:nth-child(even){border-right:none}
 
 /* ── Section header ── */
-.sec-hdr{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--card2)}
-.sec-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.sec-hdr{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--card)}
+.sec-icon{width:26px;height:26px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0}
 .si-red{background:var(--cr-bg);border:1px solid var(--cr-bd)}
 .si-orange{background:var(--hi-bg);border:1px solid var(--hi-bd)}
-.si-yellow{background:var(--me-bg);border:1px solid rgba(234,179,8,.25)}
-.si-teal{background:var(--accent-dim);border:1px solid rgba(13,148,136,.25)}
-.sec-title{font-size:13px;font-weight:600;color:var(--text)}
-.sec-desc{font-size:11px;color:var(--muted);margin-top:1px}
-.sec-count{margin-left:auto;font-size:11px;font-weight:700;padding:3px 10px;border-radius:5px;border:1px solid var(--border)}
+.si-yellow{background:var(--me-bg);border:1px solid var(--me-bd)}
+.si-teal{background:var(--accent-dim);border:1px solid rgba(218,41,28,.2)}
+.sec-title{font-size:12px;font-weight:600;color:var(--text)}
+.sec-desc{font-size:10px;color:var(--muted);margin-top:1px}
+.sec-count{margin-left:auto;font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;border:1px solid var(--border);font-variant-numeric:tabular-nums}
 .sec-count.bad{color:var(--cr);background:var(--cr-bg);border-color:var(--cr-bd)}
 .sec-count.ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-bd)}
 
-/* ── Table ── */
+/* ── Data table ── */
 .tbl-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:11px}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
 thead{position:sticky;top:0;z-index:2}
-thead th{text-align:left;padding:5px 10px;font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--card);border-bottom:1px solid var(--border);white-space:nowrap}
-tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
-tbody tr:hover{background:rgba(99,102,241,.04)}
+thead th{text-align:left;padding:5px 10px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:var(--card);border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr{border-bottom:1px solid var(--border);transition:background .08s}
+tbody tr:hover{background:var(--card)}
 tbody tr:last-child{border-bottom:none}
 td{padding:5px 10px;vertical-align:middle;color:var(--sub)}
 td.p{color:var(--text);font-weight:500;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-td.desc{color:var(--sub);max-width:420px;white-space:normal;word-break:break-word;line-height:1.4}
+td.desc{color:var(--sub);max-width:420px;white-space:normal;word-break:break-word;line-height:1.45}
 td.m{font-family:'SFMono-Regular',Consolas,monospace;font-size:10px;color:var(--muted);white-space:nowrap}
 td.r{text-align:right;padding-right:10px;white-space:nowrap;width:1%}
+td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
 /* ── Badges ── */
-.b{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;white-space:nowrap;border:1px solid transparent}
+.b{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;white-space:nowrap;border:1px solid transparent}
+/* Risk flag tooltip */
+.rf-dot{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;font-size:7px;font-weight:800;cursor:default;flex-shrink:0}
+.rf-dot .rf-tip{display:none;position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#f8fafc;border-radius:6px;padding:7px 10px;font-size:11px;font-weight:400;white-space:normal;width:220px;box-shadow:0 4px 16px rgba(0,0,0,.25);z-index:9999;pointer-events:none;line-height:1.45}
+.rf-dot .rf-tip strong{font-weight:700;display:block;margin-bottom:2px;font-size:11.5px}
+.rf-dot .rf-tip::before{content:'';position:absolute;bottom:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-bottom-color:#1e293b}
+.rf-dot:hover .rf-tip{display:block}
 .b::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}
 .b-cr{color:var(--cr);background:var(--cr-bg);border-color:var(--cr-bd)}
 .b-hi{color:var(--hi);background:var(--hi-bg);border-color:var(--hi-bd)}
-.b-me{color:var(--me);background:var(--me-bg)}
+.b-me{color:var(--me);background:var(--me-bg);border-color:var(--me-bd)}
 .b-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-bd)}
-.b-nt{color:var(--muted);background:rgba(78,100,128,.15)}
-.risk-score{font-size:12px;font-weight:800;color:var(--cr)}
-.tag-admin{font-size:10px;font-weight:700;color:var(--cr);background:var(--cr-bg);border:1px solid var(--cr-bd);padding:1px 6px;border-radius:3px;letter-spacing:.03em}
-.tag-nomfa{font-size:10px;font-weight:700;color:var(--hi);background:var(--hi-bg);border:1px solid var(--hi-bd);padding:1px 6px;border-radius:3px}
+.b-nt{color:var(--muted);background:var(--card);border-color:var(--border)}
+.risk-score{font-size:12px;font-weight:700;color:var(--cr);font-variant-numeric:tabular-nums}
+.tag-admin{font-size:9px;font-weight:700;color:var(--cr);border:1px solid var(--cr-bd);padding:1px 5px;border-radius:3px}
+.tag-nomfa{font-size:9px;font-weight:700;color:var(--hi);border:1px solid var(--hi-bd);padding:1px 5px;border-radius:3px}
 
 /* ── Row severity strip ── */
-.strip-cr td:first-child{border-left:3px solid var(--cr)}
-.strip-hi td:first-child{border-left:3px solid var(--hi)}
-.strip-me td:first-child{border-left:3px solid var(--me)}
+.strip-cr td:first-child{border-left:2px solid var(--cr)}
+.strip-hi td:first-child{border-left:2px solid var(--hi)}
+.strip-me td:first-child{border-left:2px solid var(--me)}
 
-/* ── State messages ── */
-.state{display:flex;flex-direction:column;align-items:center;gap:10px;padding:40px 24px;color:var(--muted);font-size:12px;text-align:center}
-.state-icon{font-size:26px;opacity:.35}
-.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+/* ── State / spinner ── */
+.state{display:flex;flex-direction:column;align-items:center;gap:8px;padding:36px 24px;color:var(--muted);font-size:12px;text-align:center}
+.state-icon{font-size:22px;opacity:.3}
+.spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 
-/* ── Risk Findings links ── */
-.rf-link{color:var(--text);text-decoration:none;font-weight:500}
-.rf-link:hover{color:var(--accent-l);text-decoration:underline}
-.cp-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:none;background:transparent;color:#94a3b8;cursor:pointer;border-radius:3px;padding:0;margin-left:5px;vertical-align:middle;flex-shrink:0;transition:color .15s,background .15s}
-.cp-btn:hover{color:#DA291C;background:#fee2e2}
-.cp-btn.ok{color:#22c55e}
+/* ── Links / copy button ── */
+.rf-link{color:var(--sub);text-decoration:none;font-weight:500}
+.rf-link:hover{color:var(--accent);text-decoration:underline}
+.cp-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:none;background:transparent;color:var(--border2);cursor:pointer;border-radius:2px;padding:0;margin-left:4px;vertical-align:middle;flex-shrink:0;transition:color .1s}
+.cp-btn:hover{color:var(--accent)}
+.cp-btn.ok{color:var(--ok)}
 
-/* ── Dashboard pie section ── */
-.pie-section{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px 32px 16px;background:#ffffff;border-bottom:1px solid var(--border)}
+/* ── Dashboard pie / overview ── */
+.pie-section{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px 28px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
 .pie-donut{flex-shrink:0;display:flex;justify-content:center}
-.pie-legend{display:grid;grid-template-columns:repeat(4,1fr);width:100%;max-width:860px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
-.pi-row{display:flex;flex-direction:column;gap:6px;padding:20px 22px;cursor:pointer;transition:background .15s;border-right:1px solid var(--border)}
+.pie-legend{display:grid;grid-template-columns:repeat(4,1fr);width:100%;max-width:860px;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.pi-row{display:flex;flex-direction:column;gap:4px;padding:16px 18px;cursor:pointer;transition:background .1s;border-right:1px solid var(--border)}
 .pi-row:last-child{border-right:none}
 .pi-row:hover{background:var(--card)}
-.pi-topbar{height:3px;border-radius:2px;margin-bottom:6px}
-.pi-cnt{font-size:40px;font-weight:900;line-height:1;letter-spacing:-2px}
-.pi-name{font-size:13px;font-weight:700;color:var(--sub);line-height:1.3;margin-top:4px}
-.pi-desc{font-size:10.5px;color:var(--muted);line-height:1.5}
-/* legacy – keep in case referenced */
+.pi-topbar{height:2px;border-radius:1px;margin-bottom:4px}
+.pi-cnt{font-size:36px;font-weight:800;line-height:1;letter-spacing:-2px;font-variant-numeric:tabular-nums}
+.pi-name{font-size:12px;font-weight:600;color:var(--sub);line-height:1.3;margin-top:3px}
+.pi-desc{font-size:10px;color:var(--muted);line-height:1.45}
 .dash-kpis{display:none}
-.dk-val{font-size:42px;font-weight:900;line-height:1;letter-spacing:-2px}
-.dk-red .dk-val{color:#ef4444}.dk-orange .dk-val{color:#f97316}.dk-amber .dk-val{color:#d97706}.dk-purple .dk-val{color:#8b5cf6}
+.dk-val{font-size:36px;font-weight:800;line-height:1;letter-spacing:-2px}
+.dk-red .dk-val{color:var(--cr)}.dk-orange .dk-val{color:var(--hi)}.dk-amber .dk-val{color:var(--me)}.dk-purple .dk-val{color:#7c3aed}
 
 /* ── Section view header ── */
-.view-hdr{padding:16px 24px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border)}
+.view-hdr{padding:12px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);background:var(--surface)}
 .vh-icon{display:none}
 .vh-text{flex:1}
-.vh-title{font-size:15px;font-weight:700;color:var(--text)}
-.vh-sub{font-size:11px;color:var(--muted);margin-top:2px}
-.vh-badge{font-size:12px;font-weight:800;padding:4px 14px;border-radius:7px;white-space:nowrap}
-/* section-specific accents */
-.vha-red{background:#fff5f5;border-bottom:1px solid var(--cr-bd)}.vha-red .vh-title{color:var(--cr)}.vha-red .vh-badge{background:var(--cr-bg);color:var(--cr);border:1px solid var(--cr-bd)}
-.vha-orange{background:#fff8f2;border-bottom:1px solid var(--hi-bd)}.vha-orange .vh-title{color:var(--hi)}.vha-orange .vh-badge{background:var(--hi-bg);color:var(--hi);border:1px solid var(--hi-bd)}
-.vha-amber{background:#fffbf0;border-bottom:1px solid rgba(217,119,6,.3)}.vha-amber .vh-title{color:var(--me)}.vha-amber .vh-badge{background:var(--me-bg);color:var(--me);border:1px solid rgba(217,119,6,.3)}
-.vha-purple{background:#f8f6ff;border-bottom:1px solid rgba(109,40,217,.2)}.vha-purple .vh-title{color:#7c3aed}.vha-purple .vh-badge{background:rgba(109,40,217,.08);color:#7c3aed;border:1px solid rgba(109,40,217,.2)}
+.vh-title{font-size:13px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.04em}
+.vh-sub{font-size:10px;color:var(--muted);margin-top:1px}
+.vh-badge{font-size:11px;font-weight:700;padding:2px 10px;border-radius:3px;white-space:nowrap;font-variant-numeric:tabular-nums;border:1px solid var(--border);background:var(--card);color:var(--sub)}
+/* section accents — left border only, no background wash */
+.vha-red{border-left:3px solid var(--cr)}.vha-red .vh-title{color:var(--cr)}.vha-red .vh-badge{color:var(--cr);border-color:var(--cr-bd);background:var(--cr-bg)}
+.vha-orange{border-left:3px solid var(--hi)}.vha-orange .vh-title{color:var(--hi)}.vha-orange .vh-badge{color:var(--hi);border-color:var(--hi-bd);background:var(--hi-bg)}
+.vha-amber{border-left:3px solid var(--me)}.vha-amber .vh-title{color:var(--me)}.vha-amber .vh-badge{color:var(--me);border-color:var(--me-bd);background:var(--me-bg)}
+.vha-purple{border-left:3px solid #7c3aed}.vha-purple .vh-title{color:#6d28d9}.vha-purple .vh-badge{color:#6d28d9;border-color:#c4b5fd;background:#f5f3ff}
 
-/* ── Alert description cell ── */
-td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-height:1.5;padding-top:7px;padding-bottom:7px}
-
-/* ── Agent tip ── */
-.agent-tip{font-size:10px;color:var(--accent-l);cursor:default;border-bottom:1px dashed var(--accent);padding-bottom:1px}
-.agent-tip:hover{color:var(--accent)}
-
-/* ── Footer ── */
-.footer{text-align:center;padding:14px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)}
-
-/* ── App layout & sidebar ── */
-.app-layout{display:flex;min-height:100vh}
-.sidebar{width:214px;background:#111827;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
-.main{flex:1;min-width:0}
-.top-bar{display:flex;align-items:center;justify-content:flex-end;padding:8px 20px;background:#fff;border-bottom:1px solid var(--border);gap:12px;position:sticky;top:0;z-index:100}
-.tb-user{display:flex;align-items:center;gap:10px}
-.tb-avatar{width:32px;height:32px;border-radius:50%;background:#DA291C;color:#fff;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;letter-spacing:.03em;flex-shrink:0}
-.tb-name{font-size:12px;font-weight:700;color:var(--text);line-height:1.2}
-.tb-role-lbl{font-size:10px;color:var(--muted);line-height:1.2}
-.tb-badge{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:5px;padding:2px 7px}
-.sb-brand{display:flex;align-items:center;gap:10px;padding:16px 14px;border-bottom:1px solid #1f2937}
-.sb-logo{width:36px;height:36px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.sb-logo svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.sb-name{font-size:14px;font-weight:700;color:#fff;letter-spacing:-.2px}
-.sb-sect{padding:16px 16px 4px;font-size:9px;font-weight:700;letter-spacing:.14em;color:#4b5563;text-transform:uppercase}
-.sb-item{display:flex;align-items:center;gap:9px;padding:8px 13px;margin:1px 8px;border-radius:7px;cursor:pointer;color:#9ca3af;font-size:12.5px;font-weight:500;transition:all .15s;user-select:none;white-space:nowrap}
-.sb-item:hover{background:rgba(255,255,255,.07);color:#e5e7eb}
-.sb-item.active{background:#DA291C;color:#fff;font-weight:600}
-.sb-item svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
-.sb-sep{margin:8px 14px;border:none;border-top:1px solid #1f2937}
-.sb-spacer{flex:1}
-/* ── Views ── */
-.view{display:none}.view.active{display:block}
-/* ── Alerts dark section header ── */
+/* ── Misc ── */
+.agent-tip{font-size:10px;color:var(--accent);cursor:default;border-bottom:1px dashed var(--accent);padding-bottom:1px}
+.footer{text-align:center;padding:12px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)}
 .sec-hdr.dark{background:var(--surface);border-bottom:1px solid var(--border)}
-.sec-hdr.dark .sec-title{color:var(--text)}
-.sec-hdr.dark .sec-desc{color:var(--muted)}
+
 /* ── Risk Findings view ── */
-.rf-posture{display:flex;align-items:center;gap:28px;padding:20px 28px;background:#ffffff;border-bottom:1px solid var(--border)}
-.rf-pos-num{font-size:60px;font-weight:900;line-height:1;letter-spacing:-3px;transition:color .4s}
-.rf-pos-meta{display:flex;flex-direction:column;gap:3px}
-.rf-pos-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--muted)}
-.rf-pos-band{font-size:17px;font-weight:700;letter-spacing:.06em;transition:color .4s}
-.rf-pos-sub{font-size:10.5px;color:var(--muted)}
-.rf-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
-.rf-kpi{background:var(--surface);padding:13px 18px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
-.rf-kpi-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px}
-.rf-kpi-val{font-size:26px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text)}
-.rf-kpi-sub{font-size:10px;color:var(--muted);margin-top:3px}
-.rf-body{padding:16px 20px}
-/* ── Journey Snake Map ── */
-.jmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
+.rf-posture{display:flex;align-items:center;gap:24px;padding:16px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.rf-pos-num{font-size:52px;font-weight:800;line-height:1;letter-spacing:-2px;font-variant-numeric:tabular-nums;transition:color .4s}
+.rf-pos-meta{display:flex;flex-direction:column;gap:2px}
+.rf-pos-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.rf-pos-band{font-size:14px;font-weight:700;letter-spacing:.04em;transition:color .4s}
+.rf-pos-sub{font-size:10px;color:var(--muted)}
+.rf-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-bottom:1px solid var(--border)}
+.rf-kpi{background:var(--surface);padding:11px 16px;border-right:1px solid var(--border)}
+.rf-kpi:last-child{border-right:none}
+.rf-kpi-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:4px}
+.rf-kpi-val{font-size:22px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--text);font-variant-numeric:tabular-nums}
+.rf-kpi-sub{font-size:10px;color:var(--muted);margin-top:2px}
+.rf-body{padding:14px 18px}
+
+/* ── Journey / Snake maps ── */
+.jmap-outer{padding:14px 14px 10px;display:flex;justify-content:center}
 .jmap-svg{width:100%;max-width:1000px;overflow:visible}
-@keyframes snake-flow{to{stroke-dashoffset:-26}}
-@keyframes path-flow{to{stroke-dashoffset:-20}}
+.cjmap-outer{padding:14px 14px 10px;display:flex;justify-content:center}
+.cjmap-svg{width:100%;max-width:750px;overflow:visible}
 
 /* ── Report button + modal ── */
-.rpt-btn{display:flex;align-items:center;gap:8px;margin:8px 10px 0;padding:10px 13px;border-radius:8px;cursor:pointer;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;border:none;width:calc(100% - 20px);transition:filter .15s}
-.rpt-btn:hover{filter:brightness(1.15)}
-.rpt-btn svg{width:14px;height:14px;fill:none;stroke:#fff;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center}
+.rpt-btn{display:flex;align-items:center;gap:7px;margin:8px 8px 0;padding:9px 12px;border-radius:5px;cursor:pointer;background:var(--accent);color:#fff;font-size:11px;font-weight:700;letter-spacing:.04em;border:none;width:calc(100% - 16px);transition:background .1s}
+.rpt-btn:hover{background:var(--accent-l)}
+.rpt-btn svg{width:13px;height:13px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center}
 .modal-overlay.open{display:flex}
-.modal-box{background:#ffffff;border:1px solid var(--border);border-radius:16px;padding:28px 28px 22px;width:400px;max-width:92vw;box-shadow:0 24px 64px rgba(0,0,0,.15)}
-.modal-title{font-size:16px;font-weight:800;color:var(--text);margin-bottom:6px}
-.modal-sub{font-size:11px;color:var(--muted);margin-bottom:22px}
-.modal-field{margin-bottom:14px}
-.modal-label{font-size:10.5px;font-weight:700;color:var(--sub);letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px}
-.modal-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
-.modal-input:focus{border-color:#DA291C}
-.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
-.modal-btn{padding:9px 18px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:none;font-family:inherit;transition:filter .15s}
-.modal-btn.primary{background:#DA291C;color:#fff}
-.modal-btn.primary:hover{filter:brightness(1.1)}
-.modal-btn.primary:disabled{opacity:.5;cursor:not-allowed;filter:none}
-.modal-btn.ghost{background:transparent;border:1px solid var(--border);color:var(--sub)}
-.modal-btn.ghost:hover{border-color:var(--border2);color:var(--text)}
-.modal-status{text-align:center;padding:16px 0 4px;font-size:12px;color:var(--muted);line-height:1.7;min-height:48px}
-.modal-dl{display:flex;flex-direction:column;gap:8px;margin-top:12px}
-.modal-dl a{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--sub);text-decoration:none;font-size:12px;font-weight:600;transition:background .15s}
-.modal-dl a:hover{background:var(--card)}
-.modal-dl a svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
-/* ── Login overlay ── */
-.login-overlay{position:fixed;inset:0;z-index:2000;background:linear-gradient(135deg,#111827 0%,#1f2937 60%,#111827 100%);display:flex;align-items:center;justify-content:center}
-.login-box{width:420px;max-width:92vw;background:#ffffff;border:1px solid #e5e7eb;border-radius:20px;padding:36px 36px 28px;box-shadow:0 32px 80px rgba(0,0,0,.35)}
-.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:28px}
-.login-logo-name{font-size:13px;font-weight:700;color:#374151;line-height:1.3;letter-spacing:.02em}
-.login-title{font-size:20px;font-weight:800;color:#111827;margin-bottom:4px}
-.login-sub{font-size:11.5px;color:#6b7280;margin-bottom:24px}
-.login-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
-.login-field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
-.login-label{font-size:10px;font-weight:700;color:#6b7280;letter-spacing:.1em;text-transform:uppercase}
-.login-input{background:#f9fafb;border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;color:#111827;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
-.login-input:focus{border-color:#DA291C}
-.login-select{appearance:none;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b7280'/%3E%3C/svg%3E") no-repeat right 10px center;border:1px solid #d1d5db;border-radius:8px;padding:9px 28px 9px 12px;color:#111827;font-size:13px;font-family:inherit;outline:none;width:100%;cursor:pointer;transition:border-color .15s}
-.login-select:focus{border-color:#DA291C}
-.login-btn{width:100%;margin-top:8px;padding:12px;border-radius:10px;background:#DA291C;color:#fff;font-size:13px;font-weight:700;border:none;cursor:pointer;letter-spacing:.04em;transition:filter .15s}
-.login-btn:hover{filter:brightness(1.1)}
-.login-err{font-size:11px;color:#ef4444;margin-top:8px;min-height:16px;text-align:center}
-.lab-tabs-bar{display:flex;gap:0;padding:0 24px;border-bottom:1px solid var(--border);background:var(--bg);flex-wrap:wrap}
-.lab-tab{padding:9px 20px;border:1px solid transparent;border-bottom:none;border-radius:7px 7px 0 0;background:transparent;font-size:12px;font-weight:700;color:var(--sub);cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.04em;margin-bottom:-1px;position:relative}
-.lab-tab:hover{background:var(--surface);color:var(--text)}
-.lab-tab.active{background:var(--surface);color:var(--text);border-color:var(--border);border-bottom-color:var(--surface)}
-.lab-tab[data-csp=aws].active{color:#FF9900;border-top-color:#FF9900;border-left-color:#FF9900;border-right-color:#FF9900}
-.lab-tab[data-csp=azure].active{color:#0078D4;border-top-color:#0078D4;border-left-color:#0078D4;border-right-color:#0078D4}
-.lab-tab[data-csp=gcp].active{color:#4285F4;border-top-color:#4285F4;border-left-color:#4285F4;border-right-color:#4285F4}
-.cjmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
-.cjmap-svg{width:100%;max-width:750px;overflow:visible}
-.ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
-.ai-panel{background:#fff;border-radius:16px;width:540px;max-width:100%;height:72vh;max-height:680px;display:flex;flex-direction:column;box-shadow:0 28px 72px rgba(0,0,0,.26);overflow:hidden}
-.ai-hdr{padding:14px 18px 12px;border-bottom:1px solid #e2e8f0;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-shrink:0}
-.ai-hdr-left{display:flex;flex-direction:column;gap:2px;min-width:0}
-.ai-hdr-tag{font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#DA291C}
-.ai-hdr-title{font-size:13px;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ai-hdr-sub{font-size:10px;color:#94a3b8}
-.ai-close{width:28px;height:28px;border-radius:7px;border:none;background:#f1f5f9;font-size:16px;line-height:1;color:#64748b;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .15s}
-.ai-close:hover{background:#e2e8f0;color:#0f172a}
-.ai-body{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:10px}
-.ai-msg{max-width:85%;padding:10px 14px;border-radius:12px;font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
-.ai-msg.user{align-self:flex-end;background:#DA291C;color:#fff;border-bottom-right-radius:4px}
-.ai-msg.assistant{align-self:flex-start;background:#f1f5f9;color:#0f172a;border-bottom-left-radius:4px}
-.ai-msg.thinking{align-self:flex-start;background:#f8fafc;color:#94a3b8;font-style:italic;border:1px dashed #e2e8f0;border-bottom-left-radius:4px}
-.ai-inv-btn.ai-ready{background:#16a34a!important;}
-.ai-msg.fact{align-self:center;background:linear-gradient(135deg,#fff5f5,#fff);border:1.5px solid #DA291C33;border-radius:10px;color:#374151;font-size:12px;font-style:italic;padding:8px 14px;max-width:90%;text-align:center;margin-top:4px}
-.ai-msg.fact::before{content:"☁️ Did you know? ";font-style:normal;font-weight:700;color:#DA291C}
-.ai-feedback{display:flex;align-items:center;gap:6px;align-self:flex-start;margin-top:-4px;margin-left:2px}
-.ai-fb-btn{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px;font-size:13px;cursor:pointer;line-height:1;color:#64748b;transition:background .15s,border-color .15s}
-.ai-fb-btn:hover{background:#f1f5f9;border-color:#cbd5e1}
-.ai-fb-btn.voted{border-color:#22c55e;background:#f0fdf4;color:#15803d}
-.ai-fb-btn.voted-neg{border-color:#ef4444;background:#fef2f2;color:#dc2626}
-.ai-fb-note{font-size:10px;color:#94a3b8;margin-left:2px}
-@keyframes fg-arrow{0%,100%{transform:translateX(0)}50%{transform:translateX(5px)}}
-.fg-arrow{display:inline-block;animation:fg-arrow 0.9s ease-in-out infinite;color:#DA291C;font-style:normal;margin-right:3px;font-size:13px}
-#fg-inline{width:100%;max-width:clamp(380px,52vw,640px);margin-top:18px;opacity:0;transform:translateY(12px) scale(.97);transition:opacity .5s cubic-bezier(.22,1,.36,1),transform .5s cubic-bezier(.22,1,.36,1);pointer-events:none;position:relative}
-#fg-inline.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
-#fg-inline::before{content:'';position:absolute;top:-9px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:10px solid #DA291C}
-#fg-inline::after{content:'';position:absolute;top:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:9px solid #fff5f5}
-.fg-bubble{background:linear-gradient(135deg,#fff5f5 0%,#fff 60%);border:1.5px solid #DA291C;border-radius:14px;padding:16px 20px 14px;box-shadow:0 8px 32px rgba(218,41,28,.13),0 2px 8px rgba(0,0,0,.06);position:relative;overflow:hidden}
-.fg-bubble::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#DA291C,#ff6b5b,#DA291C)}
-.fg-bubble-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
-.fg-bubble-icon{width:28px;height:28px;border-radius:50%;background:#DA291C;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
-.fg-bubble-label{font-size:10px;font-weight:800;letter-spacing:.1em;color:#DA291C;text-transform:uppercase}
-.fg-bubble-src{font-size:9px;color:#94a3b8;margin-left:auto;font-style:italic}
-.fg-bubble-fact{font-size:13px;font-weight:600;color:#0f172a;line-height:1.7;padding-left:2px}
-.ai-footer{padding:10px 14px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-shrink:0}
-.mach-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2000;display:flex;align-items:flex-end;justify-content:flex-end}
-.mach-panel{background:#fff;width:480px;max-width:100vw;height:100vh;display:flex;flex-direction:column;box-shadow:-8px 0 40px rgba(0,0,0,.18);overflow:hidden}
-.mach-hdr{padding:16px 18px 12px;border-bottom:1px solid #e2e8f0;display:flex;align-items:flex-start;gap:10px;flex-shrink:0}
-.mach-hdr-icon{width:36px;height:36px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
-.mach-title{font-size:13px;font-weight:800;color:#0f172a;word-break:break-all}
-.mach-sub{font-size:10px;color:#94a3b8;margin-top:2px}
-.mach-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 18px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
-.mach-section{background:#f8fafc;border-radius:8px;overflow:hidden}
-.mach-section-title{font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#64748b;padding:6px 12px;background:#f1f5f9;border-bottom:1px solid #e2e8f0}
-.mach-row{display:flex;align-items:baseline;gap:8px;padding:5px 12px;border-bottom:1px solid #f1f5f9}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px 24px 18px;width:380px;max-width:92vw;box-shadow:0 16px 48px rgba(0,0,0,.18)}
+.modal-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px}
+.modal-sub{font-size:11px;color:var(--muted);margin-bottom:18px}
+.modal-field{margin-bottom:12px}
+.modal-label{font-size:10px;font-weight:700;color:var(--sub);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+.modal-input{width:100%;background:var(--card);border:1px solid var(--border);border-radius:5px;padding:8px 10px;color:var(--text);font-size:12px;font-family:inherit;outline:none;transition:border-color .1s}
+.modal-input:focus{border-color:var(--accent)}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.modal-btn{padding:7px 16px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:inherit;transition:background .1s}
+.modal-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.modal-btn.primary:hover{background:var(--accent-l)}
+.modal-btn.primary:disabled{opacity:.5;cursor:not-allowed}
+.modal-btn.ghost{background:transparent;color:var(--sub)}
+.modal-btn.ghost:hover{background:var(--card)}
+.modal-status{text-align:center;padding:14px 0 4px;font-size:11px;color:var(--muted);line-height:1.7;min-height:44px}
+.modal-dl{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.modal-dl a{display:flex;align-items:center;gap:7px;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:5px;color:var(--sub);text-decoration:none;font-size:11px;font-weight:600;transition:background .1s}
+.modal-dl a:hover{background:var(--card2)}
+.modal-dl a svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+
+/* ── Login ── */
+.login-overlay{position:fixed;inset:0;z-index:2000;background:#0d1117;display:flex;align-items:center;justify-content:center}
+.login-box{width:380px;max-width:92vw;background:var(--surface);border:1px solid var(--border2);border-radius:8px;padding:28px 28px 22px;box-shadow:0 0 0 1px #21262d}
+.login-logo{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.login-logo-name{font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.02em}
+.login-title{font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px}
+.login-sub{font-size:11px;color:var(--muted);margin-bottom:20px}
+.login-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.login-field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.login-label{font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.login-input{background:var(--card);border:1px solid var(--border);border-radius:5px;padding:8px 10px;color:var(--text);font-size:12px;font-family:inherit;outline:none;transition:border-color .1s}
+.login-input:focus{border-color:var(--accent)}
+.login-select{appearance:none;background:var(--card);border:1px solid var(--border);border-radius:5px;padding:8px 24px 8px 10px;color:var(--text);font-size:12px;font-family:inherit;outline:none;width:100%;cursor:pointer;transition:border-color .1s}
+.login-select:focus{border-color:var(--accent)}
+.login-btn{width:100%;margin-top:6px;padding:10px;border-radius:5px;background:var(--accent);color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;letter-spacing:.04em;transition:background .1s}
+.login-btn:hover{background:var(--accent-l)}
+.login-err{font-size:11px;color:var(--cr);margin-top:6px;min-height:16px;text-align:center}
+
+/* ── Tabs (lab / identities) ── */
+.lab-tabs-bar{display:flex;gap:0;padding:0 20px;border-bottom:1px solid var(--border);background:var(--card);flex-wrap:wrap}
+.lab-tab{padding:8px 16px;border:none;border-bottom:2px solid transparent;background:transparent;font-size:11px;font-weight:600;color:var(--muted);cursor:pointer;transition:color .1s,border-color .1s;letter-spacing:.02em;margin-bottom:-1px}
+.lab-tab:hover{color:var(--text)}
+.lab-tab.active{color:var(--text);border-bottom-color:var(--accent)}
+.lab-tab[data-csp=aws].active{color:#e8891a;border-bottom-color:#e8891a}
+.lab-tab[data-csp=azure].active{color:#0078D4;border-bottom-color:#0078D4}
+.lab-tab[data-csp=gcp].active{color:#4285F4;border-bottom-color:#4285F4}
+
+/* ── AI overlay ── */
+.ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
+.ai-panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;width:540px;max-width:100%;height:72vh;max-height:680px;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden}
+.ai-hdr{padding:12px 16px 10px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-shrink:0;background:var(--card)}
+.ai-hdr-left{display:flex;flex-direction:column;gap:1px;min-width:0}
+.ai-hdr-tag{font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.ai-hdr-title{font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ai-hdr-sub{font-size:10px;color:var(--muted)}
+.ai-close{width:26px;height:26px;border-radius:4px;border:1px solid var(--border);background:var(--card);font-size:14px;line-height:1;color:var(--muted);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .1s}
+.ai-close:hover{background:var(--card2);color:var(--text)}
+.ai-body{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+.ai-msg{max-width:85%;padding:8px 12px;border-radius:6px;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.ai-msg.user{align-self:flex-end;background:var(--accent);color:#fff}
+.ai-msg.assistant{align-self:flex-start;background:var(--card);color:var(--text);border:1px solid var(--border)}
+.ai-msg.thinking{align-self:flex-start;background:transparent;color:var(--muted);font-style:italic;border:1px dashed var(--border)}
+.ai-inv-btn.ai-ready{background:#166534!important;}
+.ai-msg.fact{align-self:center;background:var(--card);border:1px solid var(--border);border-radius:6px;color:var(--sub);font-size:11px;font-style:italic;padding:7px 12px;max-width:90%;text-align:center}
+.ai-msg.fact::before{content:"Did you know?  ";font-style:normal;font-weight:700;color:var(--accent)}
+.ai-feedback{display:flex;align-items:center;gap:5px;align-self:flex-start;margin-top:-4px;margin-left:2px}
+.ai-fb-btn{background:none;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:12px;cursor:pointer;line-height:1;color:var(--muted);transition:background .1s}
+.ai-fb-btn:hover{background:var(--card)}
+.ai-fb-btn.voted{border-color:var(--ok-bd);background:var(--ok-bg);color:var(--ok)}
+.ai-fb-btn.voted-neg{border-color:var(--cr-bd);background:var(--cr-bg);color:var(--cr)}
+.ai-fb-note{font-size:10px;color:var(--muted);margin-left:2px}
+.fg-arrow{display:inline-block;animation:fg-arrow 0.9s ease-in-out infinite;color:var(--accent);font-style:normal;margin-right:3px;font-size:12px}
+#fg-inline{width:100%;max-width:clamp(340px,52vw,600px);margin-top:14px;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;pointer-events:none;position:relative}
+#fg-inline.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.fg-bubble{background:var(--surface);border:1px solid var(--accent);border-top:3px solid var(--accent);border-radius:6px;padding:14px 18px 12px;box-shadow:0 4px 20px rgba(218,41,28,.1);position:relative}
+.fg-bubble-header{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.fg-bubble-icon{width:24px;height:24px;border-radius:4px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+.fg-bubble-label{font-size:9px;font-weight:700;letter-spacing:.1em;color:var(--accent);text-transform:uppercase}
+.fg-bubble-src{font-size:9px;color:var(--muted);margin-left:auto}
+.fg-bubble-fact{font-size:12px;font-weight:500;color:var(--text);line-height:1.65;padding-left:2px}
+.ai-footer{padding:8px 12px;border-top:1px solid var(--border);display:flex;gap:7px;flex-shrink:0;background:var(--card)}
+.ai-input{flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:5px;font-size:12px;outline:none;color:var(--text);background:var(--surface);transition:border-color .1s}
+.ai-input:focus{border-color:var(--accent)}
+.ai-send{padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:5px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .1s}
+.ai-send:hover{background:var(--accent-l)}
+.ai-send:disabled{opacity:.45;cursor:not-allowed}
+.ai-prompt-row{display:flex;gap:8px;width:100%}
+.ai-prompt-btn{flex:1;padding:9px 6px;border:1px solid var(--border);border-radius:5px;background:var(--card);color:var(--sub);font-size:11px;font-weight:600;cursor:pointer;transition:background .1s,border-color .1s}
+.ai-prompt-btn:hover{border-color:var(--accent);color:var(--accent)}
+.ai-prompt-btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── Machine details panel ── */
+.mach-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2000;display:flex;align-items:flex-end;justify-content:flex-end}
+.mach-panel{background:var(--surface);border-left:1px solid var(--border);width:460px;max-width:100vw;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.mach-hdr{padding:14px 16px 10px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:8px;flex-shrink:0;background:var(--card)}
+.mach-hdr-icon{width:32px;height:32px;border-radius:5px;background:var(--card2);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;border:1px solid var(--border)}
+.mach-title{font-size:12px;font-weight:700;color:var(--text);word-break:break-all}
+.mach-sub{font-size:10px;color:var(--muted);margin-top:1px}
+.mach-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 16px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}
+.mach-section{background:var(--card);border:1px solid var(--border);border-radius:5px;overflow:hidden}
+.mach-section-title{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:5px 10px;background:var(--card2);border-bottom:1px solid var(--border)}
+.mach-row{display:flex;align-items:baseline;gap:8px;padding:4px 10px;border-bottom:1px solid var(--border)}
 .mach-row:last-child{border-bottom:none}
-.mach-key{font-size:10px;font-weight:700;color:#64748b;min-width:120px;flex-shrink:0}
-.mach-val{font-size:11px;color:#0f172a;word-break:break-all;font-family:monospace}
-.ai-input{flex:1;padding:9px 12px;border:1px solid #e2e8f0;border-radius:9px;font-size:12.5px;outline:none;color:#0f172a;background:#fafafa;transition:border-color .15s}
-.ai-input:focus{border-color:#DA291C;background:#fff}
-.ai-send{padding:9px 16px;background:#DA291C;color:#fff;border:none;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;transition:filter .15s}
-.ai-send:hover{filter:brightness(1.1)}
-.ai-send:disabled{opacity:.5;cursor:not-allowed;filter:none}
-.ai-prompt-row{display:flex;gap:10px;width:100%}
-.ai-prompt-btn{flex:1;padding:11px 8px;border:2px solid #DA291C;border-radius:10px;background:#fff;color:#DA291C;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s,color .15s;letter-spacing:.03em}
-.ai-prompt-btn:hover{background:#DA291C;color:#fff}
-.ai-prompt-btn:disabled{opacity:.45;cursor:not-allowed;border-color:#cbd5e1;color:#94a3b8}
+.mach-key{font-size:10px;font-weight:600;color:var(--muted);min-width:110px;flex-shrink:0}
+.mach-val{font-size:11px;color:var(--text);word-break:break-all;font-family:'SFMono-Regular',Consolas,monospace}
 </style>
 </head>
 <body>
@@ -945,14 +1110,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
     High Fidelity Alerts
   </div>
-  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
-    <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="4" rx="1"/><rect x="2" y="10" width="20" height="4" rx="1"/><rect x="2" y="17" width="20" height="4" rx="1"/><circle cx="20" cy="5" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg>
-    Correlated Risk / Asset
-  </div>
   <div class="sb-sect">Risk Findings</div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Internet Threat Exposure
+    Host Internet Exposure
   </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -1059,37 +1220,34 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <!-- ── URGENT bubble — left, tail centered on right edge → arc at ~(58,67) ── -->
       <g id="bubble-urgent" opacity="0.35" style="transition:opacity .4s,filter .4s">
         <polygon points="40,28 57,63 40,44" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="-82" y="5" width="122" height="62" rx="9" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
+        <rect x="-108" y="5" width="148" height="56" rx="9" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
         <line x1="40" y1="28" x2="40" y2="44" stroke="#fef2f2" stroke-width="3"/>
-        <text x="-21" y="22" text-anchor="middle" font-size="11" font-weight="800" fill="#ef4444" letter-spacing=".06em" font-family="-apple-system,sans-serif">URGENT</text>
-        <text x="-21" y="38" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Critical gaps.</text>
-        <text x="-21" y="52" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Immediate action.</text>
+        <text x="-34" y="24" text-anchor="middle" font-size="9.5" font-weight="800" fill="#ef4444" letter-spacing=".04em" font-family="-apple-system,sans-serif">Immediate Action Required</text>
+        <text x="-34" y="42" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Highly Vulnerable</text>
       </g>
 
       <!-- ── ATTENTION bubble — upper-right of arc, tail on LEFT → arc at ~(314,43) ── -->
       <g id="bubble-attention" opacity="0.35" style="transition:opacity .4s,filter .4s">
         <polygon points="330,18 314,43 330,34" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="330" y="-8" width="142" height="62" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+        <rect x="330" y="-4" width="142" height="52" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
         <line x1="330" y1="18" x2="330" y2="34" stroke="#fffbeb" stroke-width="3"/>
-        <text x="401" y="10" text-anchor="middle" font-size="11" font-weight="800" fill="#b45309" letter-spacing=".06em" font-family="-apple-system,sans-serif">ATTENTION</text>
-        <text x="401" y="26" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Gaps exist.</text>
-        <text x="401" y="40" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Prioritize prompt action.</text>
+        <text x="401" y="14" text-anchor="middle" font-size="9.5" font-weight="800" fill="#b45309" letter-spacing=".04em" font-family="-apple-system,sans-serif">Action Required</text>
+        <text x="401" y="32" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Vulnerable</text>
       </g>
 
       <!-- ── PROACTIVE bubble — right, tail 20u → arc at ~(396,180). Left edge at x=416 ── -->
       <g id="bubble-proactive" opacity="0.35" style="transition:opacity .4s,filter .4s">
         <polygon points="416,172 398,180 416,188" fill="#f0fdf4" stroke="#86efac" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="416" y="149" width="118" height="62" rx="9" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
+        <rect x="416" y="152" width="130" height="52" rx="9" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
         <line x1="416" y1="172" x2="416" y2="188" stroke="#f0fdf4" stroke-width="3"/>
-        <text x="475" y="166" text-anchor="middle" font-size="11" font-weight="800" fill="#15803d" letter-spacing=".06em" font-family="-apple-system,sans-serif">PROACTIVE</text>
-        <text x="475" y="182" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Strong controls.</text>
-        <text x="475" y="196" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Low risk.</text>
+        <text x="481" y="170" text-anchor="middle" font-size="9.5" font-weight="800" fill="#15803d" letter-spacing=".04em" font-family="-apple-system,sans-serif">Review Only Required</text>
+        <text x="481" y="188" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Least Vulnerable</text>
       </g>
       <!-- Objective tagline — anchored at x=200 (gauge arc center) -->
       <text x="200" y="248" text-anchor="middle" font-size="9.5" font-weight="600"
             letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
             fill="#64748b" text-transform="uppercase">
-        <tspan>THE OBJECTIVE IS TO ACHIEVE </tspan><tspan fill="#15803d" font-weight="800">PROACTIVE SECURITY</tspan>
+        <tspan>THE OBJECTIVE IS TO </tspan><tspan fill="#15803d" font-weight="800">CLOSE ALL RISK FINDINGS AS FAST AS POSSIBLE</tspan><tspan> TO REDUCE MTTR</tspan>
       </text>
     </svg>
 
@@ -1231,8 +1389,8 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Internet Threat Exposure</div>
-      <div class="vh-sub">Host CVEs · Risk Score ≥ 9.0 · Agentless scan &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
+      <div class="vh-title">Host Internet Exposure</div>
+      <div class="vh-sub">Internet-exposed hosts · CVE risk ≥ 8 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
   </div>
@@ -1257,12 +1415,21 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr vha-purple">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Highest Permissive Identity without MFA Enabled</div>
-      <div class="vh-sub">PASSWORD_LOGIN_NO_MFA · Admin or over-privileged · Priority 1</div>
+      <div class="vh-title">Identity &amp; Access Risk</div>
+      <div class="vh-sub">High-permissive identities · no-MFA admins · role assignments</div>
     </div>
     <span class="vh-badge" id="cnt-i">—</span>
   </div>
-  <div id="body-i"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+  <div class="lab-tabs-bar">
+    <button class="lab-tab active" id="itab-nomfa" onclick="switchIdentTab('nomfa')">Root / Admin — No MFA</button>
+    <button class="lab-tab" id="itab-roles" onclick="switchIdentTab('roles')">Highest Permissive Role</button>
+    <button class="lab-tab" id="itab-corr" onclick="switchIdentTab('corr')">Correlated Identities</button>
+  </div>
+  <div id="ibody-nomfa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+  <div id="ibody-roles" style="display:none"></div>
+  <div id="ibody-corr" style="display:none"></div>
+  <!-- keep legacy id so existing KPI wiring still works -->
+  <div id="body-i" style="display:none"></div>
 </div>
 
 <!-- ═══ View: Secrets ═══ -->
@@ -1282,8 +1449,8 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 <div class="view" id="view-asset-risk">
   <div class="view-hdr">
     <div class="vh-text">
-      <div class="vh-title">Correlated Risk Findings per Asset</div>
-      <div class="vh-sub">Hosts ranked by combined risk — CVEs &amp; secrets correlated per asset</div>
+      <div class="vh-title">Correlated Risk per Asset</div>
+      <div class="vh-sub">Hosts ranked by combined CVE · Secrets · CIEM · Misconfig risk score</div>
     </div>
     <span class="vh-badge" id="cnt-ar">—</span>
   </div>
@@ -1341,7 +1508,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   <div class="view-hdr">
     <div class="vh-text">
       <div class="vh-title">Exploit Simulation Layer</div>
-      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
+      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</div>
     </div>
   </div>
 
@@ -1469,7 +1636,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <!-- CSP header row -->
     <div style="padding:14px 24px 0;display:flex;align-items:center;gap:10px">
       <span id="clab-csp-badge" style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:3px 12px;border-radius:5px;color:#fff;background:#94a3b8">—</span>
-      <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</span>
+      <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</span>
     </div>
     <!-- CSP snake diagram -->
     <div class="cjmap-outer">
@@ -1725,24 +1892,202 @@ function renderAlerts(rows,err){
 }
 
 function renderVulns(rows,err){
-  if(err){state('body-v','',err);return}
+  try{_renderVulns(rows,err);}catch(ex){state('body-v','','Host Internet Exposure render error: '+ex.message+' ('+ex.stack+')');console.error('[renderVulns]',ex);}
+}
+function _renderVulns(rows,err){
+  if(err){state('body-v','',err);return;}
+  rows=rows||[];
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
-  if(!rows.length){state('body-v','','No CVEs with risk score \\u2265 9');return}
-  const baseV='https://'+(_lastData?.account||'');
-  setBody('body-v','<div class="tbl-wrap"><table><thead><tr><th>CVE / Vuln ID</th><th>Risk</th><th>Package</th><th>Host</th><th>Fix Version</th><th></th></tr></thead><tbody>'
-    +rows.map(r=>{
-      const fix=r.fixInfo?.fix_available===true||String(r.fixInfo?.fix_available)==='1'||r.fixInfo?.fix_available==='1';
-      const fixVer=r.fixInfo?.fixed_version||'';
-      const cveId=e(r.vulnId||r.cveId||'');
-      return'<tr class="strip-cr">'
-        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+cveId+'">'+cpIcon+'</button></td>'
-        +'<td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td>'
-        +'<td class="p">'+e(r.featureKey?.name||'—')+'</td>'
-        +'<td class="m">'+e(r.evalCtx?.hostname||r.mid||'—')+'</td>'
-        +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,18)||'Fix \\u2713')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
-        +'<td><a href="https://www.fortiguard.com/threatintel-search?q='+cveId+'" target="_blank" style="font-size:10px;padding:2px 9px;border-radius:5px;background:#f97316;color:#fff;font-weight:700;white-space:nowrap;text-decoration:none;display:inline-block" title="FortiGuard Threat Intel">FortiGuard ↗</a></td>'
-      +'</tr>';
-    }).join('')+'</tbody></table></div>');
+  if(!rows.length){state('body-v','','≥ 8 risk score · internet-exposed · unpatched — no results');return;}
+
+  // ── Pull correlated data from global cache ─────────────────────────────────
+  var _ld=_lastData||{};
+  var _corIdents=(_ld.identities)||[];
+  var _critIdents=_corIdents.filter(function(id){var s=(id.METRICS&&id.METRICS.risk_severity||'').toLowerCase();return s==='critical'||s==='high';});
+  var _critCompl=((_ld.compliance)||[]).filter(function(c){return(c.severity||'').toLowerCase()==='critical';});
+  // Build per-host correlated asset risk map
+  var _arm=buildAssetRiskMap(_ld);
+  var _arMap=_arm.map;
+  var _arMaxRisk=_arm.maxRisk;
+  var _arCritMisc=_arm.critMisc;
+  // Tier helper
+  function arTierOf(score,exposed){
+    if(score>=75)return exposed?{l:'CRITICAL',c:'#b91c1c',bd:'#fca5a5'}:{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
+    if(score>=50)return exposed?{l:'HIGH',c:'#c2410c',bd:'#fdba74'}:{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
+    if(score>=30)return{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
+    return{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
+  }
+
+  // ── Group by hostname ──────────────────────────────────────────────────────
+  var hostMap={};
+  rows.forEach(function(r){
+    var mt2=r.machineTags;
+    var h=(mt2&&typeof mt2==='object'&&!Array.isArray(mt2)&&mt2.Hostname)||
+          (r.evalCtx&&r.evalCtx.hostname)||r.mid||'?';
+    if(!hostMap[h]){
+      var mt=r.machineTags;
+      var pubIp='';
+      if(mt&&typeof mt==='object'&&!Array.isArray(mt)){
+        pubIp=mt.ExternalIp||mt.PublicIp||mt.publicIp||'';
+      } else if(Array.isArray(mt)){
+        var pt=mt.find(function(t){return/external.?ip|public.?ip/i.test(t.key||'');});
+        if(pt)pubIp=pt.value||'';
+      }
+      hostMap[h]={name:h,pubIp:pubIp,
+        reach:(mt2&&typeof mt2==='object'&&!Array.isArray(mt2)&&mt2.lw_InternetExposure==='Yes'?'Internet Exposed':null)||'',
+        vulns:[],maxRisk:0,crit:0,high:0,fixable:0};
+    }
+    var host=hostMap[h];
+    var rs=parseFloat(r.hostRiskScore||r.riskScore||0);
+    if(rs>host.maxRisk)host.maxRisk=rs;
+    var sv=(r.severity||'').toLowerCase();
+    if(sv==='critical')host.crit++;
+    else if(sv==='high')host.high++;
+    var hasFix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
+    if(hasFix)host.fixable++;
+    host.vulns.push(r);
+  });
+
+  var hosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
+
+  // ── Summary strip ──────────────────────────────────────────────────────────
+  var totalCrit=rows.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
+  var totalHigh=rows.filter(function(r){return(r.severity||'').toLowerCase()==='high';}).length;
+  var totalFix=rows.filter(function(r){return r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');}).length;
+
+  var html='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
+    +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+hosts.length+' Hosts</span>'
+    +'<span style="font-size:11px;color:var(--muted)">&middot; '+rows.length+' CVEs</span>'
+    +(totalCrit?'<span class="b b-cr">'+totalCrit+' Critical</span>':'')
+    +(totalHigh?'<span class="b b-hi">'+totalHigh+' High</span>':'')
+    +(totalFix?'<span class="b b-ok">'+totalFix+' fixable</span>':'')
+    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; hostRiskScore ≥ 8 &middot; Unpatched &middot; Online / Launched</span>'
+  +'</div>';
+
+  // ── Per-host sections ──────────────────────────────────────────────────────
+  hosts.forEach(function(host,idx){
+    var rsCol=host.maxRisk>=9.5?'#b91c1c':host.maxRisk>=8.5?'#c2410c':'#92400e';
+    var bodyId='cve-body-'+idx;
+    var n=host.vulns.length;
+
+    // ── Per-host asset risk entry ──────────────────────────────────────────────
+    var arEntry=_arMap[host.name];
+    var arScore=arEntry?arEntry.normalizedScore:0;
+    var arTier=arTierOf(arScore,true);
+    function arChip(label,col,bd){
+      return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';
+    }
+
+    html+='<div style="padding:11px 16px 10px;border-bottom:1px solid var(--border)">'
+      // ── Single clean header row ────────────────────────────────────────────
+      +'<div style="display:flex;align-items:center;gap:10px">'
+        +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
+        +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+        +'<span style="display:flex;gap:5px;align-items:center;flex-shrink:0">'
+          +(host.crit?'<span class="b b-cr" style="font-size:9px">'+host.crit+' Crit</span>':'')
+          +(host.high?'<span class="b b-hi" style="font-size:9px">'+host.high+' High</span>':'')
+          +(host.fixable?'<span class="b b-ok" style="font-size:9px">'+host.fixable+' fix</span>':'')
+          +'<span style="font-size:18px;font-weight:800;color:'+rsCol+';font-variant-numeric:tabular-nums;line-height:1;min-width:32px;text-align:right">'+host.maxRisk.toFixed(1)+'</span>'
+          +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap">&#9654; Details</button>'
+        +'</span>'
+      +'</div>'
+      // Expanded section
+      +'<div id="'+bodyId+'" style="display:none;margin-top:6px;padding-left:28px">'
+      // Machine details link
+      +'<div style="margin-bottom:8px">'
+        +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">Machine Details</button>'
+        +'<span style="font-size:9px;color:var(--muted);margin-left:8px">'+n+' CVE'+(n!==1?'s':'')+'</span>'
+      +'</div>'
+      // Compact correlated risk strip
+      +(arScore
+        ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+          +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
+          +'<span style="font-size:15px;font-weight:800;color:'+arTier.c+';font-variant-numeric:tabular-nums;line-height:1">'+arScore+'</span>'
+          +'<span style="font-size:8px;font-weight:700;color:'+arTier.c+';border:1px solid '+arTier.bd+';border-radius:3px;padding:1px 5px">'+arTier.l+'</span>'
+          +'<div style="flex:0 0 70px;height:3px;background:#e5e7eb;border-radius:2px"><div style="height:3px;border-radius:2px;background:'+arTier.c+';width:'+arScore+'%"></div></div>'
+          +(arEntry&&arEntry.ciemSecrets.length?arChip('CIEM \xb7 '+arEntry.ciemSecrets.length,'#b91c1c','#fca5a5'):'')
+          +(arEntry&&arEntry.genericSecrets.length?arChip('SEC \xb7 '+arEntry.genericSecrets.length,'#92400e','#fcd34d'):'')
+          +(_arCritMisc?arChip('MISCONF \xb7 '+_arCritMisc,'#4b5563','#d1d5db'):'')
+        +'</div>'
+        :'')
+      // ── Non-Compliance violations matched to this host ──────────────────────
+      +(function(){
+        var hn=host.name.toLowerCase();
+        var matched=((_ld.compliance)||[]).filter(function(c){
+          if(!Array.isArray(c.resources)||!c.resources.length)return false;
+          return c.resources.some(function(res){
+            return JSON.stringify(res).toLowerCase().indexOf(hn)>=0;
+          });
+        });
+        if(!matched.length)return'';
+        return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
+          +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
+          +matched.map(function(c){
+            // Resources matching this host
+            var urnKeys=['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','NAME','INSTANCE_ID'];
+            var firstRes=c.resources[0]||{};
+            var urnKey=urnKeys.find(function(k){return firstRes[k]!==undefined;})||Object.keys(firstRes)[0]||'';
+            var hostRes=c.resources.filter(function(res){return JSON.stringify(res).toLowerCase().indexOf(hn)>=0;});
+            var cl=e(c.cloud||'');var sev=(c.severity||'').toLowerCase();
+            return'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
+              +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px">'
+                +'<span style="font-size:10.5px;font-weight:600;color:var(--text)">'+e(c.title||c.alertId||'')+'</span>'
+                +'<span style="display:flex;gap:4px;flex-shrink:0">'
+                  +(cl?'<span class="b b-nt" style="font-size:8px">'+cl.toUpperCase()+'</span>':'')
+                  +'<span class="b '+(sev==='critical'?'b-cr':'b-hi')+'" style="font-size:8px">'+(c.severity||'')+'</span>'
+                +'</span>'
+              +'</div>'
+              +(c.description?'<div style="font-size:9px;color:var(--muted);margin-bottom:4px;line-height:1.4">'+e(c.description.slice(0,120))+(c.description.length>120?'…':'')+'</div>':'')
+              +(hostRes.length&&urnKey
+                ?'<div style="margin-top:3px">'
+                  +'<div style="font-size:8px;font-weight:700;color:#b91c1c;margin-bottom:2px">'+hostRes.length+' violating resource'+(hostRes.length>1?'s':'')+' on this host:</div>'
+                  +hostRes.slice(0,5).map(function(res){
+                    var val=urnKey&&res[urnKey]!==undefined?String(res[urnKey]):'—';
+                    return'<div style="font-family:monospace;font-size:8.5px;color:#1e293b;background:#f8fafc;border:1px solid #e5e7eb;border-radius:3px;padding:2px 6px;margin-bottom:2px;word-break:break-all">'+e(val)+'</div>';
+                  }).join('')
+                  +(hostRes.length>5?'<div style="font-size:8px;color:var(--muted)">+' +(hostRes.length-5)+' more</div>':'')
+                +'</div>'
+                :'')
+            +'</div>';
+          }).join('')
+        +'</div>';
+      })()
+      // CVE sub-table
+      +'<div class="tbl-wrap"><table style="font-size:11px">'
+        +'<thead><tr>'
+          +'<th style="width:160px">CVE / Vuln ID</th>'
+          +'<th style="width:52px">CVE Risk</th>'
+          +'<th>Package · Installed version</th>'
+          +'<th>OS / Namespace</th>'
+          +'<th>Fix version</th>'
+          +'<th></th>'
+        +'</tr></thead><tbody>'
+        +host.vulns.map(function(r){
+          var fix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
+          var fixVer=(r.fixInfo&&r.fixInfo.fixed_version)||'';
+          var cveId=e(r.vulnId||r.cveId||'');
+          var svcol=(r.severity||'').toLowerCase()==='critical'?'#b91c1c':'#c2410c';
+          return'<tr>'
+            +'<td style="white-space:nowrap">'
+              +'<span style="font-family:monospace;font-size:10.5px;font-weight:700;color:'+svcol+'">'+e(r.vulnId||r.cveId||'—')+'</span>'
+              +'<button class="cp-btn" data-cp="'+cveId+'" style="margin-left:3px">'+cpIcon+'</button>'
+            +'</td>'
+            +'<td class="r"><span class="risk-score">'+parseFloat(r.cveRiskScore||r.hostRiskScore||r.riskScore||0).toFixed(1)+'</span></td>'
+            +'<td style="font-size:10.5px">'+e(r.featureKey&&r.featureKey.name||'—')+(r.featureKey&&r.featureKey.version_installed?'<br><span style="font-size:9px;color:var(--muted)">'+e(r.featureKey.version_installed)+'</span>':'')+'</td>'
+            +'<td style="font-size:10px;color:var(--muted)">'+e(r.featureKey&&r.featureKey.namespace||'—')+'</td>'
+            +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,16)||'Fix ✓')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
+            +'<td style="white-space:nowrap">'
+              +'<button class="cve-det-btn" data-cve="'+cveId+'" style="font-size:9px;padding:1px 6px;border-radius:3px;border:none;cursor:pointer;background:#f97316;color:#fff;font-weight:700;margin-right:3px">Details</button>'
+              +'<button class="cp-btn" data-cp="'+cveId+'" title="Copy CVE ID">'+cpIcon+'</button>'
+            +'</td>'
+          +'</tr>';
+        }).join('')
+        +'</tbody></table></div>'
+      +'</div>'   // closes cve-body-N collapsible
+    +'</div>';    // closes host row
+  });
+
+  setBody('body-v',html);
 }
 
 function renderCompliance(rows,err){
@@ -1763,11 +2108,20 @@ function renderCompliance(rows,err){
 }
 
 function renderIdentities(rows,err){
-  if(err){state('body-i','',err);return}
+  const setTab=function(id,html){var el=document.getElementById(id);if(el)el.innerHTML=html;};
+  if(err){
+    setTab('ibody-nomfa','<div class="state">'+err+'</div>');
+    setTab('ibody-roles','<div class="state">'+err+'</div>');
+    setTab('ibody-corr','<div class="state">'+err+'</div>');
+    return;
+  }
   setKpi('kpi-i',rows.length);setCount('cnt-i',rows.length,true);
-  if(!rows.length){state('body-i','','No high-permissive identities found');return}
+  if(!rows.length){
+    const msg='<div class="state">No high-permissive identities found</div>';
+    setTab('ibody-nomfa',msg);setTab('ibody-roles',msg);setTab('ibody-corr',msg);return;
+  }
 
-  // Derive principal type and short name from PRINCIPAL_ID / NAME
+  // ── Shared helpers ────────────────────────────────────────────────────────
   function identType(r){
     const pid=(r.PRINCIPAL_ID||'').toLowerCase();
     const nm=(r.NAME||'').toLowerCase();
@@ -1776,88 +2130,156 @@ function renderIdentities(rows,err){
     if(pid.includes(':assumed-role/')||pid.includes('/sts:'))return{label:'Assumed Role',color:'#b45309',bg:'#fffbeb',border:'#fde68a'};
     if(pid.includes(':role/')||nm.includes('role'))return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
     if(pid.includes(':user/')||nm.includes('user'))return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    const pt=(r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'').toLowerCase();
+    const pt=(r.PROVIDER_TYPE||'').toLowerCase();
     if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
     if(pt.includes('user'))return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
     return{label:'Identity',color:'#475569',bg:'#f8fafc',border:'#e2e8f0'};
   }
 
-  // Parse assigned-to from PRINCIPAL_ID path segments
-  function assignedTo(r){
+  function shortName(r){
     const pid=r.PRINCIPAL_ID||'';
-    // AWS: arn:aws:iam::ACCOUNT:role/NAME or arn:aws:iam::ACCOUNT:user/NAME
     const arnMatch=pid.match(/arn:[^:]+:[^:]+::[^:]*:(?:role|user|group|policy)\\/(.+)/i);
     if(arnMatch)return arnMatch[1];
-    // GCP service account: name@project.iam.gserviceaccount.com
     const gcpMatch=pid.match(/^([^@]+)@([^.]+)/);
     if(gcpMatch)return gcpMatch[1]+' @ '+gcpMatch[2];
-    // Azure: show last segment after /
     const azureMatch=pid.match(/\\/([^\\/]+)$/);
     if(azureMatch)return azureMatch[1];
     return r.NAME||pid;
   }
 
-  const iHref='https://'+(_lastData?.account||'')+'/ui/insights';
+  // ── Risk flag dot definitions — fixed order, shown as circles per row ───────
+  var RISK_DEFS=[
+    {key:'ALLOWS_FULL_ADMIN',            abbr:'FA',  col:'#b91c1c', title:'Full Admin',              def:'This identity has full administrative access to the entire cloud environment. A single credential compromise gives an attacker unrestricted control over all resources.'},
+    {key:'ALLOWS_PRIVILEGE_ESCALATION',  abbr:'PE',  col:'#b91c1c', title:'Privilege Escalation',    def:'This identity can elevate its own permissions or create/modify other identities. An attacker can use it to gain admin-level access from a lower-privilege entry point.'},
+    {key:'PASSWORD_LOGIN_NO_MFA',        abbr:'MFA', col:'#c2410c', title:'No MFA',                  def:'Password-based login with no multi-factor authentication. If credentials are phished or leaked, the account can be taken over with no additional barrier.'},
+    {key:'EXCESSIVE_PERMISSIONS',        abbr:'EP',  col:'#92400e', title:'Excessive Permissions',   def:'This identity has been granted significantly more permissions than it actually uses. Violates least-privilege — excess rights increase blast radius if compromised.'},
+    {key:'CROSS_ACCOUNT_ACCESS',         abbr:'XA',  col:'#7c3aed', title:'Cross-Account Access',    def:'This identity can assume roles or access resources in other cloud accounts. Compromise of this identity could enable lateral movement across your entire organization.'},
+    {key:'HAS_CONSOLE_ACCESS',           abbr:'CON', col:'#0369a1', title:'Console Access',          def:'This identity can log in to the cloud management console interactively. Service accounts and machine identities rarely need console access — a human-facing attack surface.'},
+    {key:'UNUSED_PERMISSION_90_DAYS',    abbr:'UP',  col:'#4b5563', title:'Unused Permissions 90d',  def:'Permissions granted to this identity have not been used in the past 90 days. Stale permissions represent unnecessary risk — they should be removed per least-privilege.'},
+    {key:'UNUSED_ACCESS_KEY_90_DAYS',    abbr:'UK',  col:'#4b5563', title:'Unused Access Key 90d',   def:'An access key (API credential) associated with this identity has not been used in 90+ days. Unused keys should be rotated or revoked to reduce the attack surface.'},
+  ];
 
-  setBody('body-i','<div style="padding:8px 0">'
-    +rows.map(r=>{
-      const risks=r.METRICS?.risks??[];
-      const isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
-      const noMfa=risks.includes('PASSWORD_LOGIN_NO_MFA')||r.MFA_ENABLED===false||r.MFA_ENABLED==='false';
-      const riskSev=(r.METRICS?.risk_severity||'').toLowerCase();
-      const riskScore=Math.round((r.METRICS?.risk_score||0)*100);
-      const unused=r.ENTITLEMENT_COUNTS?.entitlements_unused_count??null;
-      const total=r.ENTITLEMENT_COUNTS?.entitlements_total_count??null;
-      const iName=r.NAME||r.PRINCIPAL_ID||'';
-      const assigned=assignedTo(r);
-      const type=identType(r);
-      const provider=(r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'').toUpperCase().replace(/_/g,' ');
-      const keys=Array.isArray(r.ACCESS_KEYS)?r.ACCESS_KEYS:[];
-      const activeKeys=keys.filter(k=>(k.active||k.status||'').toString().toLowerCase()==='true'||k.active===true);
+  function riskDots(risks){
+    var rSet={};risks.forEach(function(k){rSet[k]=1;});
+    return RISK_DEFS.map(function(d){
+      var on=rSet[d.key];
+      var bg=on?d.col:'#f3f4f6';var fg=on?'#fff':'#9ca3af';var bd=on?d.col:'#e5e7eb';
+      return'<span class="rf-dot" style="background:'+bg+';color:'+fg+';border:1px solid '+bd+';letter-spacing:0">'+d.abbr
+        +'<span class="rf-tip"><strong>'+(on?'● ':'○ ')+d.title+'</strong>'+e(d.def)+'</span>'
+      +'</span>';
+    }).join('');
+  }
 
-      // Risk flag chips
-      const RISK_LABELS={'ALLOWS_FULL_ADMIN':'Full Admin','PASSWORD_LOGIN_NO_MFA':'No MFA','UNUSED_ACCESS_KEY_90_DAYS':'Key Unused 90d','UNUSED_PERMISSION_90_DAYS':'Perms Unused 90d','HAS_CONSOLE_ACCESS':'Console Access','EXCESSIVE_PERMISSIONS':'Excessive Perms','CROSS_ACCOUNT_ACCESS':'Cross-Account'};
-      const riskChips=risks.map(rk=>{
-        const lbl=RISK_LABELS[rk]||(rk.replace(/_/g,' ').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase()));
-        const isRed=rk==='ALLOWS_FULL_ADMIN';
-        const isAmber=rk==='PASSWORD_LOGIN_NO_MFA'||rk==='CROSS_ACCOUNT_ACCESS';
-        const bg=isRed?'#fef2f2':isAmber?'#fffbeb':'#f8fafc';
-        const col=isRed?'#dc2626':isAmber?'#b45309':'#475569';
-        const brd=isRed?'#fecaca':isAmber?'#fde68a':'#e2e8f0';
-        return'<span style="font-size:10px;font-weight:700;background:'+bg+';color:'+col+';border:1px solid '+brd+';border-radius:4px;padding:1px 7px">'+e(lbl)+'</span>';
-      }).join('');
+  function sevBadge(sev){
+    var s=(sev||'').toLowerCase();
+    if(s==='critical')return'<span class="b b-cr">Critical</span>';
+    if(s==='high')return'<span class="b b-hi">High</span>';
+    if(s==='medium')return'<span class="b b-me">Medium</span>';
+    if(s)return'<span class="b b-nt">'+e(sev)+'</span>';
+    return'<span class="b b-nt">—</span>';
+  }
 
-      return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
-        // Header row: type badge + name + cloud + score
-        +'<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">'
-          +'<span style="font-size:10px;font-weight:700;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:5px;padding:2px 8px;white-space:nowrap;flex-shrink:0">'+e(type.label)+'</span>'
-          +'<div style="flex:1;min-width:0">'
-            +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-              +'<a class="rf-link" href="'+e(iHref)+'" target="_blank" style="font-weight:700;font-size:13px;color:#0f172a;text-decoration:none;word-break:break-all" title="'+e(r.PRINCIPAL_ID||'')+'">'+e(tr(iName,40))+'</a>'
-              +'<button class="cp-btn" data-cp="'+e(iName)+'" title="Copy identity">'+cpIcon+'</button>'
-            +'</div>'
-            // Assigned-to line
-            +(assigned&&assigned!==iName?'<div style="font-size:11px;color:#475569;margin-top:2px">Assigned to: <strong>'+e(assigned)+'</strong></div>':'')
-            +(r.PRINCIPAL_ID&&r.PRINCIPAL_ID!==iName?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace;word-break:break-all">'+e(tr(r.PRINCIPAL_ID,60))+'</div>':'')
-          +'</div>'
-          +'<div style="text-align:right;flex-shrink:0">'
-            +(riskScore?'<div style="font-size:18px;font-weight:900;color:'+(riskScore>=70?'#dc2626':riskScore>=40?'#f59e0b':'#475569')+'">'+riskScore+'</div><div style="font-size:9px;color:#94a3b8">risk</div>':'')
-          +'</div>'
-        +'</div>'
-        // Meta row: provider, last used, unused entitlements, access keys
-        +'<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:10px;color:#64748b;margin-bottom:8px">'
-          +(provider?'<span>☁️ '+e(provider)+'</span>':'')
-          +(r.LAST_USED_TIME?'<span>Last used: '+fmtDate(r.LAST_USED_TIME)+'</span>':'<span style="color:#ef4444">Never used</span>')
-          +(unused!==null&&total!==null?'<span>Unused perms: <strong style="color:#f59e0b">'+unused+' / '+total+'</strong></span>':'')
-          +(activeKeys.length?'<span style="color:#dc2626">'+activeKeys.length+' active access key'+(activeKeys.length>1?'s':'')+'</span>':'')
-        +'</div>'
-        // Risk flag chips
-        +(riskChips?'<div style="display:flex;gap:5px;flex-wrap:wrap">'+riskChips+'</div>':'')
-        +(noMfa&&!risks.includes('PASSWORD_LOGIN_NO_MFA')?'<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px"><span style="font-size:10px;font-weight:700;background:#fffbeb;color:#b45309;border:1px solid #fde68a;border-radius:4px;padding:1px 7px">No MFA</span></div>':'')
-      +'</div>';
-    }).join('')
-    +'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">Showing up to 25 high-permissive identities — Full Admin &amp; High/Critical risk · sorted by privilege level then risk score</div>'
-    +'</div>');
+  function identRow(r,idx){
+    var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
+    var sev=(r.METRICS&&r.METRICS.risk_severity)||'';
+    var unused=(r.ENTITLEMENT_COUNTS&&r.ENTITLEMENT_COUNTS.entitlements_unused_count!=null)?r.ENTITLEMENT_COUNTS.entitlements_unused_count:null;
+    var total=(r.ENTITLEMENT_COUNTS&&r.ENTITLEMENT_COUNTS.entitlements_total_count!=null)?r.ENTITLEMENT_COUNTS.entitlements_total_count:null;
+    var unusedPct=(unused!==null&&total!==null&&total>0)?Math.min(100,Math.round(unused/total*100)):null;
+    var unusedStr=(unusedPct!==null)?(unusedPct+'% unused'):'—';
+    var unusedRaw=(unused!==null&&total!==null)?(unused+' / '+total+' unused'):'—';
+    var unusedCol=unusedPct!==null?(unusedPct>=80?'#b91c1c':unusedPct>=50?'#c2410c':'#374151'):'#374151';
+    var sName=shortName(r);
+    var type=identType(r);
+    var pid=r.PRINCIPAL_ID||'';
+    var keys=Array.isArray(r.ACCESS_KEYS)?r.ACCESS_KEYS:[];
+    var activeKeys=keys.filter(function(k){return(k.active||k.status||'').toString().toLowerCase()==='true'||k.active===true;});
+    var lastUsed=r.LAST_USED_TIME?fmtDate(r.LAST_USED_TIME):'Never';
+    return'<tr>'
+      +'<td style="font-size:11px;font-weight:500;color:#9ca3af;font-variant-numeric:tabular-nums;padding-right:4px;width:32px">'+(idx+1)+'</td>'
+      +'<td style="max-width:320px">'
+        +'<div style="font-weight:600;font-size:12.5px;color:#111827;word-break:break-word;line-height:1.4">'+e(sName)+'</div>'
+        +(pid&&pid!==sName?'<div style="font-size:9px;color:#9ca3af;font-family:monospace;word-break:break-all;margin-top:1px;line-height:1.3">'+e(pid)+'</div>':'')
+        +'<div style="font-size:10px;color:#6b7280;margin-top:2px">Last used: '+e(lastUsed)+(activeKeys.length?' &middot; '+activeKeys.length+' active key'+(activeKeys.length>1?'s':''):'')+'</div>'
+      +'</td>'
+      +'<td style="white-space:nowrap">'
+        +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
+      +'</td>'
+      +'<td>'+sevBadge(sev)+'</td>'
+      +'<td><div style="display:flex;gap:3px;align-items:center;flex-wrap:nowrap">'+riskDots(risks)+'</div></td>'
+      +'<td style="font-size:11.5px;font-weight:600;color:'+unusedCol+';font-variant-numeric:tabular-nums;white-space:nowrap" title="'+unusedRaw+'">'+unusedStr+'</td>'
+      +'<td style="white-space:nowrap">'
+        +'<button class="cp-btn" data-cp="'+e(pid)+'" title="Copy ARN">'+cpIcon+'</button>'
+        +'<button class="load-trust-btn" data-pid="'+e(pid)+'" title="Show which principals (accounts, services, users) are trusted to assume this role — lateral movement risk" style="font-size:9px;padding:1px 6px;border-radius:3px;border:1px solid #e5e7eb;background:#f9fafb;color:#374151;cursor:pointer;font-weight:600;margin-left:3px">Who can assume?</button>'
+      +'</td>'
+    +'</tr>';
+  }
+
+  function identTable(tableRows){
+    if(!tableRows.length)return'<div class="state">No identities found</div>';
+    return'<div class="tbl-wrap"><table>'
+      +'<thead><tr>'
+        +'<th style="width:32px">#</th>'
+        +'<th>Identity name</th>'
+        +'<th>Identity type</th>'
+        +'<th>Risk severity</th>'
+        +'<th>Risk flags <span style="font-size:8px;font-weight:400;opacity:.6">FA PE MFA EP XA CON UP UK</span></th>'
+        +'<th title="Percentage of granted permissions never used">Unused %</th>'
+        +'<th></th>'
+      +'</tr></thead>'
+      +'<tbody>'+tableRows.map(identRow).join('')+'</tbody>'
+    +'</table></div>';
+  }
+
+  // ── Tab 1: Root / Admin — No MFA ──────────────────────────────────────────
+  const noMfaRows=rows.filter(function(r){
+    var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
+    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    var nm=(r.NAME||'').toLowerCase();
+    var isRoot=pid.includes(':root')||nm==='root';
+    var isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
+    var noMfa=risks.includes('PASSWORD_LOGIN_NO_MFA')||r.MFA_ENABLED===false||r.MFA_ENABLED==='false';
+    return isRoot||(isAdmin&&noMfa);
+  });
+  setTab('ibody-nomfa',
+    noMfaRows.length
+      ?identTable(noMfaRows)
+      :'<div class="state">No Root / Admin without MFA found</div>');
+
+  // ── Tab 2: All identities — sorted by risk score ──────────────────────────
+  const roleRows=rows.slice().sort(function(a,b){
+    return((b.METRICS&&b.METRICS.risk_score)||0)-((a.METRICS&&a.METRICS.risk_score)||0);
+  });
+  setTab('ibody-roles',identTable(roleRows));
+
+  // ── Tab 3: Correlated — grouped table by identity type ────────────────────
+  const byType={roles:[],users:[],svcAccounts:[],other:[]};
+  rows.forEach(function(r){
+    var t=identType(r);
+    if(t.label==='IAM Role'||t.label==='Assumed Role')byType.roles.push(r);
+    else if(t.label==='IAM User'||t.label==='User')byType.users.push(r);
+    else if(t.label==='Service Account'||t.label==='Service Principal')byType.svcAccounts.push(r);
+    else byType.other.push(r);
+  });
+
+  function corrSection(title,items,col){
+    if(!items.length)return'';
+    return'<div style="padding:8px 16px 4px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:'+col+';border-bottom:1px solid #e5e7eb">'+e(title)+' <span style="font-weight:400;color:#9ca3af">('+items.length+')</span></div>'
+      +identTable(items);
+  }
+
+  var corrHtml=
+    corrSection('IAM Roles',byType.roles,'#0369a1')
+    +corrSection('IAM Users',byType.users,'#166534')
+    +corrSection('Service Accounts & Principals',byType.svcAccounts,'#7c3aed')
+    +(byType.other.length?corrSection('Other',byType.other,'#4b5563'):'');
+
+  setTab('ibody-corr',
+    corrHtml
+      ?'<div id="ibody-corr-graph"></div>'+corrHtml
+      :'<div class="state">No correlated identity data available</div>');
+
+  // Draw identity graph after DOM is set
+  setTimeout(function(){renderIdentityGraph(rows);},0);
 }
 
 function renderSecretsAll(rows,err){
@@ -1957,6 +2379,49 @@ function copyText(el){
 }
 document.addEventListener('click',function(ev){if(ev.target.closest('.cp-btn'))copyText(ev.target.closest('.cp-btn'));});
 
+// Shared helper — builds per-host correlated risk map from all data sources.
+// Keys vulns by machineTags.Hostname (matches _renderVulns grouping).
+function buildAssetRiskMap(d){
+  var map={};
+  var CIEM_T=['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
+    'AWS_SECRET_ACCESS_KEY','AWS_ACCESS_KEY','AWS_CREDENTIALS','AWS_SECRET',
+    'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
+  var CIEM_SET={};CIEM_T.forEach(function(t){CIEM_SET[t]=true;});
+  (d.vulns||[]).forEach(function(r){
+    var mt=r.machineTags;
+    var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
+    var host=(mtObj&&mtObj.Hostname)||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
+    if(!host)return;
+    if(!map[host])map[host]={name:host,vulns:[],ciemSecrets:[],genericSecrets:[],risk:0,ciem:0,secretRisk:0,threatRisk:0,miscRisk:0,internetExposed:false,publicIP:null};
+    var w=Math.min(100,parseFloat(r.riskScore||0)*10);
+    map[host].vulns.push({id:r.vulnId||'',score:parseFloat(r.riskScore||0),w:w});
+    map[host].threatRisk+=w;map[host].risk+=w;
+    if(mtObj&&mtObj.lw_InternetExposure==='Yes')map[host].internetExposed=true;
+    if(!map[host].publicIP){var pip=(mtObj&&(mtObj.PublicIpAddress||mtObj.public_ip||mtObj.externalIp))||null;if(pip)map[host].publicIP=pip;}
+  });
+  (d.secretsAll||[]).forEach(function(r){
+    var sh=(r.HOSTNAME||'').toLowerCase();
+    if(!sh)return;
+    var matchKey=null;
+    var keys=Object.keys(map);
+    for(var ki=0;ki<keys.length;ki++){
+      var kl=keys[ki].toLowerCase();
+      if(kl===sh||sh.indexOf(kl)===0||kl.indexOf(sh.split('.')[0])===0){matchKey=keys[ki];break;}
+    }
+    if(!matchKey)return;
+    var t=(r.SECRET_TYPE||'').toUpperCase();
+    if(CIEM_SET[t]){map[matchKey].ciemSecrets.push(r.SECRET_TYPE);map[matchKey].ciem+=100;map[matchKey].risk+=100;}
+    else{map[matchKey].genericSecrets.push(r.SECRET_TYPE);map[matchKey].secretRisk+=50;map[matchKey].risk+=50;}
+  });
+  var critMisc=(d.compliance||[]).filter(function(c){return(c.severity||'').toLowerCase()==='critical';}).length;
+  var miscBoost=Math.min(60,critMisc*10);
+  if(miscBoost>0){var akeys=Object.keys(map);for(var ai=0;ai<akeys.length;ai++){var a=map[akeys[ai]];if(a.risk>0){a.miscRisk=miscBoost;a.risk+=miscBoost;}}}
+  var allA=Object.values(map);
+  var maxRisk=allA.reduce(function(mx,a){return Math.max(mx,a.risk);},1);
+  allA.forEach(function(a){a.normalizedScore=Math.round(a.risk/maxRisk*100);});
+  return{map:map,maxRisk:maxRisk,critMisc:critMisc};
+}
+
 function renderAssetRisk(d){
   const map={};
   const get=(host,mid)=>{
@@ -1995,7 +2460,7 @@ function renderAssetRisk(d){
     return{exposed:ip?true:null,ip};
   };
 
-  // Factor 3 — CVE Internet Threat Exposure (per host, Medium weight: riskScore×10)
+  // Factor 3 — CVE Host Exposure (per host, Medium weight: riskScore×10)
   (d.vulns||[]).forEach(r=>{
     const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
     if(!host)return;
@@ -2058,64 +2523,126 @@ function renderAssetRisk(d){
   }
   if(!sorted.length){state('body-ar','','No significant host-level risk detected');return;}
 
-  const medalColor=i=>i===0?'#ef4444':i===1?'#f97316':i===2?'#f59e0b':'#94a3b8';
-  const barColor=s=>s>=60?'#ef4444':s>=30?'#f59e0b':'#22c55e';
+  // Tier definitions (console palette)
+  const TIERS={
+    CRITICAL:{label:'CRITICAL',col:'#b91c1c',bd:'#fca5a5'},
+    HIGH:    {label:'HIGH',    col:'#c2410c',bd:'#fdba74'},
+    MEDIUM:  {label:'MEDIUM',  col:'#92400e',bd:'#fcd34d'},
+    LOW:     {label:'LOW',     col:'#4b5563',bd:'#d1d5db'},
+  };
+  const tierOf=(score,internetExposed)=>{
+    const ex=internetExposed===true;
+    if(score>=75)return ex?TIERS.CRITICAL:TIERS.MEDIUM;
+    if(score>=50)return ex?TIERS.HIGH:TIERS.LOW;
+    if(score>=30)return TIERS.MEDIUM;
+    return TIERS.LOW;
+  };
 
-  setBody('body-ar','<div style="padding:8px 0">'
-    // Legend
-    +'<div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 16px 10px;font-size:10px;font-weight:700">'
-      +'<span style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:4px;padding:2px 8px">CIEM +100</span>'
-      +'<span style="background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:4px;padding:2px 8px">Secret +50</span>'
-      +'<span style="background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:4px;padding:2px 8px">Threat Exp riskScore×10</span>'
-      +(critMisconfig?'<span style="background:#fefce8;color:#ca8a04;border:1px solid #fde68a;border-radius:4px;padding:2px 8px">Misconfig +'+miscBoost+' ('+critMisconfig+' critical)</span>':'')
-    +'</div>'
-    +sorted.map((a,i)=>{
+  // Build ranked list with tier assignments
+  const ranked=sorted.map(function(a,i){
     const score=Math.round(a.risk/maxRisk*100);
-    const color=barColor(score);
-    const avgCveRisk=a.vulns.length?(' · avg '+( a.vulns.reduce((s,v)=>s+parseFloat(v.score||0),0)/a.vulns.length).toFixed(1)):'';
-    return'<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;margin:8px 16px;padding:14px 18px">'
-      +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
-        +'<div style="font-size:20px;font-weight:900;color:'+medalColor(i)+';width:30px;text-align:center;flex-shrink:0">#'+(i+1)+'</div>'
-        +'<div style="flex:1;min-width:0">'
-          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-            +'<span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span>'
-            +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button>'
-            +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#6366f1;color:#fff;font-weight:700;flex-shrink:0">Details</button>'
-          +'</div>'
-          +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace">'+e(a.mid)+'</div>':'')
+    return{a:a,i:i,score:score,t:tierOf(score,a.internetExposed)};
+  });
+
+  // Tier summary counts
+  const tierCounts={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0};
+  ranked.forEach(function(r){tierCounts[r.t.label]++;});
+
+  // Factor chip — minimal outline only
+  const chip=function(label,col,bd){
+    return'<span style="font-size:9px;font-weight:700;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap;letter-spacing:.04em">'+label+'</span>';
+  };
+
+  // Compact inline score bar
+  const bar=function(score,col){
+    return'<div style="height:3px;background:#e5e7eb;border-radius:2px;width:100%;margin-top:4px">'
+      +'<div style="height:3px;border-radius:2px;background:'+col+';width:'+score+'%;transition:width .5s ease"></div>'
+    +'</div>';
+  };
+
+  // Summary strip
+  let html='<div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid #e5e7eb;font-size:10px;font-weight:600;color:#6b7280;flex-wrap:wrap">'
+    +'<span style="font-weight:700;color:#111827">'+sorted.length+' asset'+(sorted.length!==1?'s':'')+' ranked</span>';
+  ['CRITICAL','HIGH','MEDIUM','LOW'].forEach(function(lbl){
+    if(!tierCounts[lbl])return;
+    var col=TIERS[lbl].col;
+    html+='<span style="color:'+col+'">&#9679; '+lbl+': '+tierCounts[lbl]+'</span>';
+  });
+  html+='<span style="margin-left:auto;font-size:9px;font-weight:400;color:#9ca3af">Scores normalized 0–100 · internet exposure adjusts tier</span>'
+    +'</div>';
+
+  // Column header
+  html+='<div style="display:grid;grid-template-columns:28px 1fr 80px;align-items:center;gap:0;padding:4px 16px 4px 16px;border-bottom:1px solid #e5e7eb;font-size:9px;font-weight:700;letter-spacing:.08em;color:#9ca3af;text-transform:uppercase">'
+    +'<div></div>'
+    +'<div>Host</div>'
+    +'<div style="text-align:right">Score</div>'
+  +'</div>';
+
+  // Asset rows
+  ranked.forEach(function(row){
+    var a=row.a;var i=row.i;var score=row.score;var t=row.t;
+    var avgCve=a.vulns.length?(a.vulns.reduce(function(s,v){return s+parseFloat(v.score||0);},0)/a.vulns.length).toFixed(1):'';
+
+    // Factor chips
+    var chips='';
+    if(a.ciemSecrets.length)chips+=chip('CIEM \xb7 '+a.ciemSecrets.length,t.col===TIERS.CRITICAL.col?'#b91c1c':'#b91c1c','#fca5a5');
+    if(a.genericSecrets.length)chips+=chip('SEC \xb7 '+a.genericSecrets.length,'#92400e','#fcd34d');
+    if(a.vulns.length)chips+=chip('CVE \xb7 '+a.vulns.length+(avgCve?' avg '+avgCve:''),'#c2410c','#fdba74');
+    if(a.miscRisk)chips+=chip('MISCONF \xb7 '+critMisconfig,'#4b5563','#d1d5db');
+
+    // Internet badge
+    var inetHtml='';
+    if(a.internetExposed===true){
+      inetHtml='<span style="font-size:9px;font-weight:700;color:#b91c1c;border:1px solid #fca5a5;border-radius:3px;padding:1px 5px;white-space:nowrap">INTERNET'+(a.publicIP?' \xb7 '+e(a.publicIP):'')+'</span>';
+    }
+
+    html+='<div style="display:grid;grid-template-columns:28px 1fr 80px;align-items:start;gap:0;padding:8px 16px;border-bottom:1px solid #f3f4f6;cursor:default">'
+      // Rank
+      +'<div style="font-size:11px;font-weight:700;color:#9ca3af;font-variant-numeric:tabular-nums;padding-top:2px;border-left:2px solid '+t.col+';padding-left:6px">'+(i+1)+'</div>'
+
+      // Host + factors
+      +'<div style="min-width:0;padding-right:12px">'
+        +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:4px">'
+          +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:600;color:#111827;word-break:break-all">'+e(a.name)+'</span>'
+          +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
+          +inetHtml
         +'</div>'
-        +'<div style="font-size:24px;font-weight:900;color:'+color+';flex-shrink:0">'+score+'</div>'
+        +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#9ca3af;font-family:monospace;margin-bottom:4px">'+e(a.mid)+'</div>':'')
+        +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
+          +chips
+          +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center">'
+            +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #d1d5db;cursor:pointer;background:#f9fafb;color:#374151;font-weight:600">Details</button>'
+            +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">GeoIP</button>':'')
+            +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy">'+cpIcon+'</button>'
+          +'</span>'
+        +'</div>'
       +'</div>'
-      +'<div style="background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px">'
-        +'<div style="height:6px;border-radius:4px;background:'+color+';width:'+score+'%"></div>'
-      +'</div>'
-      // Internet exposure flag + 4 factor badges
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
-        +(a.internetExposed===true
-          ?'<span style="font-size:10px;font-weight:700;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:5px;padding:2px 8px">🌐 Internet Exposed'+(a.publicIP?' · '+e(a.publicIP):'')+'</span>'
-            +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:10px;font-weight:700;background:#0ea5e9;color:#fff;border:none;border-radius:5px;padding:2px 9px;cursor:pointer">🌍 GeoIP</button>':'')
-          :'<span style="font-size:10px;font-weight:700;background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;border-radius:5px;padding:2px 8px">No Int Exp</span>')
-        +(a.ciemSecrets.length?'<span title="'+e(a.ciemSecrets.join(', '))+'" style="font-size:10px;font-weight:700;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:5px;padding:2px 8px">CIEM: '+a.ciemSecrets.length+' high-perm cred'+(a.ciemSecrets.length>1?'s':'')+'</span>':'')
-        +(a.genericSecrets.length?'<span style="font-size:10px;font-weight:700;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:5px;padding:2px 8px">Secret: '+a.genericSecrets.length+'</span>':'')
-        +(a.vulns.length?'<span style="font-size:10px;font-weight:700;background:#fff7ed;color:#ea580c;border:1px solid #fed7aa;border-radius:5px;padding:2px 8px">Threat Exp: '+a.vulns.length+' CVE'+avgCveRisk+'</span>':'')
-        +(a.miscRisk?'<span style="font-size:10px;font-weight:700;background:#fefce8;color:#ca8a04;border:1px solid #fde68a;border-radius:5px;padding:2px 8px">Misconfig: '+critMisconfig+' critical</span>':'')
+
+      // Score
+      +'<div style="text-align:right">'
+        +'<span style="font-size:20px;font-weight:800;color:'+t.col+';font-variant-numeric:tabular-nums;line-height:1">'+score+'</span>'
+        +bar(score,t.col)
       +'</div>'
     +'</div>';
-  }).join('')
-  +'<div style="padding:10px 16px 4px;font-size:10px;color:#94a3b8;text-align:center">CIEM &amp; Misconfig are account-wide · Threat Exposure and Secrets are per-host</div>'
-  +'</div>');
+  });
+
+  html+='<div style="padding:8px 16px;font-size:9px;color:#9ca3af">CIEM &amp; Misconfig are account-wide · CVEs &amp; Secrets are per-host</div>';
+  setBody('body-ar',html);
 }
 
 function nav(name){
+  if(name==='asset-risk')name='vulns';
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('active'));
-  document.getElementById('view-'+name).classList.add('active');
-  document.getElementById('nav-'+name).classList.add('active');
+  var ve=document.getElementById('view-'+name);if(ve)ve.classList.add('active');
+  var ne=document.getElementById('nav-'+name);if(ne)ne.classList.add('active');
   history.replaceState(null,'','#'+name);
 }
 
 let _lastData=null;
 let _currentLabTab='global';
+// Identity graph state
+var _igNodePos={};var _igNW=185;var _igNH=38;var _igTrustMap={};
 
 // Cloud Security Posture Score: higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100.
@@ -2131,7 +2658,7 @@ function calcPostureScore(d){
 }
 // 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
 function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Proactive Security':p>=50?'Some Attention Needed':'URGENT – Attention Needed';}
+function scoreBand(p){return p>=90?'Review Only Required – Least Vulnerable':p>=50?'Action Required – Vulnerable':'Immediate Action Required – Highly Vulnerable';}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
@@ -2151,7 +2678,7 @@ function renderRiskFindings(d){
   const base='https://'+d.account;
   const groups=[
     {key:'Alert',     label:'High Fidelity Alerts',       color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,     copyVal:r.alertName||r.alertId,   detail:r.alertType,score:95}))},
-    {key:'CVE',       label:'Internet Threat Exposure',   color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId,        detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10}))},
+    {key:'CVE',       label:'Host Exposure',   color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId,        detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10}))},
     {key:'Identity',  label:'Identities',                 color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID, copyVal:r.NAME||r.PRINCIPAL_ID, detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100}))},
     {key:'Compliance',label:'Critical Misconfigurations', color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,     copyVal:r.alertId||r.title,       detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80}))},
     {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90}))},
@@ -2243,13 +2770,32 @@ function renderCspLab(d,csp){
   const goalCnt=document.getElementById('cjnd-goal-cnt');
   if(goal)goal.setAttribute('fill',color);
   // Show current band in goal node (not the score — counts in step nodes are findings, not score points)
-  if(goalCnt){goalCnt.setAttribute('font-size','11');goalCnt.textContent=p>=90?'ACHIEVED':p>=50?'ATTENTION':'URGENT';}
+  if(goalCnt){goalCnt.setAttribute('font-size','9');goalCnt.textContent=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';}
   const ph2=document.getElementById('cjph2');
   const ph2txt=document.getElementById('cjph2-txt');
   if(ph2)ph2.setAttribute('fill',color);
   if(ph2txt){ph2txt.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph2txt.setAttribute('fill',p>=90?color:'#22c55e');}
   const snake=document.getElementById('cjsnake');
   if(snake)snake.setAttribute('stroke',color);
+}
+
+function switchIdentTab(tab){
+  ['nomfa','roles','corr'].forEach(function(t){
+    const btn=document.getElementById('itab-'+t);
+    if(btn)btn.classList.toggle('active',t===tab);
+    const body=document.getElementById('ibody-'+t);
+    if(body)body.style.display=(t===tab)?'':'none';
+  });
+  // Auto-load trust principals for all roles when opening Correlated tab
+  if(tab==='corr'){
+    const body=document.getElementById('ibody-corr');
+    if(!body)return;
+    const btns=body.querySelectorAll('.load-trust-btn:not([data-loaded])');
+    btns.forEach(function(btn){
+      btn.setAttribute('data-loaded','1');
+      loadTrustPrincipals(btn);
+    });
+  }
 }
 
 function switchLabTab(tab){
@@ -2293,7 +2839,7 @@ function renderLab(d){
   const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
   const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
   if(g6)g6.setAttribute('fill',color);
-  if(g6c){g6c.setAttribute('font-size','11');g6c.textContent=p>=90?'ACHIEVED':p>=50?'ATTENTION':'URGENT';}
+  if(g6c){g6c.setAttribute('font-size','9');g6c.textContent=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';}
   if(ph3)ph3.setAttribute('fill',color);
   if(ph3t){ph3t.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph3t.setAttribute('fill',p>=90?color:'#22c55e');}
   // Snake path color tracks score band
@@ -2430,7 +2976,7 @@ function updateCspGauges(d){
     const raw=calcCspScore(d,csp);
     const p=raw!==null?raw:100;
     const color=scoreColor(p);
-    const band=p>=90?'PROACTIVE':p>=50?'ATTENTION':'URGENT';
+    const band=p>=90?'REVIEW ONLY':p>=50?'VULNERABLE':'HIGH RISK';
     const arc=document.getElementById('csp-arc-'+csp);
     const scoreEl=document.getElementById('csp-score-'+csp);
     const bandEl=document.getElementById('csp-band-'+csp);
@@ -2904,7 +3450,191 @@ document.addEventListener('click',function(ev){
   if(ib)openIdentityDetails(ib.dataset.pid);
   const cb=ev.target.closest('.comp-det-btn');
   if(cb)openComplianceDetails(cb.dataset.pid);
+  const tb=ev.target.closest('.load-trust-btn');
+  if(tb)loadTrustPrincipals(tb);
+  const vb=ev.target.closest('.cve-det-btn');
+  if(vb)openCveDetails(vb.dataset.cve);
+  const xb=ev.target.closest('.toggle-host-cve');
+  if(xb){
+    var bd=document.getElementById(xb.dataset.body);
+    if(bd){
+      var open=bd.style.display!=='none';
+      bd.style.display=open?'none':'block';
+      xb.innerHTML=(open?'&#9654; ':'&#9660; ')+'Details';
+    }
+  }
 });
+
+async function loadTrustPrincipals(btn){
+  var pid=btn.dataset.pid;if(!pid)return;
+  var container=document.getElementById('trust-'+pid);
+  if(!container)return;
+  btn.disabled=true;btn.textContent='Loading…';
+  try{
+    var r=await fetch('/api/identity-trust?pid='+encodeURIComponent(pid));
+    var d=await r.json();
+    btn.style.display='none';
+    if(d.error){container.innerHTML='<div style="font-size:10px;color:#94a3b8">Trust info unavailable: '+e(d.error)+'</div>';return;}
+    var principals=d.principals||[];
+    if(!principals.length){container.innerHTML='<div style="font-size:10px;color:#94a3b8">No trust principals found</div>';return;}
+    container.innerHTML='<div style="margin-top:4px;font-size:10px;font-weight:700;color:#475569;margin-bottom:3px">Can be assumed by:</div>'
+      +'<div style="display:flex;flex-direction:column;gap:3px">'
+      +principals.map(function(p){return'<div style="font-size:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:5px;padding:3px 8px;font-family:monospace;color:#0f172a;word-break:break-all">'
+        +'<span style="font-weight:700;color:'+(p.type==='AWS'?'#d97706':p.type==='Service'?'#7c3aed':'#0369a1')+'">'+e(p.type||'?')+'</span> '
+        +e(p.principal||'—')
+      +'</div>';}).join('')
+      +'</div>';
+    // Update identity graph edges
+    updateGraphEdges(pid, principals);
+  }catch(ex){btn.disabled=false;btn.textContent='👥 Who can assume this role';container.innerHTML='<div style="font-size:10px;color:#ef4444">'+ex.message+'</div>';}
+}
+
+// ── Identity graph (SVG) ──────────────────────────────────────────────────────
+function renderIdentityGraph(rows){
+  var graphEl=document.getElementById('ibody-corr-graph');
+  if(!graphEl)return;
+  _igNodePos={};_igTrustMap={};
+
+  // Classify nodes
+  var roles=[],assumerNodes=[];
+  rows.forEach(function(r){
+    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    var nm=(r.NAME||'').toLowerCase();
+    var pt=(r.PROVIDER_TYPE||'').toLowerCase();
+    if(pid.includes(':root')||nm==='root')return;
+    if(pid.includes(':role/')||nm.includes('role'))roles.push(r);
+    else if(pid.includes(':user/')||nm.includes('user')||pid.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||pt.includes('serviceprincipal')||pt.includes('aad'))assumerNodes.push(r);
+  });
+
+  if(!roles.length&&!assumerNodes.length){graphEl.innerHTML='';return;}
+
+  var NW=_igNW,NH=_igNH,VG=10,PAD=28,COL_GAP=150;
+  var LX=PAD,RX=PAD+NW+COL_GAP;
+  var svgW=RX+NW+PAD;
+  var leftH=Math.max(1,assumerNodes.length)*(NH+VG)-VG;
+  var rightH=Math.max(1,roles.length)*(NH+VG)-VG;
+  var innerH=Math.max(leftH,rightH);
+  var HDR=22;
+  var svgH=innerH+PAD*2+HDR;
+
+  function placeNodes(list,x){
+    var blockH=list.length*(NH+VG)-VG;
+    var startY=PAD+HDR+(innerH-blockH)/2;
+    list.forEach(function(r,i){_igNodePos[r.PRINCIPAL_ID]={x:x,y:Math.max(PAD+HDR,startY)+i*(NH+VG)};});
+  }
+  placeNodes(assumerNodes,LX);
+  placeNodes(roles,RX);
+
+  function shortLbl(r){
+    var s=r.NAME||r.PRINCIPAL_ID||'';
+    var sl=s.lastIndexOf('/');if(sl>=0)s=s.slice(sl+1);
+    return s.length>22?s.slice(0,20)+'…':s;
+  }
+  function svgEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+  var nodesHtml='';
+  assumerNodes.forEach(function(r){
+    var pos=_igNodePos[r.PRINCIPAL_ID];
+    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    var isService=pid.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||(r.PROVIDER_TYPE||'').toLowerCase().includes('serviceprincipal');
+    var col=isService?'#7c3aed':'#065f46';
+    var bg=isService?'#f5f3ff':'#ecfdf5';
+    var brdr=isService?'#ddd6fe':'#a7f3d0';
+    var tag=isService?'SERVICE':'USER';
+    nodesHtml+='<g transform="translate('+pos.x+','+pos.y+')" data-pid="'+svgEsc(r.PRINCIPAL_ID)+'">'
+      +'<rect width="'+NW+'" height="'+NH+'" rx="5" fill="'+bg+'" stroke="'+brdr+'" stroke-width="1.5"/>'
+      +'<text x="6" y="12" font-family="system-ui,sans-serif" font-size="8" font-weight="700" fill="'+col+'">'+tag+'</text>'
+      +'<text x="6" y="27" font-family="system-ui,sans-serif" font-size="11" fill="#0f172a">'+svgEsc(shortLbl(r))+'</text>'
+      +'</g>';
+  });
+  roles.forEach(function(r){
+    var pos=_igNodePos[r.PRINCIPAL_ID];
+    var rs=Math.round((r.METRICS&&r.METRICS.risk_score||0)*100);
+    var col=rs>=70?'#dc2626':rs>=40?'#b45309':'#0369a1';
+    var bg=rs>=70?'#fef2f2':rs>=40?'#fffbeb':'#f0f9ff';
+    var brdr=rs>=70?'#fecaca':rs>=40?'#fde68a':'#bae6fd';
+    nodesHtml+='<g transform="translate('+pos.x+','+pos.y+')" data-pid="'+svgEsc(r.PRINCIPAL_ID)+'">'
+      +'<rect width="'+NW+'" height="'+NH+'" rx="5" fill="'+bg+'" stroke="'+brdr+'" stroke-width="1.5"/>'
+      +'<text x="6" y="12" font-family="system-ui,sans-serif" font-size="8" font-weight="700" fill="'+col+'">IAM ROLE</text>'
+      +'<text x="6" y="27" font-family="system-ui,sans-serif" font-size="11" fill="#0f172a">'+svgEsc(shortLbl(r))+'</text>'
+      +(rs?'<text x="'+(NW-5)+'" y="'+(NH/2+5)+'" font-family="system-ui,sans-serif" font-size="12" font-weight="800" fill="'+col+'" text-anchor="end">'+rs+'</text>':'')
+      +'</g>';
+  });
+
+  var hdrs='';
+  if(assumerNodes.length)hdrs+='<text x="'+(LX+NW/2)+'" y="'+(PAD+14)+'" font-family="system-ui,sans-serif" font-size="9" font-weight="700" fill="#64748b" text-anchor="middle">USERS &amp; SERVICES ('+assumerNodes.length+')</text>';
+  if(roles.length)hdrs+='<text x="'+(RX+NW/2)+'" y="'+(PAD+14)+'" font-family="system-ui,sans-serif" font-size="9" font-weight="700" fill="#64748b" text-anchor="middle">IAM ROLES ('+roles.length+')</text>';
+
+  var defs='<defs><marker id="ig-arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#6366f1"/></marker></defs>';
+
+  graphEl.innerHTML='<div style="overflow:auto;max-height:460px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;margin:10px 16px 6px">'
+    +'<svg id="ig-svg" xmlns="http://www.w3.org/2000/svg" width="'+svgW+'" height="'+svgH+'" style="display:block">'
+    +defs
+    +'<g id="ig-edges"></g>'
+    +'<g id="ig-nodes">'+nodesHtml+'</g>'
+    +hdrs
+    +'</svg>'
+    +(assumerNodes.length===0?'<div style="font-size:10px;color:#94a3b8;text-align:center;padding:4px 0 8px">No users or service accounts in top identities — trust relationships will appear as arrows when roles load</div>':'')
+    +'</div>';
+}
+
+function updateGraphEdges(rolePid,principals){
+  _igTrustMap[rolePid]=principals;
+  var edgesEl=document.getElementById('ig-edges');
+  if(!edgesEl)return;
+  var NW=_igNW,NH=_igNH;
+  var edgesHtml='';
+
+  // Build pid lookup set from known nodes
+  var knownPids=Object.keys(_igNodePos);
+
+  Object.keys(_igTrustMap).forEach(function(rPid){
+    var rPos=_igNodePos[rPid];
+    if(!rPos)return;
+    var rX=rPos.x,rMY=rPos.y+NH/2;
+
+    (_igTrustMap[rPid]||[]).forEach(function(p){
+      var principal=p.principal||'';
+
+      // Find a matching known node (left-side assumer)
+      var matchPid=null;
+      knownPids.forEach(function(kp){
+        if(_igNodePos[kp].x<rX){
+          if(kp===principal||kp.endsWith('/'+principal)||principal.endsWith('/'+kp.split('/').pop()))matchPid=kp;
+        }
+      });
+
+      if(matchPid){
+        var aPos=_igNodePos[matchPid];
+        var x1=aPos.x+NW,y1=aPos.y+NH/2,x2=rX,y2=rMY;
+        var cx=(x1+x2)/2;
+        edgesHtml+='<path d="M'+x1+','+y1+' C'+cx+','+y1+' '+cx+','+y2+' '+x2+','+y2+'" fill="none" stroke="#6366f1" stroke-width="1.8" stroke-dasharray="5,3" marker-end="url(#ig-arr)" opacity="0.8">'
+          +'<title>'+svgEsc(principal)+' can assume this role</title>'
+          +'</path>';
+      } else {
+        // External principal not in our list — draw a floating label node on the left
+        var extX=_igNodePos[rPid].x-_igNW-_igNW/2-10;
+        if(extX<0)extX=2;
+        var extY=rMY-NH/2;
+        var short=principal;var sl=short.lastIndexOf('/');if(sl>=0)short=short.slice(sl+1);
+        var col=p.type==='Service'?'#7c3aed':'#d97706';
+        var bg2=p.type==='Service'?'#f5f3ff':'#fffbeb';
+        var brdr2=p.type==='Service'?'#ddd6fe':'#fde68a';
+        edgesHtml+='<g transform="translate('+extX+','+extY+')">'
+          +'<rect width="'+(NW-10)+'" height="'+NH+'" rx="5" fill="'+bg2+'" stroke="'+brdr2+'" stroke-width="1"/>'
+          +'<text x="5" y="12" font-family="system-ui,sans-serif" font-size="8" fill="'+col+'" font-weight="700">'+svgEsc(p.type)+'</text>'
+          +'<text x="5" y="27" font-family="system-ui,sans-serif" font-size="9" fill="#0f172a">'+svgEsc(short.length>18?short.slice(0,16)+'…':short)+'</text>'
+          +'</g>';
+        var ex2=extX+(NW-10),ey2=extY+NH/2;
+        edgesHtml+='<path d="M'+ex2+','+ey2+' C'+(ex2+40)+','+ey2+' '+(rX-40)+','+rMY+' '+rX+','+rMY+'" fill="none" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ig-arr)" opacity="0.7"/>';
+      }
+    });
+  });
+
+  edgesEl.innerHTML=edgesHtml;
+}
+
+function svgEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function closeMachPanel(){document.getElementById('mach-overlay').style.display='none';}
 
@@ -3303,7 +4033,7 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
 </div>
 <script>
 function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Proactive Security':p>=50?'Some Attention Needed':'URGENT – Attention Needed';}
+function scoreBand(p){return p>=90?'Review Only Required – Least Vulnerable':p>=50?'Action Required – Vulnerable':'Immediate Action Required – Highly Vulnerable';}
 function calcScore(d){
   var risks=[];
   (d.alerts||[]).forEach(function(){risks.push(95);});
@@ -4065,7 +4795,7 @@ function buildReportHtml(data, meta) {
   const cspScores = { aws: calcCspScoreReport('aws'), azure: calcCspScoreReport('azure'), gcp: calcCspScoreReport('gcp') };
   const cspVals   = ['aws','azure','gcp'].map(c => cspScores[c] !== null ? cspScores[c] : 100);
   const score     = Math.round(cspVals.reduce((s,v)=>s+v,0)/cspVals.length);
-  const sBand     = score>=90 ? 'Proactive Security' : score>=50 ? 'Attention Needed' : 'URGENT – Immediate Action Required';
+  const sBand     = score>=90 ? 'Review Only Required – Least Vulnerable' : score>=50 ? 'Action Required – Vulnerable' : 'Immediate Action Required – Highly Vulnerable';
   const sColor    = score>=90 ? '#22c55e' : score>=50 ? '#f59e0b' : '#ef4444';
   const total  = alerts.length + vulns.length + compliance.length + identities.length;
 
@@ -4355,7 +5085,7 @@ function buildReportHtml(data, meta) {
     function miniGauge(label, p, bgColor) {
       const arcL=314, f=Math.round((p/100)*arcL);
       const c=p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';
-      const band=p>=90?'PROACTIVE':p>=50?'ATTENTION':'URGENT';
+      const band=p>=90?'REVIEW ONLY':p>=50?'VULNERABLE':'HIGH RISK';
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:4px">'+
         '<div style="font-size:9px;font-weight:900;letter-spacing:.12em;padding:3px 10px;border-radius:4px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
         '<svg viewBox="-10 -10 270 155" style="width:130px;overflow:visible">'+
@@ -4388,7 +5118,7 @@ function buildReportHtml(data, meta) {
       '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
       '  </svg>\n'+
       '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
-      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#22c55e;font-weight:800">Proactive Security</span></div>\n'+
+      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#22c55e;font-weight:800">Review Only Required</span></div>\n'+
       '  <div style="display:flex;justify-content:center;gap:28px;margin-top:20px;flex-wrap:wrap">'+
         miniGauge('AWS',awsP,'#232F3E')+
         miniGauge('AZURE',azureP,'#0078D4')+
@@ -4634,6 +5364,61 @@ function requestHandler(req, res) {
         console.log(`[geoip] lookup failed for ${clean}: ${e.message}`);
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify({ error: e.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url.startsWith('/api/identity-trust') && req.method === 'GET') {
+    (async () => {
+      try {
+        const pid = decodeURIComponent((req.url.split('pid=')[1] || '').split('&')[0]);
+        if (!pid) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'pid required' })); return; }
+        const tf = timeFilter();
+        // Query trust relationships — who can assume this role/identity
+        const queryText = `{
+          source { LW_CE_IDENTITIES }
+          filter { PRINCIPAL_ID = '${pid.replace(/'/g, "\\'")}' }
+          return distinct {
+            PRINCIPAL_ID,
+            NAME,
+            METRICS,
+            TRUST_POLICY
+          }
+        }`;
+        let rows = [];
+        try {
+          rows = await post('Queries/execute', { query: { queryText }, arguments: [
+            { name: 'StartTimeRange', value: tf.startTime },
+            { name: 'EndTimeRange',   value: tf.endTime   },
+          ]});
+        } catch (e) { /* TRUST_POLICY field may not exist — fall back */ }
+
+        // Parse trust principals from TRUST_POLICY if present
+        let principals = [];
+        const row = rows[0];
+        if (row?.TRUST_POLICY) {
+          const tp = typeof row.TRUST_POLICY === 'string' ? JSON.parse(row.TRUST_POLICY) : row.TRUST_POLICY;
+          const stmts = tp?.Statement || tp?.statement || [];
+          for (const stmt of stmts) {
+            const p = stmt?.Principal || stmt?.principal;
+            if (!p) continue;
+            if (typeof p === 'string') { principals.push({ type: 'AWS', principal: p }); continue; }
+            for (const [k, v] of Object.entries(p)) {
+              const vals = Array.isArray(v) ? v : [v];
+              vals.forEach(vv => principals.push({ type: k, principal: vv }));
+            }
+          }
+        }
+        // Also surface METRICS.lateral_movement_risk if available
+        const lateral = row?.METRICS?.lateral_movement_principals || [];
+        lateral.forEach(lp => principals.push({ type: 'Lateral', principal: lp }));
+
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ principals }));
+      } catch (e) {
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: e.message, principals: [] }));
       }
     })();
     return;

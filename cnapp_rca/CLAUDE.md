@@ -133,6 +133,17 @@ normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
 Assets with `normalizedScore ≤ 20` or `powerState = stopped/terminated` are excluded.
 CIEM and Misconfig are account-wide (no per-host data in the API); Threat Exposure and Secrets are per-host.
 
+**Risk Tier classification (internet exposure adjusts tier)**
+
+| Base score | Internet Exposed | Displayed tier |
+|-----------|-----------------|---------------|
+| ≥ 75 | Yes | 🔴 CRITICAL |
+| ≥ 75 | No  | 🟡 MEDIUM (downgraded — no external attack surface) |
+| 50–74 | Yes | 🟠 HIGH |
+| 50–74 | No  | ⚪ LOW (downgraded — no external attack surface) |
+| 30–49 | Any | 🟡 MEDIUM |
+| < 30  | Any | ⚪ LOW |
+
 ## Collect artefacts from a running container
 
 ```bash

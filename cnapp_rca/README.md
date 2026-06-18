@@ -1,23 +1,26 @@
 # Fortinet Rapid Cloud Assessment
 
-A live security dashboard and Customer-ready Cloud Rapid Assessment Report powererd by FortiCNAPP.
+A live security dashboard and customer-ready Cloud Rapid Assessment Report powered by FortiCNAPP.
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [How the Score Works](#how-the-score-works)
-3. [Assessment Windows](#assessment-windows)
-4. [Prerequisites](#prerequisites)
-5. [Quick Start](#quick-start)
-6. [Step-by-Step Setup](#step-by-step-setup)
-7. [Production Deployment with HTTPS](#production-deployment-with-https)
-8. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
-9. [Updating the Dashboard](#updating-the-dashboard)
-10. [Collecting Visitor Contacts](#collecting-visitor-contacts)
-11. [Troubleshooting](#troubleshooting)
-12. [Additional Resources](#additional-resources)
+2. [Dashboard Sections](#dashboard-sections)
+3. [How the Posture Score Works](#how-the-posture-score-works)
+4. [Correlated Risk Findings per Asset](#correlated-risk-findings-per-asset)
+5. [Identity & Access Risk](#identity--access-risk)
+6. [Assessment Windows](#assessment-windows)
+7. [Prerequisites](#prerequisites)
+8. [Quick Start](#quick-start)
+9. [Step-by-Step Setup](#step-by-step-setup)
+10. [Production Deployment with HTTPS](#production-deployment-with-https)
+11. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+12. [Updating the Dashboard](#updating-the-dashboard)
+13. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+14. [Troubleshooting](#troubleshooting)
+15. [Additional Resources](#additional-resources)
 
 ---
 
@@ -27,118 +30,198 @@ This project provides two tools that work together to deliver cloud security ins
 
 | Tool | File | Purpose |
 |------|------|---------|
-| Live Dashboard | `rca_ui/server.js` | Real-time web UI displaying Cloud Security Posture Management score, alerts, CVEs, secrets, identities, and compliance data |
-| PDF Report | (generated from dashboard) | Customer-ready report exported from the live data |
+| Live Dashboard | `rca_ui/server.js` | Real-time web UI displaying posture score, alerts, CVEs, secrets, identities, compliance, and correlated asset risk |
+| PDF Report | (generated via `/report`) | Customer-ready HTML/PDF report exported from live data |
 
-The dashboard is a single Node.js file with no npm dependencies. You can run it directly with Node.js or inside a Docker container.
+The dashboard is a single Node.js file with **no npm dependencies**. Run it directly with Node.js or inside Docker.
 
 ---
 
-## How the Score Works
+## Dashboard Sections
+
+### Dashboard (sidebar)
+
+| Section | What it shows |
+|---------|--------------|
+| **CSPM Score** | Global posture gauge + per-finding risk table |
+| **CSPM Score per CSP** | Per-cloud (AWS / Azure / GCP) posture breakdown |
+| **Correlated Risk / Asset** | Hosts ranked by combined CIEM + Secrets + CVE + Misconfig risk, tiered by internet exposure |
+| **Exploit Simulation Layer** | AI-assisted attack path simulation and lab scenarios |
+
+### Threat Center (sidebar)
+
+| Section | What it shows |
+|---------|--------------|
+| **High Fidelity Alerts** | Anomaly + Composite alerts, Critical & High severity; AI Triage button auto-fires when ready |
+
+### Risk Findings (sidebar)
+
+| Section | What it shows |
+|---------|--------------|
+| **Internet Threat Exposure** | CVEs: Critical + High severity · Unpatched (Active) · riskScore ≥ 8 · internet-exposed hosts only |
+| **Identities** | High-permissive IAM roles, users, and service accounts across AWS / Azure / GCP — flat table, 3-tab view |
+| **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
+| **Secrets** | Discovered secrets and credentials across hosts |
+
+---
+
+## How the Posture Score Works
 
 Every cloud environment gets a single score from **0 to 100 — higher is better.**
 
-### The short version (non-technical)
+### Score bands
 
-Think of the score as a health check result for your cloud security. 100 means nothing dangerous was found. Lower scores mean open issues need attention. The score is designed to be honest but not alarmist — one critical finding in a large, otherwise-clean environment won't collapse your score to zero.
-
-**Score bands:**
-
-| Score | What it means | Action |
-|:-----:|--------------|--------|
+| Score | Meaning | Action |
+|:-----:|---------|--------|
 | 90 – 100 | **Proactive Security** | Strong posture. Keep monitoring. |
 | 50 – 89 | **Some Attention Needed** | Real gaps exist. Prioritise Critical and High findings. |
 | 0 – 49 | **URGENT** | High risk. Immediate action required. |
 
-### How the number is built
-
-**Step 1 — One score per cloud (AWS, Azure, GCP)**
-
-For each cloud provider, findings are sorted into four severity buckets (Critical, High, Medium, Low). Each bucket can subtract a maximum number of points from 100:
-
-| Severity | Max deduction | Example findings |
-|----------|:------------:|-----------------|
-| Critical | 40 pts | Active threat alert, authentication bypass, root-level exposure |
-| High | 30 pts | Exploitable misconfiguration, privileged identity at risk |
-| Medium | 20 pts | Policy drift, over-permissioned role |
-| Low | 10 pts | Best-practice deviation, minor hygiene issue |
-
-The penalty grows **logarithmically** — meaning the first finding in a bucket hurts more than the tenth. A flood of low-priority notes will not make your score collapse if your critical issues are clean.
+### Global score formula
 
 ```
-CSP Score = 100 − (40 × log₁₁(1+Critical) + 30 × log₁₁(1+High) + 20 × log₁₁(1+Medium) + 10 × log₁₁(1+Low))
+postureScore = max(0, round(100 − mean(findingRiskScores) − min(20, secretCount × 0.5)))
 ```
 
-**Step 2 — Global score**
+Risk weights per finding type:
 
-The main gauge shows the straight average of the three cloud scores:
+| Finding type | Risk weight |
+|-------------|------------|
+| High-Fidelity Alert | 95 |
+| CVE (Internet Threat Exposure) | `riskScore × 10` (max 100) |
+| Critical Misconfiguration | 80 |
+| Identity (high-perm) | `risk_score × 100` (max 100) |
+| Secret (discovered credential) | −0.5 pts each, capped at −20 |
+
+> For the full per-CSP formula, worked examples, and scoring rationale see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
+
+---
+
+## Correlated Risk Findings per Asset
+
+Hosts are ranked by a combined four-factor risk score that correlates CVEs, secrets, CIEM credentials, and misconfigurations **per host**.
+
+### Scoring factors (Critical → Low)
+
+| Factor | Severity | Points | Data source |
+|--------|----------|--------|-------------|
+| CIEM High-Perm credential | Critical | +100 per credential | `secretsAll` — SSH keys, AWS/GCP/Azure credentials |
+| Secret (generic) | High | +50 per secret | `secretsAll` — all other secret types |
+| CVE Internet Threat Exposure | Medium | `riskScore × 10` per CVE | `vulns` — Lacework composite risk score |
+| Critical Misconfiguration | Low | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide, same boost per at-risk host |
 
 ```
-Global Score = (AWS Score + Azure Score + GCP Score) / 3
+assetRawRisk    = Σ(CIEM×100) + Σ(secret×50) + Σ(cve.riskScore×10) + min(60, critCompliance×10)
+normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
 ```
 
-A cloud with zero findings contributes 100 to the average. If your environment is AWS-only, Azure and GCP both score 100 and the global score equals your AWS score.
+Assets with `normalizedScore ≤ 20` or `powerState = stopped/terminated` are excluded.
 
-> For the full formula, worked examples, and an explanation of why this approach was chosen over simple averaging, see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
+### Risk tier — adjusted by internet exposure
+
+Internet exposure is a critical amplifier. A host with high raw risk but no public attack surface is deprioritised:
+
+| Base score | Internet Exposed | Displayed tier |
+|-----------|-----------------|---------------|
+| ≥ 75 | Yes | 🔴 **CRITICAL** |
+| ≥ 75 | No  | 🟡 **MEDIUM** — high score, no external attack surface |
+| 50–74 | Yes | 🟠 **HIGH** |
+| 50–74 | No  | ⚪ **LOW** — no internet exposure |
+| 30–49 | Either | 🟡 **MEDIUM** |
+| < 30  | Either | ⚪ **LOW** |
+
+Each card shows a circular score ring, a gradient risk bar, and per-factor breakdown tiles (CIEM, Secrets, Threat Exposure, Misconfig). A GeoIP lookup button appears for assets with a known public IP.
+
+---
+
+## Identity & Access Risk
+
+Queries `LW_CE_IDENTITIES` for high-permissive cloud identities across AWS, Azure, and GCP.
+
+### Filter criteria (any match qualifies)
+
+- Risk severity = **Critical**
+- Unused permissions ≥ **75%**
+- **Full Admin** flag (`ALLOWS_FULL_ADMIN`)
+
+Identity types included: IAM Roles, IAM Users, Service Accounts, Service Principals (AWS / Azure / GCP). Root accounts are always included.
+
+### Three-tab view — flat sortable table
+
+Each tab renders a flat table with columns: **#** · **Identity name** · **Identity type** · **Risk severity** · **Risk flags** · **Unused / Total entitlements**.
+
+| Tab | Contents |
+|-----|----------|
+| **Root / Admin — No MFA** | Root accounts and Full Admin identities with no MFA enabled — highest remediation priority |
+| **All Identities** | All qualifying identities sorted by risk score descending; Copy ARN + Trust button per row |
+| **Correlated Identities** | Identities grouped by type (Roles / Users / Service Accounts) with section headers |
+
+### Risk flag circles
+
+Eight fixed-position circles appear per row — colored when active, gray when not. Hover shows full risk name.
+
+| Circle | Risk flag |
+|--------|-----------|
+| **FA** | Full Admin (`ALLOWS_FULL_ADMIN`) |
+| **PE** | Privilege Escalation (`ALLOWS_PRIVILEGE_ESCALATION`) |
+| **MFA** | No MFA (`PASSWORD_LOGIN_NO_MFA`) |
+| **EP** | Excessive Permissions (`EXCESSIVE_PERMISSIONS`) |
+| **XA** | Cross-Account Access (`CROSS_ACCOUNT_ACCESS`) |
+| **CON** | Console Access (`HAS_CONSOLE_ACCESS`) |
+| **UP** | Permissions Unused 90d (`UNUSED_PERMISSION_90_DAYS`) |
+| **UK** | Access Key Unused 90d (`UNUSED_ACCESS_KEY_90_DAYS`) |
+
+### Trust principal lookup
+
+`/api/identity-trust?pid=<PRINCIPAL_ID>` — queries `LW_CE_IDENTITIES` for the single identity's `TRUST_POLICY` and `METRICS.lateral_movement_principals`, returns a list of `{ type, principal }` pairs representing who can assume the role.
 
 ---
 
 ## Assessment Windows
 
-The dashboard queries FortiCNAPP over different look-back windows depending on what the API supports.
-
 | Finding Type | Severities Fetched | Look-back Window | Notes |
 |---|---|---|---|
-| High-Fidelity Alerts | Critical, High | **21 days** | Anomaly + Composite categories only; status Open or In Progress; chunked into 7-day API calls |
+| High-Fidelity Alerts | Critical, High | **21 days** | Anomaly + Composite; chunked into 7-day API calls |
 | Compliance | Critical, High | **21 days** | Sequential fetch to avoid rate-limit collisions |
-| Identities | All | **21 days** | |
+| Identities | Critical + 75%+ unused + Full Admin | **21 days** | AWS / Azure / GCP roles, users, service accounts |
 | Secrets | All | **21 days** | |
-| CVEs / Vulnerabilities | Critical (riskScore ≥ 9) | **7 days** | Hard cap imposed by the Lacework API — cannot be extended |
+| CVEs / Vulnerabilities | Critical, High · riskScore ≥ 8 · Unpatched · Internet-exposed hosts | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged |
 
-The default window is **21 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs always remain at 7 days regardless of the selected window.
+The default window is **21 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs always remain at 7 days.
 
 ---
 
 ## Prerequisites
 
-Before you begin, make sure you have the following ready.
-
 ### 1. Runtime Environment
 
-Choose one of the following:
-
-| Option | Download Link |
-|--------|---------------|
-| Node.js 18 or higher | https://nodejs.org |
+| Option | Download |
+|--------|----------|
+| Node.js 18+ | https://nodejs.org |
 | Docker | https://docs.docker.com/get-docker/ |
 
 ### 2. FortiCNAPP API Key
 
 1. Log in to your FortiCNAPP console
-2. Go to **Settings** → **API Keys**
-3. Click **Download** to save the JSON file
-4. Keep this file safe — you will need the values inside it
+2. Go to **Settings → API Keys**
+3. Click **Download** to save the JSON file — you'll need `LW_ACCOUNT`, `LW_KEY_ID`, and `LW_SECRET`
 
-> If you only want to test the dashboard, you can skip this step and run in mock mode.
+> Skip this step to test in mock mode (`MOCK_FILE=mock_data.json node server.js`).
 
-### 3. Public Domain Name (for production HTTPS only)
+### 3. Public Domain Name (production HTTPS only)
 
-You will need a domain name that points to your server's public IP address. Any DNS provider works. A free option is [DuckDNS](https://www.duckdns.org).
+A domain pointing to your server's public IP. Free option: [DuckDNS](https://www.duckdns.org).
 
 ---
 
 ## Quick Start
-
-If you just want to see the dashboard running locally as fast as possible:
 
 ```bash
 cd rca_ui
 node server.js
 ```
 
-Then open `http://localhost:8080` in your browser.
-
-For a production deployment with HTTPS, follow the full step-by-step guide below.
+Open `http://localhost:8080`. For production HTTPS, follow the full setup below.
 
 ---
 
@@ -146,15 +229,13 @@ For a production deployment with HTTPS, follow the full step-by-step guide below
 
 ### Step 1: Get the Code
 
-Clone or download the repository to your server, then move into the dashboard folder:
-
 ```bash
 cd rca_ui
 ```
 
 ### Step 2: Create Your Configuration File
 
-Create a file named `.env` in the `rca_ui` folder. This file holds your settings and secrets.
+Create `.env` in the `rca_ui` folder:
 
 ```bash
 DUCKDNS_TOKEN=your-token-here
@@ -166,55 +247,37 @@ LW_KEY_ID=FORTINET_XXXXXXXXXXXXXXXX
 LW_SECRET=_xxxxxxxxxxxxxxxxxxxx
 ```
 
-**Important rules for the `.env` file:**
+**Rules:** No quotes around values. Docker reads the file literally.
 
-- Do NOT put quotes around any values. Docker reads the file literally.
-- Replace `domain.yourdomain.com` with your real domain
-- Replace `you@example.com` with your real email (used by Let's Encrypt)
-- Replace `LW_ACCOUNT`, `LW_KEY_ID`, and `LW_SECRET` with values from your FortiCNAPP API key JSON file
+### Step 3: Deploy
 
-### Step 3: Choose Your Deployment Path
-
-You now have two options:
-
-- **Option A:** Production deployment with automatic HTTPS — see [Production Deployment with HTTPS](#production-deployment-with-https)
-- **Option B:** Use your own existing TLS certificate — see [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+- **Production HTTPS** → see [Production Deployment with HTTPS](#production-deployment-with-https)
+- **Existing certificate** → see [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
 
 ---
 
 ## Production Deployment with HTTPS
 
-This option uses Let's Encrypt to automatically obtain a signed TLS certificate.
+### How it works
 
-### How It Works
+When `DOMAIN` is set, `entrypoint.sh`:
+1. Runs `certbot` for the Let's Encrypt HTTP-01 challenge on port 80
+2. Obtains a signed certificate
+3. Starts Node.js in HTTPS mode on port 8443
+4. Redirects HTTP → HTTPS
 
-When you set the `DOMAIN` variable, the container's `entrypoint.sh` script does the following:
+### Requirements checklist
 
-1. Runs `certbot` to perform the Let's Encrypt HTTP-01 challenge on port 80
-2. Obtains a signed certificate for your domain
-3. Starts the Node.js server in HTTPS mode on port 8443
-4. Redirects all HTTP traffic on port 80 to HTTPS
+- [ ] Domain DNS A record points to server IP
+- [ ] Port **80** publicly reachable (ACME challenge)
+- [ ] Port **443** open for HTTPS
+- [ ] `.env` filled in correctly
 
-### Requirements Checklist
-
-Before running the container, confirm:
-
-- [ ] Your public domain points to your server's IP address
-- [ ] Port **80** is publicly reachable (required for the ACME HTTP-01 challenge)
-- [ ] Port **443** is open for incoming HTTPS traffic
-- [ ] Your `.env` file is filled in correctly (see Step 2 above)
-
-### Step 1: Build the Docker Image
-
-From inside the `rca_ui` folder, run:
+### Build and run
 
 ```bash
 sudo docker build -t rca-dashboard .
-```
 
-### Step 2: Run the Container
-
-```bash
 sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
@@ -224,59 +287,22 @@ sudo docker run --rm -d \
     rca-dashboard
 ```
 
-**Explanation of the flags:**
+Or use the convenience scripts:
 
-| Flag | Purpose |
-|------|---------|
-| `--rm` | Removes the container automatically when stopped |
-| `-d` | Runs in detached (background) mode |
-| `--name rca` | Names the container `rca` for easy reference |
-| `-p 80:80` | Maps host port 80 to container port 80 (HTTP / ACME) |
-| `-p 443:8443` | Maps host port 443 to container port 8443 (HTTPS) |
-| `--env-file .env` | Loads your configuration |
-| `-v letsencrypt:/etc/letsencrypt` | Persists certificates across restarts so certbot does not re-issue every time |
+```bash
+./deploy.sh              # Public EC2 — also updates DuckDNS A record
+./deploy_PrivateCloud.sh # Private cloud — skips DuckDNS
+```
 
-### Step 3: Verify It Is Running
-
-Watch the container logs:
+### Verify
 
 ```bash
 sudo docker logs -f rca
 ```
 
-You should see output similar to:
-
-```
-[tls] Domain: rapidassessment.yourdomain.com — running certbot …
-[tls] Cert obtained: /etc/letsencrypt/live/rapidassessment.yourdomain.com/fullchain.pem
-[tls] HTTPS mode — cert: /etc/letsencrypt/live/…/fullchain.pem
-│  Open : https://domain.yourdomain.com:8443
-```
-
-### Step 4: Open the Dashboard
-
-In your browser, go to:
-
-```
-https://domain.yourdomain.com
-```
-
-(Replace with your actual domain.)
-
 ---
 
 ## Using Your Own TLS Certificate
-
-If you already have a signed certificate and want to skip certbot, use this command instead.
-
-### Step 1: Place Your Certificates
-
-Make sure your certificate and key files are on the host, for example at `/path/to/certs/`:
-
-- `fullchain.pem` — the certificate
-- `privkey.pem` — the private key
-
-### Step 2: Run the Container
 
 ```bash
 sudo docker run --rm -d \
@@ -290,33 +316,44 @@ sudo docker run --rm -d \
     rca-dashboard
 ```
 
-The `:ro` flag mounts the certificate folder read-only for safety.
+Set `SELF_SIGNED=true` in `.env` to generate a self-signed cert automatically (no Let's Encrypt, no domain required).
 
 ---
 
 ## Updating the Dashboard
 
-To deploy a change to `server.js` without rebuilding the entire image:
+Hot-deploy a change to `server.js` without rebuilding the image:
 
 ```bash
-docker cp rca_ui/server.js rca:/app/server.js
-docker restart rca
+docker cp rca_ui/server.js rca:/app/server.js && docker restart rca
 ```
-
-This copies your updated file into the running container and restarts it.
 
 ---
 
-## Collecting Visitor Contacts
-
-Every login on the dashboard is automatically saved inside the container in `contacts.csv`.
-
-To export the contacts file to your host:
+## Collecting Artefacts
 
 ```bash
-docker cp rca:/app/contacts.csv ./contacts.csv
-cat contacts.csv
+docker cp rca:/app/rca.html    ./rca.html      # latest report HTML
+docker cp rca:/app/rca.pdf     ./rca.pdf       # latest report PDF
+docker cp rca:/app/contacts.csv ./contacts.csv  # visitor registrations
 ```
+
+---
+
+## API Routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/` | GET | Desktop dashboard; mobile UA → 302 `/mobile` |
+| `/mobile` | GET | Mobile single-scroll view |
+| `/desktop` | GET | Force desktop; supports `#section` hash |
+| `/report?customer=X&author=Y` | GET | Generate HTML/PDF report from cache |
+| `/api/data` | GET | Full JSON data cache snapshot |
+| `/api/settings` | GET / POST | Read / write refresh interval and `daysBack` |
+| `/api/register` | POST | Save visitor to `contacts.csv` |
+| `/api/login` | POST | Email login — returns dashboard HTML directly |
+| `/api/identity-trust?pid=<ARN>` | GET | Trust principals for an identity (who can assume this role) |
+| `/api/geoip?ip=<IPv4>` | GET | GeoIP lookup via ipinfo.io (server-side proxy, cached) |
 
 ---
 
@@ -324,31 +361,30 @@ cat contacts.csv
 
 ### Authentication Failed
 
-If the dashboard cannot connect to FortiCNAPP, check the following:
-
-- Confirm `LW_ACCOUNT` is the full hostname, for example `xxx.lacework.net`
-- Confirm `LW_KEY_ID` and `LW_SECRET` match the downloaded JSON file exactly
-- Verify the API key has not been revoked in the FortiCNAPP console
+- Confirm `LW_ACCOUNT` is the full hostname, e.g. `xxx.lacework.net`
+- Confirm `LW_KEY_ID` and `LW_SECRET` match the downloaded JSON exactly
+- Check the API key has not been revoked in the FortiCNAPP console
 
 ### Dashboard Shows No Data or a Spinner
 
-- Check the container logs:
-  ```bash
-  docker logs -f rca
-  ```
-- Phase 2 (compliance data) can take 30 to 60 seconds to load. Wait for the live indicator dot to turn green.
+```bash
+docker logs -f rca
+```
+
+Phase 2 (compliance) can take 30–60 s. Wait for the live indicator to turn green.
 
 ### HTTPS Certificate Not Issued
 
-- Verify port 80 is reachable from the public internet (required for the ACME challenge)
-- Confirm your domain's DNS A record points to the server's public IP
-- Check that `LE_EMAIL` in `.env` is a valid email address
+- Port 80 must be publicly reachable for the ACME challenge
+- DNS A record must point to the server's public IP
+- `LE_EMAIL` must be a valid address
 
 ---
 
 ## Additional Resources
 
-- See [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full scoring formula, plain-English explanation, and a worked example
+- [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) — full scoring formula and worked example
+- [`CLAUDE.md`](./CLAUDE.md) — developer guide for Claude Code (architecture, scoring, key behaviours)
 - FortiCNAPP documentation: https://docs.fortinet.com
 - Let's Encrypt: https://letsencrypt.org
 - DuckDNS (free DNS): https://www.duckdns.org
