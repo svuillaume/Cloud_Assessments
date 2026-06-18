@@ -900,64 +900,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 </head>
 <body>
 
-<!-- Login overlay -->
-<div class="login-overlay" id="login-overlay">
-  <div class="login-box">
-    <div class="login-logo">
-      <svg viewBox="0 0 100 100" width="32" height="32"><rect x="5" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="5" width="39" height="28" rx="9" fill="#c93428"/><rect x="5" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="56" y="41" width="39" height="18" rx="5" fill="#c93428"/><rect x="5" y="67" width="39" height="28" rx="9" fill="#c93428"/><rect x="56" y="67" width="39" height="28" rx="9" fill="#c93428"/></svg>
-      <div class="login-logo-name">Fortinet &nbsp;·&nbsp; Rapid Cloud Assessment</div>
-    </div>
-    <div class="login-title">Welcome</div>
-    <div class="login-sub">Enter your details to access the dashboard</div>
-    <div class="login-row">
-      <div class="login-field">
-        <div class="login-label">First Name</div>
-        <input class="login-input" id="li-first" type="text" placeholder="Jane" autocomplete="given-name"/>
-      </div>
-      <div class="login-field">
-        <div class="login-label">Last Name</div>
-        <input class="login-input" id="li-last" type="text" placeholder="Smith" autocomplete="family-name"/>
-      </div>
-    </div>
-    <div class="login-field">
-      <div class="login-label">Job Title</div>
-      <select class="login-select" id="li-title">
-        <option value="">— Select your title —</option>
-        <option>CISO</option>
-        <option>CTO</option>
-        <option>CIO</option>
-        <option>VP of Engineering</option>
-        <option>VP of Security</option>
-        <option>Director of Security</option>
-        <option>Director of IT</option>
-        <option>Security Architect</option>
-        <option>Cloud Architect</option>
-        <option>Security Engineer</option>
-        <option>Cloud Security Engineer</option>
-        <option>DevOps / Platform Engineer</option>
-        <option>IT Manager</option>
-        <option>System Administrator</option>
-        <option>Security Analyst</option>
-        <option>Compliance Officer</option>
-        <option>Risk Manager</option>
-        <option>Sales / Pre-Sales Engineer</option>
-        <option>Other</option>
-      </select>
-    </div>
-    <div class="login-row">
-      <div class="login-field">
-        <div class="login-label">Company</div>
-        <input class="login-input" id="li-company" type="text" placeholder="Acme Corp" autocomplete="organization"/>
-      </div>
-      <div class="login-field">
-        <div class="login-label">Email</div>
-        <input class="login-input" id="li-email" type="text" placeholder="jane@acme.com" autocomplete="email"/>
-      </div>
-    </div>
-    <button class="login-btn" onclick="submitLogin()">Access Dashboard</button>
-    <div class="login-err" id="login-err"></div>
-  </div>
-</div>
 
 <div class="app-layout">
 
@@ -2371,54 +2313,11 @@ function showUserBadge(user){
   if(acct&&user.company)acct.textContent=user.company;
 }
 function logout(){
-  sessionStorage.removeItem('rca_user');
-  document.cookie='rca_user=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
-  document.getElementById('top-bar').style.display='none';
-  document.getElementById('login-overlay').style.display='flex';
-  document.getElementById('li-first').value='';
-  document.getElementById('li-last').value='';
-  document.getElementById('li-title').value='';
-  document.getElementById('li-company').value='';
-  document.getElementById('li-email').value='';
-  document.getElementById('login-err').textContent='';
+  window.location.href='/';
 }
 
-(function checkLogin(){
-  const s=sessionStorage.getItem('rca_user')||getCookie('rca_user');
-  if(s){
-    document.getElementById('login-overlay').style.display='none';
-    try{const u=JSON.parse(s);wireReportBtn(u);showUserBadge(u);}catch(_){}
-  }
-  startupSequence();
-  loadAdminSettings();
-})();
-
-function submitLogin(){
-  const first=document.getElementById('li-first').value.trim();
-  const last=document.getElementById('li-last').value.trim();
-  const title=document.getElementById('li-title').value;
-  const company=document.getElementById('li-company').value.trim();
-  const email=document.getElementById('li-email').value.trim();
-  const err=document.getElementById('login-err');
-  if(!first||!last){err.textContent='Please enter your first and last name.';return;}
-  if(!title){err.textContent='Please select your job title.';return;}
-  if(!company){err.textContent='Please enter your company name.';return;}
-  if(!email){err.textContent='Please enter your email address.';return;}
-  err.textContent='';
-  const handle=(first+(last.charAt(0))).toLowerCase();
-  const user={first,last,title,company,email,handle};
-  const userJson=JSON.stringify(user);
-  sessionStorage.setItem('rca_user',userJson);
-  setCookie('rca_user',userJson,30/1440);
-  fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).catch(()=>{});
-  document.getElementById('login-overlay').style.display='none';
-  wireReportBtn(user);
-  showUserBadge(user);
-  load();
-}
-
-document.getElementById('li-company').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
-document.getElementById('li-title').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
+startupSequence();
+loadAdminSettings();
 
 
 
@@ -3083,6 +2982,18 @@ async function openMachineDetails(hostname){
 }
 
 const HTML = buildHtml(LW_ACCOUNT, INTERVAL);
+
+const LOGIN_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><title>Fortinet · Rapid Cloud Assessment</title></head>
+<body style="font-family:sans-serif;padding:60px;background:#111827;color:#fff">
+<h2>Fortinet &nbsp;·&nbsp; Rapid Cloud Assessment</h2>
+<p style="margin:12px 0 24px;color:#9ca3af">Enter your business email to access the dashboard</p>
+<form method="POST" action="/api/login" style="max-width:360px">
+  <div style="margin-bottom:20px"><label style="display:block;margin-bottom:6px">Business Email</label>
+  <input type="text" name="email" placeholder="you@company.com" style="width:100%;padding:10px;font-size:15px;border-radius:6px;border:1px solid #444;background:#1f2937;color:#fff"/></div>
+  <input type="submit" value="Access Dashboard" style="width:100%;padding:13px;background:#c93428;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer"/>
+</form>
+</body></html>`;
 
 const MOBILE_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -4585,9 +4496,34 @@ function requestHandler(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
+  } else if (req.method === 'POST' && req.url === '/api/login') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      const p = new URLSearchParams(body);
+      const email = (p.get('email') || '').trim();
+      const company = (p.get('company') || '').trim();
+      if (email) {
+        const ts = new Date().toISOString();
+        const row = [ts, email.split('@')[0], '', '', company, email, ''].join(',') + '\n';
+        fs.appendFile('/app/contacts.csv', row, () => {});
+      }
+      // Serve dashboard directly — no redirect, so self-signed cert cookie issues don't matter
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end(HTML);
+    });
   } else if (isMobile && req.url === '/') {
     res.writeHead(302, { Location: '/mobile', ...CORS });
     res.end();
+  } else if (req.url === '/') {
+    const authed = /rca_auth=/.test(req.headers.cookie || '');
+    if (!authed) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end(LOGIN_HTML);
+    } else {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end(HTML);
+    }
   } else {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
@@ -4644,7 +4580,7 @@ if (TLS_CERT && TLS_KEY) {
   // Plain HTTP → HTTPS redirect
   http.createServer((req, res) => {
     const host = (req.headers.host || 'localhost').replace(/:\d+$/, '');
-    const target = `https://${host}:${PORT_TLS}${req.url}`;
+    const target = `https://${host}${req.url}`;
     res.writeHead(301, { Location: target });
     res.end();
   }).listen(PORT, () => {
