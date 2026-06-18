@@ -320,10 +320,12 @@ async function fetchCompliance() {
     return [];
   }
 
-  // Step 2 — run each policy query to count violations
+  // Step 2 — run policy queries in parallel batches of 3 (avoids rate-limit, ~3× faster than sequential)
   const findings = [];
   const tf2 = timeFilter();
-  for (const p of policies) {
+  const BATCH = 3;
+
+  async function runPolicy(p) {
     try {
       const rows = await post('Queries/execute', {
         query: { queryText: p.queryText },
@@ -333,21 +335,33 @@ async function fetchCompliance() {
         ],
       });
       console.log(`  [compliance] ${p.policyId} → ${rows.length} rows`);
-      if (rows.length) findings.push({
+      if (rows.length) return {
         alertId:     p.policyId,
         cloud:       policyCloud(p.queryId || p.policyId),
         title:       p.title || p.policyId,
         description: p.description || '—',
         severity:    'Critical',
         violations:  rows.length,
-        resources:   rows.slice(0, 100), // up to 100 violating resources per policy
-      });
+        resources:   rows.slice(0, 100),
+      };
     } catch (e) {
       console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
       if (e.message.includes('429')) await new Promise(r => setTimeout(r, 5000));
     }
-    if (findings.length >= 10) break;
-    await new Promise(r => setTimeout(r, 1200));
+    return null;
+  }
+
+  for (let i = 0; i < policies.length && findings.length < 10; i += BATCH) {
+    const batch = policies.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(runPolicy));
+    results.forEach(r => r && findings.push(r));
+    // Push partial results to cache so client sees them on next poll
+    if (findings.length) {
+      cache = { ...cache, compliance: findings.slice().sort((a, b) => b.violations - a.violations) };
+    }
+    if (i + BATCH < policies.length && findings.length < 10) {
+      await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   console.log(`  [compliance] ${findings.length} policies with violations`);
@@ -828,6 +842,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .ai-msg.user{align-self:flex-end;background:#DA291C;color:#fff;border-bottom-right-radius:4px}
 .ai-msg.assistant{align-self:flex-start;background:#f1f5f9;color:#0f172a;border-bottom-left-radius:4px}
 .ai-msg.thinking{align-self:flex-start;background:#f8fafc;color:#94a3b8;font-style:italic;border:1px dashed #e2e8f0;border-bottom-left-radius:4px}
+.ai-inv-btn.ai-ready{background:#16a34a!important;}
+.ai-msg.fact{align-self:center;background:linear-gradient(135deg,#fff5f5,#fff);border:1.5px solid #DA291C33;border-radius:10px;color:#374151;font-size:12px;font-style:italic;padding:8px 14px;max-width:90%;text-align:center;margin-top:4px}
+.ai-msg.fact::before{content:"☁️ Did you know? ";font-style:normal;font-weight:700;color:#DA291C}
 .ai-feedback{display:flex;align-items:center;gap:6px;align-self:flex-start;margin-top:-4px;margin-left:2px}
 .ai-fb-btn{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px;font-size:13px;cursor:pointer;line-height:1;color:#64748b;transition:background .15s,border-color .15s}
 .ai-fb-btn:hover{background:#f1f5f9;border-color:#cbd5e1}
@@ -1081,8 +1098,6 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="58" font-weight="900"
             letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
       <!-- Scale endpoints -->
-      <text x="-8"  y="218" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
-      <text x="408" y="218" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
 
       <!-- ── URGENT bubble — left, tail centered on right edge → arc at ~(58,67) ── -->
       <g id="bubble-urgent" opacity="0.35" style="transition:opacity .4s,filter .4s">
@@ -1148,7 +1163,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
       <!-- AWS -->
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#FF9900">AWS</span>
+        <span id="csp-label-aws" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#232F3E">
+          <svg viewBox="0 0 80 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#FF9900" d="M22.5 29.4c-5.4 2.8-8.3 1-9.9 0-.3-.2-.4 0-.3.3.6 1.7 2.5 4.4 6.1 4.4 3.6 0 6.6-2.3 7.1-2.7.5-.4.1-.6-.3-.4-1.4.6-2.5.7-2.7.4zm3.2-1.3c-.2-.2-1.2-.3-2.1-.1-.9.2-2.3.8-2.2 1.1 0 .1.1.1.4 0l.9-.2c1.1-.2 2.4-.1 2.8.4.3.4-.1 1.3-.2 1.5-.1.2 0 .3.2.1 1.4-1.3 1.4-2.5.2-2.8z"/><path fill="#FF9900" d="M34.4 21.1c0-.5 0-1-.1-1.4-.4-2.2-1.6-3.2-3.4-3.2-1.2 0-2.3.5-2.9 1.7-.3.5-.4 1.1-.4 1.8 0 1.9.9 3 2.3 3.4.5.1 1 .2 1.6.2.7 0 1.4-.1 2.1-.4.5-.2.8-.6.8-.9v-1.2zm-3.2 1.5c-.8 0-1.4-.5-1.6-1.3-.1-.3-.1-.6-.1-.9 0-.5.1-.9.3-1.2.3-.5.7-.7 1.3-.7.9 0 1.5.6 1.7 1.7.1.3.1.6.1.9 0 .3 0 .5-.1.7-.2.5-.8.8-1.6.8zM41 23.2c-1 0-1.9-.3-2.6-.6l-.3-.1v-.5c0-.2.1-.2.2-.2h.2c.7.3 1.5.6 2.3.6.9 0 1.4-.4 1.4-.9 0-.4-.3-.7-.9-.9l-1.3-.4c-.8-.3-1.5-.9-1.5-2 0-1.1.9-2 2.4-2 .8 0 1.6.2 2.1.5l.3.2v.5c0 .2-.1.2-.2.2-.1 0-.1 0-.2-.1-.5-.2-1.1-.4-1.8-.4-.8 0-1.2.3-1.2.8 0 .3.2.6.8.8l1.3.4c1 .3 1.7.9 1.7 2 0 1.2-1 2.1-2.7 2.1zm6.2-.1h-.8c-.1 0-.2 0-.2-.1L43.8 17h.8c.1 0 .2.1.2.2l1 3.8.2.8.2-.8 1.1-3.8c0-.1.1-.2.2-.2h.6c.1 0 .2.1.2.2l1.1 3.8.2.8.2-.8 1-3.8c0-.1.1-.2.2-.2h.8l-1.6 6-.1.1h-.8c-.1 0-.2-.1-.2-.2l-1.1-3.9-.2-.9-.2.9-1.1 3.9c0 .1-.1.2-.3.2zm8.5 0h-1.1c-.1 0-.2-.1-.2-.2V17h1.1c.1 0 .2.1.2.2v6z"/></svg>
+          AWS
+        </span>
         <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
@@ -1166,7 +1184,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
       <!-- Azure -->
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#0078D4">AZURE</span>
+        <span id="csp-label-azure" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#0078D4">
+          <svg viewBox="0 0 59 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M33.3 3.6L18.6 40.8H6.3L17.7 20l-6.8-3.9L33.3 3.6zM35.2 5.1l14.5 35.7H37.4L31.6 26l-5.6-10.9 9.2-10zM0 44h59v2H0z"/></svg>
+          Azure
+        </span>
         <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
@@ -1184,7 +1205,10 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
       <!-- GCP -->
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#4285F4">GCP</span>
+        <span id="csp-label-gcp" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#1a73e8">
+          <svg viewBox="0 0 48 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.3 9 3.4l6.7-6.7C35.7 2.4 30.2 0 24 0 14.7 0 6.7 5.4 2.9 13.3l7.8 6C12.5 13.4 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.9 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.9c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.3-10 7.3-17z"/><path fill="#FBBC05" d="M10.7 28.7A14.6 14.6 0 0 1 9.5 24c0-1.6.3-3.2.8-4.7l-7.8-6A24 24 0 0 0 0 24c0 3.9.9 7.5 2.5 10.7l8.2-6z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.5l-7.5-5.8c-2 1.4-4.6 2.3-7.7 2.3-6.2 0-11.5-4.2-13.4-9.8l-8.2 6C6.7 42.6 14.7 48 24 48z"/></svg>
+          GCP
+        </span>
         <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
@@ -1783,13 +1807,38 @@ function renderSecretsAll(rows,err){
         const oct=(rawPerms&0o777).toString(8).padStart(3,'0');
         const permissive=(rawPerms&0o377)!==0;
         const col=permissive?'#ef4444':'#22c55e';
-        dacHtml='<code style="font-size:12px;font-weight:700;color:'+col+'">'+oct+'</code>';
+        const plain=(function(o){
+          const m={
+            '777':'Everyone: read, write & execute',
+            '776':'Owner+Group: read/write/execute · Others: read/write',
+            '775':'Owner+Group: read/write/execute · Others: read/execute',
+            '774':'Owner+Group: read/write/execute · Others: read-only',
+            '755':'Owner: full · Others: read & execute',
+            '750':'Owner: full · Group: read/execute · Others: none',
+            '700':'Owner only: full access',
+            '666':'Everyone: read & write (no execute)',
+            '664':'Owner+Group: read/write · Others: read-only',
+            '660':'Owner+Group: read/write · Others: none',
+            '644':'Owner: read/write · Others: read-only',
+            '640':'Owner: read/write · Group: read-only · Others: none',
+            '600':'Owner: read/write · Others: none',
+            '400':'Owner: read-only (recommended)',
+            '444':'Everyone: read-only',
+          };
+          if(m[o])return m[o];
+          const u=parseInt(o[0]),g=parseInt(o[1]),w=parseInt(o[2]);
+          const bits=n=>(n&4?'r':'-')+(n&2?'w':'-')+(n&1?'x':'-');
+          return'Owner: '+bits(u)+' · Group: '+bits(g)+' · World: '+bits(w);
+        })(oct);
+        dacHtml='<span style="font-size:11px;font-weight:600;color:'+col+'">'
+          +'<code style="font-size:11px;font-weight:700;margin-right:5px">'+oct+'</code>'
+          +e(plain)+'</span>';
       }
       return'<tr>'
         +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
         +'<td>'+containerLabel+'</td>'
         +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
-        +'<td style="text-align:center">'+dacHtml+'</td>'
+        +'<td>'+dacHtml+'</td>'
         +'<td class="m">'+detectedAt+'</td>'
         +'</tr>';
     }).join('');
@@ -1798,7 +1847,7 @@ function renderSecretsAll(rows,err){
         +'<span style="font-weight:700;font-size:13px;color:'+hdrColor+'">'+e(displayCat(cat))+'</span>'
         +'<span style="background:'+hdrColor+';color:#fff;border-radius:10px;font-size:11px;font-weight:700;padding:1px 8px">'+items.length+'</span>'
       +'</div>'
-      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th style="text-align:center">DAC</th><th>Detected</th></tr></thead><tbody>'
+      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th>Permissions</th><th>Detected</th></tr></thead><tbody>'
         +rowsHtml
       +'</tbody></table></div>'
     +'</div>';
@@ -1902,6 +1951,7 @@ function nav(name){
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('active'));
   document.getElementById('view-'+name).classList.add('active');
   document.getElementById('nav-'+name).classList.add('active');
+  history.replaceState(null,'','#'+name);
 }
 
 let _lastData=null;
@@ -2032,11 +2082,12 @@ function renderCspLab(d,csp){
   const goal=document.getElementById('cjnd-goal');
   const goalCnt=document.getElementById('cjnd-goal-cnt');
   if(goal)goal.setAttribute('fill',color);
-  if(goalCnt)goalCnt.textContent=p;
+  // Show current band in goal node (not the score — counts in step nodes are findings, not score points)
+  if(goalCnt){goalCnt.setAttribute('font-size','11');goalCnt.textContent=p>=90?'ACHIEVED':p>=50?'ATTENTION':'URGENT';}
   const ph2=document.getElementById('cjph2');
   const ph2txt=document.getElementById('cjph2-txt');
   if(ph2)ph2.setAttribute('fill',color);
-  if(ph2txt)ph2txt.textContent=p>=90?'ACHIEVED':'GOAL';
+  if(ph2txt)ph2txt.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';
   const snake=document.getElementById('cjsnake');
   if(snake)snake.setAttribute('stroke',color);
 }
@@ -2082,9 +2133,9 @@ function renderLab(d){
   const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
   const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
   if(g6)g6.setAttribute('fill',color);
-  if(g6c)g6c.textContent=p;
+  if(g6c){g6c.setAttribute('font-size','11');g6c.textContent=p>=90?'ACHIEVED':p>=50?'ATTENTION':'URGENT';}
   if(ph3)ph3.setAttribute('fill',color);
-  if(ph3t)ph3t.textContent=p>=90?'ACHIEVED':'GOAL';
+  if(ph3t)ph3t.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';
   // Snake path color tracks score band
   const snake=document.getElementById('jsnake');
   if(snake)snake.setAttribute('stroke',color);
@@ -2095,6 +2146,7 @@ async function load(){
     const d=await fetch('/api/data').then(r=>r.json());
     _lastData=d;
     renderAlerts(d.alerts,d.errors?.alerts);
+    _preTriageAll(d.alerts);
     renderVulns(d.vulns,d.errors?.vulns);
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
@@ -2153,6 +2205,9 @@ function calcGlobalScoreFromCsp(d){
 
 function updateCspGauges(d){
   const arcLen=314;
+  // Derive a short company name from the account hostname
+  const co=(d.account||'').replace(/\.lacework\.net$/i,'').replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase())||'';
+  const cspLabel={aws:'AWS',azure:'Azure',gcp:'GCP'};
   ['aws','azure','gcp'].forEach(csp=>{
     const raw=calcCspScore(d,csp);
     const p=raw!==null?raw:100;
@@ -2161,9 +2216,11 @@ function updateCspGauges(d){
     const arc=document.getElementById('csp-arc-'+csp);
     const scoreEl=document.getElementById('csp-score-'+csp);
     const bandEl=document.getElementById('csp-band-'+csp);
+    const labelEl=document.getElementById('csp-label-'+csp);
     if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',(p/100*arcLen)+' '+arcLen);}
     if(scoreEl){scoreEl.textContent=p;scoreEl.setAttribute('fill',color);}
     if(bandEl){bandEl.textContent=band;bandEl.setAttribute('fill',color);}
+    if(labelEl){labelEl.textContent=co?co+' · '+cspLabel[csp]:cspLabel[csp];}
   });
 }
 
@@ -2403,10 +2460,76 @@ setInterval(()=>{
 (function(){var h=location.hash.replace('#','');if(h&&document.getElementById('view-'+h))nav(h);})();
 
 // ── AI Investigation Chat ─────────────────────────────────────────────────────
+// Pre-triage cache: { alertId -> { threadId, message, responseId } | 'pending' }
+const _aiTriageCache={};
+
+function _aiMarkBtn(alertId,ready){
+  document.querySelectorAll('.ai-inv-btn[data-aid="'+alertId+'"]').forEach(function(b){
+    b.textContent=ready?'⚡ Investigate':'🤖 Investigate';
+    b.classList.toggle('ai-ready',!!ready);
+  });
+}
+
+async function _preTriage(alertId){
+  const existing=_aiTriageCache[alertId];
+  if(existing&&existing!=='pending'){_aiMarkBtn(alertId,true);return;}
+  if(existing==='pending')return;
+  _aiTriageCache[alertId]='pending';
+  try{
+    const ds=await _aiStartThread(alertId);
+    if(ds.error||!ds.threadId){delete _aiTriageCache[alertId];return;}
+    const rq=await _aiFetchRetry('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({threadId:ds.threadId,alertId,message:_AI_PROMPTS.triage})});
+    const dq=await rq.json();
+    if(dq.error){delete _aiTriageCache[alertId];return;}
+    _aiTriageCache[alertId]={threadId:ds.threadId,message:dq.message||'',responseId:dq.responseId};
+    _aiMarkBtn(alertId,true);
+  }catch(e){delete _aiTriageCache[alertId];}
+}
+
+function _preTriageAll(alerts){
+  var delay=0;
+  (alerts||[]).forEach(function(r){
+    var aid=r.alertId||'';
+    var cached=_aiTriageCache[aid];
+    if(cached&&cached!=='pending'){
+      _aiMarkBtn(aid,true); // already cached — mark green immediately
+    }else if(!cached){
+      // New fetch — stagger to avoid hammering the API
+      setTimeout(function(){_preTriage(aid);},delay);
+      delay+=2000;
+    }
+    // 'pending' — already in-flight, do nothing
+  });
+}
+
+// Pre-warm cache: start the AI thread as soon as the user hovers an Investigate button
+const _aiWarmCache={};
+document.addEventListener('mouseover',function(ev){
+  const btn=ev.target.closest('.ai-inv-btn');
+  if(!btn)return;
+  const aid=btn.dataset.aid;
+  if(!_aiWarmCache[aid])
+    _aiWarmCache[aid]=_aiStartThread(aid);
+},true);
+
 document.addEventListener('click',function(ev){
   const btn=ev.target.closest('.ai-inv-btn');
   if(btn)openAiChat(btn.dataset.aid,btn.dataset.aname,btn.dataset.asev);
 });
+
+function _aiStartThread(alertId){
+  return _aiFetchRetry('/api/ai/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alertId})})
+    .then(r=>r.json());
+}
+
+async function _aiFetchRetry(url,opts,tries=2){
+  for(let i=0;i<tries;i++){
+    try{return await fetch(url,opts);}
+    catch(e){if(i===tries-1)throw e;await new Promise(r=>setTimeout(r,1500));}
+  }
+}
+
 let _aiThreadId=null,_aiAlertId=null,_aiSending=false,_aiStartPromise=null;
 
 const _AI_PROMPTS={
@@ -2424,8 +2547,9 @@ function openAiChat(alertId,alertName,severity){
   document.getElementById('ai-chat-input').style.display='none';
   document.getElementById('ai-send-btn').style.display='none';
   document.getElementById('ai-chat-overlay').style.display='flex';
-  // Pre-start the thread immediately while user reads / picks a prompt
-  _aiStartPromise=fetch('/api/ai/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alertId})}).then(r=>r.json());
+  // Pre-warm thread in background while user reads the button
+  _aiStartPromise=_aiWarmCache[alertId]||_aiStartThread(alertId);
+  delete _aiWarmCache[alertId];
 }
 
 function _aiStartTimer(el,prefix){
@@ -2438,9 +2562,25 @@ async function pickAiPrompt(type){
   if(_aiSending)return;
   _aiSending=true;
   document.getElementById('ai-btn-triage').disabled=true;
+  document.getElementById('ai-prompt-row').style.display='none';
   _aiAddMsg('user',type==='triage'?'Triage':'Incident Report');
+  // Serve from pre-triage cache instantly
+  const cached=_aiTriageCache[_aiAlertId];
+  if(type==='triage'&&cached&&cached!=='pending'){
+    _aiThreadId=cached.threadId;
+    _aiStreamMsg('assistant',cached.message,cached.responseId);
+    document.getElementById('ai-chat-input').style.display='flex';
+    document.getElementById('ai-send-btn').style.display='flex';
+    document.getElementById('ai-chat-input').focus();
+    _aiSending=false;
+    return;
+  }
   const thinking=_aiAddMsg('thinking','Connecting to FortiCNAPP Agent AI…');
   const stopTimer=_aiStartTimer(thinking,'Connecting to FortiCNAPP Agent AI…');
+  // Show a random cloud security fact while waiting, rotate every 15s
+  const factEl=_aiAddMsg('fact',_fgPickFact());
+  factEl.title='Did you know?';
+  const factTimer=setInterval(function(){factEl.textContent=_fgPickFact();},15000);
   try{
     // Await pre-started thread (may already be ready)
     const ds=await _aiStartPromise;
@@ -2450,19 +2590,23 @@ async function pickAiPrompt(type){
     stopTimer();
     const stopTimer2=_aiStartTimer(thinking,'Analysing alert…');
     // Send canned question
-    const rq=await fetch('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:_aiThreadId,alertId:_aiAlertId,message:_AI_PROMPTS[type]})});
+    const rq=await _aiFetchRetry('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:_aiThreadId,alertId:_aiAlertId,message:_AI_PROMPTS[type]})});
     stopTimer2();
     const dq=await rq.json();
+    clearInterval(factTimer);
     thinking.remove();
+    factEl.remove();
     if(dq.error)_aiAddMsg('assistant','Error: '+dq.error);
-    else _aiAddMsg('assistant',dq.message||'(no response)',dq.responseId);
+    else _aiStreamMsg('assistant',dq.message||'(no response)',dq.responseId);
     document.getElementById('ai-prompt-row').style.display='none';
     document.getElementById('ai-chat-input').style.display='flex';
     document.getElementById('ai-send-btn').style.display='flex';
     document.getElementById('ai-chat-input').focus();
   }catch(err){
+    clearInterval(factTimer);
     stopTimer();
     thinking.remove();
+    factEl.remove();
     _aiAddMsg('assistant','Error: '+err.message);
     document.getElementById('ai-btn-triage').disabled=false;
   }finally{
@@ -2498,6 +2642,21 @@ function _aiAddMsg(role,content,responseId){
   return d;
 }
 
+function _aiStreamMsg(role,content,responseId){
+  const el=_aiAddMsg(role,'',responseId);
+  const words=content.split(' ');
+  let i=0;
+  const body=document.getElementById('ai-chat-body');
+  const t=setInterval(function(){
+    if(i<words.length){
+      el.textContent+=(i>0?' ':'')+words[i++];
+      body.scrollTop=body.scrollHeight;
+    }else{
+      clearInterval(t);
+    }
+  },180);
+}
+
 async function sendAiMessage(){
   if(_aiSending||!_aiThreadId)return;
   const inp=document.getElementById('ai-chat-input');
@@ -2513,7 +2672,7 @@ async function sendAiMessage(){
     const d=await r.json();
     thinking.remove();
     if(d.error)_aiAddMsg('assistant','Error: '+d.error);
-    else _aiAddMsg('assistant',d.message||'(no response)',d.responseId);
+    else _aiStreamMsg('assistant',d.message||'(no response)',d.responseId);
   }catch(err){
     thinking.remove();
     _aiAddMsg('assistant','Error: '+err.message);
