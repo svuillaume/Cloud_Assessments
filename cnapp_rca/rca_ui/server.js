@@ -1182,7 +1182,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
           <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
           <div id="csp-org-aws" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
-          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiCNAPP Account</div>
           <div id="csp-sub-aws" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
         </div>
         <span id="csp-label-aws" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#232F3E;background:#FF9900">
@@ -1210,7 +1210,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
           <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
           <div id="csp-org-azure" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
-          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiCNAPP Account</div>
           <div id="csp-sub-azure" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
         </div>
         <span id="csp-label-azure" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#0078D4">
@@ -1238,7 +1238,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
           <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
           <div id="csp-org-gcp" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
-          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiCNAPP Account</div>
           <div id="csp-sub-gcp" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
         </div>
         <span id="csp-label-gcp" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#4285F4">
