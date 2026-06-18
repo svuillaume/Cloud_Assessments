@@ -17,9 +17,17 @@ if (!fs.existsSync(CONTACTS_CSV)) {
 }
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const LW_ACCOUNT = process.env.LW_ACCOUNT || 'partner-demo.lacework.net';
-const LW_KEY_ID  = process.env.LW_KEY_ID  || 'YOUR_KEY_ID';
-const LW_SECRET  = process.env.LW_SECRET  || 'YOUR_SECRET_KEY';
+// Optional: LW_KEY_FILE=/path/to/keys.json — Lacework key JSON (keyId, secret, subAccount)
+let _keyFileData = {};
+try {
+  const _kf = process.env.LW_KEY_FILE || '';
+  if (_kf) _keyFileData = JSON.parse(fs.readFileSync(_kf, 'utf8'));
+} catch(e) { console.warn('[keyfile] Could not read LW_KEY_FILE:', e.message); }
+
+const LW_ACCOUNT    = process.env.LW_ACCOUNT    || 'partner-demo.lacework.net';
+const LW_KEY_ID     = process.env.LW_KEY_ID     || _keyFileData.keyId    || 'YOUR_KEY_ID';
+const LW_SECRET     = process.env.LW_SECRET     || _keyFileData.secret   || 'YOUR_SECRET_KEY';
+const LW_SUBACCOUNT = process.env.LW_SUBACCOUNT || _keyFileData.subAccount || _keyFileData.sub_account || '';
 const PORT       = Number(process.env.PORT)     || 8080;
 const PORT_TLS   = Number(process.env.PORT_TLS) || 8443;
 const TLS_CERT   = process.env.TLS_CERT || '';  // path to fullchain.pem
@@ -40,7 +48,7 @@ let token       = null;
 let tokenExpiry = 0;
 let cache = {
   alerts: [], vulns: [], compliance: [], identities: [],
-  fetchedAt: null, errors: {}, account: LW_ACCOUNT,
+  fetchedAt: null, errors: {}, account: LW_ACCOUNT, subAccount: LW_SUBACCOUNT,
   riskScore: 0, daysBack: DAYS_BACK,
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
 };
@@ -776,6 +784,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .jmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
 .jmap-svg{width:100%;max-width:1000px;overflow:visible}
 @keyframes snake-flow{to{stroke-dashoffset:-26}}
+@keyframes path-flow{to{stroke-dashoffset:-20}}
 
 /* ── Report button + modal ── */
 .rpt-btn{display:flex;align-items:center;gap:8px;margin:8px 10px 0;padding:10px 13px;border-radius:8px;cursor:pointer;background:linear-gradient(135deg,#c93428,#9e1f16);color:#fff;font-size:12px;font-weight:700;letter-spacing:.03em;border:none;width:calc(100% - 20px);transition:filter .15s}
@@ -979,9 +988,9 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><path d="M21.21 15.89A9 9 0 1 1 8.11 2.79"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
     CSPM Score per CSP
   </div>
-  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
-    Risk Findings Inventory
+  <div class="sb-item" id="nav-lab" onclick="nav('lab')">
+    <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    Exploit Simulation Layer
   </div>
   <div class="sb-sect">Threat Center</div>
   <div class="sb-item" id="nav-alerts" onclick="nav('alerts')">
@@ -1009,11 +1018,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
   </div>
-  <div class="sb-sect">Operational Guidance</div>
-  <div class="sb-item" id="nav-lab" onclick="nav('lab')">
-    <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-    Next Steps
+  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
+    Risk Findings Inventory
   </div>
+  <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-admin-settings" onclick="nav('admin-settings')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     Admin Settings
@@ -1060,12 +1069,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
     <!-- Title -->
     <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Cloud Security Posture Management Score</div>
-    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px">Fortinet Rapid Cloud Assessment empowered by <i class="fg-arrow" id="fg-arrow">→</i><a id="fg-link" href="https://community.fortinet.com/forticnapp-63" target="_blank" style="color:#DA291C;text-decoration:none;font-weight:700">FortiCNAPP</a> · last ${DAYS_BACK} days</div>
+    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px">Fortinet Rapid Cloud Assessment empowered by <a id="fg-link" href="https://community.fortinet.com/forticnapp-63" target="_blank" style="color:#DA291C;text-decoration:none;font-weight:700">FortiCNAPP</a> · last ${DAYS_BACK} days</div>
 
     <!-- Centering wrapper: responsive — fills available space up to a comfortable max -->
     <div style="width:100%;max-width:clamp(480px,58vw,740px);display:flex;flex-direction:column;align-items:center">
     <!-- Arc label positions (SVG units): URGENT≈(58,67)  ATTENTION≈(314,43)  PROACTIVE≈(396,180) -->
-    <svg id="gauge-svg" viewBox="-88 -46 636 294" style="display:block;width:100%;overflow:visible">
+    <svg id="gauge-svg" viewBox="-88 -46 636 324" style="display:block;width:100%;overflow:visible">
       <defs>
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
@@ -1128,6 +1137,12 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
         <text x="475" y="182" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Strong controls.</text>
         <text x="475" y="196" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Low risk.</text>
       </g>
+      <!-- Objective tagline — anchored at x=200 (gauge arc center) -->
+      <text x="200" y="248" text-anchor="middle" font-size="9.5" font-weight="600"
+            letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
+            fill="#64748b" text-transform="uppercase">
+        <tspan>THE OBJECTIVE IS TO ACHIEVE </tspan><tspan fill="#15803d" font-weight="800">PROACTIVE SECURITY</tspan>
+      </text>
     </svg>
 
     </div><!-- /gauge-wrapper -->
@@ -1162,12 +1177,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div style="display:flex;justify-content:center;gap:40px;width:100%;flex-wrap:wrap">
 
       <!-- AWS -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <span id="csp-label-aws" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#232F3E">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:18px 20px 14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+        <!-- Org + Sub Account above gauge -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
+          <div id="csp-org-aws" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div id="csp-sub-aws" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
+        </div>
+        <span id="csp-label-aws" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#232F3E;background:#FF9900">
           <svg viewBox="0 0 80 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#FF9900" d="M22.5 29.4c-5.4 2.8-8.3 1-9.9 0-.3-.2-.4 0-.3.3.6 1.7 2.5 4.4 6.1 4.4 3.6 0 6.6-2.3 7.1-2.7.5-.4.1-.6-.3-.4-1.4.6-2.5.7-2.7.4zm3.2-1.3c-.2-.2-1.2-.3-2.1-.1-.9.2-2.3.8-2.2 1.1 0 .1.1.1.4 0l.9-.2c1.1-.2 2.4-.1 2.8.4.3.4-.1 1.3-.2 1.5-.1.2 0 .3.2.1 1.4-1.3 1.4-2.5.2-2.8z"/><path fill="#FF9900" d="M34.4 21.1c0-.5 0-1-.1-1.4-.4-2.2-1.6-3.2-3.4-3.2-1.2 0-2.3.5-2.9 1.7-.3.5-.4 1.1-.4 1.8 0 1.9.9 3 2.3 3.4.5.1 1 .2 1.6.2.7 0 1.4-.1 2.1-.4.5-.2.8-.6.8-.9v-1.2zm-3.2 1.5c-.8 0-1.4-.5-1.6-1.3-.1-.3-.1-.6-.1-.9 0-.5.1-.9.3-1.2.3-.5.7-.7 1.3-.7.9 0 1.5.6 1.7 1.7.1.3.1.6.1.9 0 .3 0 .5-.1.7-.2.5-.8.8-1.6.8zM41 23.2c-1 0-1.9-.3-2.6-.6l-.3-.1v-.5c0-.2.1-.2.2-.2h.2c.7.3 1.5.6 2.3.6.9 0 1.4-.4 1.4-.9 0-.4-.3-.7-.9-.9l-1.3-.4c-.8-.3-1.5-.9-1.5-2 0-1.1.9-2 2.4-2 .8 0 1.6.2 2.1.5l.3.2v.5c0 .2-.1.2-.2.2-.1 0-.1 0-.2-.1-.5-.2-1.1-.4-1.8-.4-.8 0-1.2.3-1.2.8 0 .3.2.6.8.8l1.3.4c1 .3 1.7.9 1.7 2 0 1.2-1 2.1-2.7 2.1zm6.2-.1h-.8c-.1 0-.2 0-.2-.1L43.8 17h.8c.1 0 .2.1.2.2l1 3.8.2.8.2-.8 1.1-3.8c0-.1.1-.2.2-.2h.6c.1 0 .2.1.2.2l1.1 3.8.2.8.2-.8 1-3.8c0-.1.1-.2.2-.2h.8l-1.6 6-.1.1h-.8c-.1 0-.2-.1-.2-.2l-1.1-3.9-.2-.9-.2.9-1.1 3.9c0 .1-.1.2-.3.2zm8.5 0h-1.1c-.1 0-.2-.1-.2-.2V17h1.1c.1 0 .2.1.2.2v6z"/></svg>
           AWS
         </span>
-        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,340px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path id="csp-arc-aws" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
@@ -1183,12 +1205,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </div>
 
       <!-- Azure -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:18px 20px 14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+        <!-- Org + Sub Account above gauge -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
+          <div id="csp-org-azure" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div id="csp-sub-azure" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
+        </div>
         <span id="csp-label-azure" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#0078D4">
           <svg viewBox="0 0 59 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M33.3 3.6L18.6 40.8H6.3L17.7 20l-6.8-3.9L33.3 3.6zM35.2 5.1l14.5 35.7H37.4L31.6 26l-5.6-10.9 9.2-10zM0 44h59v2H0z"/></svg>
           Azure
         </span>
-        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,340px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path id="csp-arc-azure" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
@@ -1204,12 +1233,19 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </div>
 
       <!-- GCP -->
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <span id="csp-label-gcp" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#1a73e8">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:18px 20px 14px;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+        <!-- Org + Sub Account above gauge -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px;margin-bottom:6px;width:100%">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">FortiCNAPP Tenant</div>
+          <div id="csp-org-gcp" style="font-size:13px;font-weight:800;color:#0f172a;letter-spacing:.01em">—</div>
+          <div style="font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-top:4px">FortiAccount</div>
+          <div id="csp-sub-gcp" style="font-size:11px;font-weight:600;color:#475569;font-family:ui-monospace,monospace;word-break:break-all;text-align:center">—</div>
+        </div>
+        <span id="csp-label-gcp" style="display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:900;letter-spacing:.1em;padding:5px 14px;border-radius:6px;color:#fff;background:#4285F4">
           <svg viewBox="0 0 48 48" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.3 9 3.4l6.7-6.7C35.7 2.4 30.2 0 24 0 14.7 0 6.7 5.4 2.9 13.3l7.8 6C12.5 13.4 17.8 9.5 24 9.5z"/><path fill="#4285F4" d="M46.9 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h12.9c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.3-10 7.3-17z"/><path fill="#FBBC05" d="M10.7 28.7A14.6 14.6 0 0 1 9.5 24c0-1.6.3-3.2.8-4.7l-7.8-6A24 24 0 0 0 0 24c0 3.9.9 7.5 2.5 10.7l8.2-6z"/><path fill="#34A853" d="M24 48c6.2 0 11.4-2 15.2-5.5l-7.5-5.8c-2 1.4-4.6 2.3-7.7 2.3-6.2 0-11.5-4.2-13.4-9.8l-8.2 6C6.7 42.6 14.7 48 24 48z"/></svg>
           GCP
         </span>
-        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,340px);overflow:visible">
           <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
           <path id="csp-arc-gcp" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
@@ -1338,11 +1374,11 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
   </div>
 </div>
 
-<!-- ═══ View: Next Steps ═══ -->
+<!-- ═══ View: Exploit Simulation Layer ═══ -->
 <div class="view" id="view-lab">
   <div class="view-hdr">
     <div class="vh-text">
-      <div class="vh-title">Recommended Next Steps</div>
+      <div class="vh-title">Exploit Simulation Layer</div>
       <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
     </div>
   </div>
@@ -1355,95 +1391,113 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <button class="lab-tab" id="labtab-gcp" data-csp="gcp" onclick="switchLabTab('gcp')">GCP</button>
   </div>
 
-  <!-- Global (all-cloud) diagram -->
+  <!-- Global (all-cloud) diagram — attack path graph -->
   <div id="lab-global-panel">
-  <!-- Step 1 — circle node aligned with Step 2 (cx=160 = 16% of SVG width) -->
-  <div id="lab-asset-action" style="display:none;flex-direction:column;align-items:flex-start;padding:8px 0 0 calc(16% - 25px);gap:0">
-    <div id="jnd0-circle" onclick="nav('asset-risk')" style="width:104px;height:104px;border-radius:50%;background:#ef4444;box-shadow:0 6px 24px rgba(239,68,68,.38);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;gap:1px;transition:filter .15s" onmouseover="this.style.filter='brightness(1.08)'" onmouseout="this.style.filter=''">
-      <div style="font-size:7px;font-weight:700;color:rgba(255,255,255,.65);letter-spacing:2.5px;text-transform:uppercase">STEP 1</div>
-      <div style="font-size:10px;font-weight:700;color:white;line-height:1.25;text-align:center">Risk<br>Assets</div>
-      <div id="jnd0-cnt" style="font-size:22px;font-weight:900;color:white;line-height:1.1">—</div>
-    </div>
-    <!-- dashed connector centered under circle -->
-    <div style="width:104px;display:flex;justify-content:center">
-      <div style="width:5px;height:22px;background:repeating-linear-gradient(to bottom,#ef4444 0,#ef4444 6px,transparent 6px,transparent 12px)"></div>
-    </div>
-  </div>
-
   <div class="jmap-outer">
-  <svg class="jmap-svg" viewBox="0 0 1000 480" preserveAspectRatio="xMidYMid meet">
+  <svg class="jmap-svg" viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet">
     <defs>
       <filter id="jnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
         <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
       </filter>
-      <filter id="jph-shadow" x="-5%" y="-30%" width="115%" height="180%">
-        <feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="rgba(0,0,0,.18)"/>
-      </filter>
     </defs>
 
-    <!-- Phase chevron headers -->
-    <polygon id="jph1" points="0,4 328,4 352,27 328,50 0,50" fill="#ef4444" filter="url(#jph-shadow)"/>
-    <text x="164" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+    <!-- Passive resource nodes -->
+    <circle cx="155" cy="130" r="14" fill="#e2e8f0"/>
+    <circle cx="158" cy="258" r="13" fill="#e2e8f0"/>
+    <circle cx="340" cy="192" r="16" fill="#e2e8f0"/>
+    <circle cx="510" cy="190" r="14" fill="#e2e8f0"/>
+    <circle cx="700" cy="165" r="15" fill="#e2e8f0"/>
+    <circle cx="700" cy="230" r="13" fill="#e2e8f0"/>
+    <circle cx="530" cy="72" r="12" fill="#e2e8f0"/>
+    <circle cx="530" cy="312" r="12" fill="#e2e8f0"/>
 
-    <polygon id="jph2" points="328,4 672,4 696,27 672,50 328,50 352,27" fill="#f97316" filter="url(#jph-shadow)"/>
-    <text x="500" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">HIGH</text>
+    <!-- Static background tracks -->
+    <g stroke="#dde3ed" stroke-width="2.5" stroke-linecap="round" fill="none">
+      <line x1="98" y1="190" x2="190" y2="190"/>
+      <line x1="266" y1="174" x2="392" y2="116"/>
+      <line x1="266" y1="208" x2="392" y2="272"/>
+      <line x1="470" y1="99" x2="582" y2="97"/>
+      <line x1="470" y1="291" x2="582" y2="294"/>
+      <line x1="656" y1="112" x2="775" y2="168"/>
+      <line x1="655" y1="276" x2="775" y2="213"/>
+    </g>
+    <!-- Animated dot flow — stroke updated by JS via jsnake -->
+    <g id="jsnake" stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">
+      <line x1="98" y1="190" x2="190" y2="190" style="animation:path-flow 1.1s linear infinite 0s"/>
+      <line x1="266" y1="174" x2="392" y2="116" style="animation:path-flow 1.1s linear infinite .12s"/>
+      <line x1="266" y1="208" x2="392" y2="272" style="animation:path-flow 1.1s linear infinite .22s"/>
+      <line x1="470" y1="99" x2="582" y2="97" style="animation:path-flow 1.1s linear infinite .08s"/>
+      <line x1="470" y1="291" x2="582" y2="294" style="animation:path-flow 1.1s linear infinite .2s"/>
+      <line x1="656" y1="112" x2="775" y2="168" style="animation:path-flow 1.1s linear infinite .05s"/>
+      <line x1="655" y1="276" x2="775" y2="213" style="animation:path-flow 1.1s linear infinite .28s"/>
+    </g>
 
-    <polygon id="jph3" points="672,4 1000,4 1000,50 672,50 696,27" fill="#94a3b8" filter="url(#jph-shadow)"/>
-    <text id="jph3-txt" x="836" y="32" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">MEDIUM · GOAL</text>
+    <!-- Attacker entry node -->
+    <circle cx="60" cy="190" r="38" fill="#ef4444" filter="url(#jnd-shadow)"/>
+    <ellipse cx="60" cy="182" rx="10" ry="7" fill="white"/>
+    <ellipse cx="60" cy="194" rx="12" ry="9" fill="white"/>
+    <ellipse cx="60" cy="207" rx="9" ry="7" fill="white"/>
+    <line x1="49" y1="186" x2="40" y2="181" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="49" y1="194" x2="38" y2="194" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="49" y1="202" x2="40" y2="207" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="186" x2="80" y2="181" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="194" x2="82" y2="194" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="202" x2="80" y2="207" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="55" y1="163" x2="51" y2="155" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="65" y1="163" x2="69" y2="155" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <text x="60" y="238" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
 
-    <!-- Background snake (gray dashed) -->
-    <path d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
-      fill="none" stroke="#e2e8f0" stroke-width="10" stroke-dasharray="16,10" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Node 3 — Internet Exposure (1st hop from Attacker) -->
+    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <text x="230" y="183" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
+    <text x="230" y="196" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
+    <text id="jnd3-cnt" x="230" y="214" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="258" cy="162" r="11" fill="#FCD34D"/>
+    <text x="258" y="167" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Colored snake -->
-    <path id="jsnake" d="M160,155 L160,365 C160,435 500,435 500,365 L500,155 C500,82 840,82 840,155 L840,365"
-      fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="14,12" stroke-linecap="round" stroke-linejoin="round"
-      style="animation:snake-flow 1.2s linear infinite"/>
+    <!-- Node 1 — Identities (upper branch) -->
+    <circle id="jnd1" cx="430" cy="100" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+    <text x="430" y="93" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+    <text id="jnd1-cnt" x="430" y="114" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="458" cy="72" r="11" fill="#FCD34D"/>
+    <text x="458" y="77" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Direction arrows -->
-    <polygon points="153,258 167,258 160,272" fill="#cbd5e1"/>
-    <polygon points="324,431 338,425 336,439" fill="#cbd5e1"/>
-    <polygon points="493,262 507,262 500,248" fill="#cbd5e1"/>
-    <polygon points="664,79 678,73 676,87"   fill="#cbd5e1"/>
-    <polygon points="833,258 847,258 840,272" fill="#cbd5e1"/>
-
-    <!-- Node 1 — Identities -->
-    <circle id="jnd1" cx="160" cy="155" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-    <text x="160" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
-    <text x="160" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-    <text id="jnd1-cnt" x="160" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-
-    <!-- Node 2 — Critical Alerts -->
-    <circle id="jnd2" cx="160" cy="365" r="58" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-    <text x="160" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
-    <text x="160" y="363" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
-    <text id="jnd2-cnt" x="160" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-
-    <!-- Node 3 — Internet Exposure -->
-    <circle id="jnd3" cx="500" cy="365" r="58" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
-    <text x="500" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 4</text>
-    <text x="500" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
-    <text x="500" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
-    <text id="jnd3-cnt" x="500" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <!-- Node 2 — Alerts (lower branch) -->
+    <circle id="jnd2" cx="430" cy="290" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+    <text x="430" y="283" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
+    <text id="jnd2-cnt" x="430" y="304" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="458" cy="262" r="11" fill="#FCD34D"/>
+    <text x="458" y="267" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
     <!-- Node 4 — Compliance -->
-    <circle id="jnd4" cx="500" cy="155" r="58" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-    <text x="500" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 5</text>
-    <text x="500" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-    <text id="jnd4-cnt" x="500" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle id="jnd4" cx="620" cy="95" r="40" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+    <text x="620" y="88" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+    <text id="jnd4-cnt" x="620" y="109" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="648" cy="67" r="11" fill="#FCD34D"/>
+    <text x="648" y="72" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
     <!-- Node 5 — Secrets -->
-    <circle id="jnd5" cx="840" cy="155" r="58" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
-    <text x="840" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 6</text>
-    <text x="840" y="153" text-anchor="middle" font-size="12"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
-    <text id="jnd5-cnt" x="840" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle id="jnd5" cx="620" cy="295" r="40" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
+    <text x="620" y="288" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
+    <text id="jnd5-cnt" x="620" y="309" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="648" cy="267" r="11" fill="#FCD34D"/>
+    <text x="648" y="272" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Goal — Proactive Security -->
-    <circle id="jnd6" cx="840" cy="365" r="58" fill="#22c55e" filter="url(#jnd-shadow)"/>
-    <text x="840" y="343" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
-    <text x="840" y="361" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
-    <text x="840" y="375" text-anchor="middle" font-size="11"  font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
-    <text id="jnd6-cnt" x="840" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+    <!-- Goal — High Value Resources / Proactive Security -->
+    <circle id="jnd6" cx="820" cy="190" r="50" fill="#22c55e" filter="url(#jnd-shadow)"/>
+    <rect x="807" y="155" width="26" height="32" rx="3" fill="white" opacity="0.9"/>
+    <line x1="812" y1="163" x2="828" y2="163" stroke="#22c55e" stroke-width="1.5"/>
+    <line x1="812" y1="169" x2="828" y2="169" stroke="#22c55e" stroke-width="1.5"/>
+    <line x1="812" y1="175" x2="823" y2="175" stroke="#22c55e" stroke-width="1.5"/>
+    <text x="820" y="199" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
+    <text x="820" y="210" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
+    <text id="jnd6-cnt" x="820" y="226" text-anchor="middle" font-size="9.5" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+    <text x="820" y="252" text-anchor="middle" font-size="7.5" fill="#64748b" font-family="-apple-system,sans-serif">High Value Resources</text>
+
+    <!-- Goal status pill -->
+    <rect id="jph3" x="766" y="259" width="108" height="19" rx="9.5" fill="#94a3b8"/>
+    <text id="jph3-txt" x="820" y="272" text-anchor="middle" font-size="8.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
+
   </svg>
   </div>
   </div><!-- /lab-global-panel -->
@@ -1594,7 +1648,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <script>
 const REFRESH=${intervalSec};
-let cd=REFRESH;
+let cd=10,_isStartup=true;
 function fmtSec(s){
   if(s>=3600){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+(m>0?' '+m+'m':'');}
   if(s>=60){const m=Math.floor(s/60),ss=s%60;return m+'m'+(ss>0?' '+ss+'s':'');}
@@ -2087,7 +2141,7 @@ function renderCspLab(d,csp){
   const ph2=document.getElementById('cjph2');
   const ph2txt=document.getElementById('cjph2-txt');
   if(ph2)ph2.setAttribute('fill',color);
-  if(ph2txt)ph2txt.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';
+  if(ph2txt){ph2txt.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph2txt.setAttribute('fill',p>=90?color:'#22c55e');}
   const snake=document.getElementById('cjsnake');
   if(snake)snake.setAttribute('stroke',color);
 }
@@ -2135,7 +2189,7 @@ function renderLab(d){
   if(g6)g6.setAttribute('fill',color);
   if(g6c){g6c.setAttribute('font-size','11');g6c.textContent=p>=90?'ACHIEVED':p>=50?'ATTENTION':'URGENT';}
   if(ph3)ph3.setAttribute('fill',color);
-  if(ph3t)ph3t.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';
+  if(ph3t){ph3t.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph3t.setAttribute('fill',p>=90?color:'#22c55e');}
   // Snake path color tracks score band
   const snake=document.getElementById('jsnake');
   if(snake)snake.setAttribute('stroke',color);
@@ -2177,6 +2231,34 @@ async function load(){
   }
 }
 
+function startupSequence(){
+  cd=10;
+  _isStartup=true;
+  // Defer fact cycling + load timer past script init so _fgAllFacts (let, line ~2376) is in scope
+  setTimeout(function(){
+    function _startupShowFact(){
+      if(!_fgEnabled)return;
+      var facts=(typeof _fgAllFacts!=='undefined'&&_fgAllFacts.length)?_fgAllFacts:FG_FACTS;
+      if(!facts.length)return;
+      var fact=facts[Math.floor(Math.random()*facts.length)];
+      var card=document.getElementById('fg-inline');
+      var factEl=document.getElementById('fg-inline-fact');
+      var srcEl=document.getElementById('fg-inline-src');
+      if(factEl)factEl.textContent=fact;
+      if(srcEl)srcEl.textContent=fact.startsWith('📰')?'fortinet.com/blog':'fortinet.com/cloud-security-report-2026';
+      if(card)card.classList.add('show');
+    }
+    _startupShowFact();
+    var _startupFactTimer=setInterval(function(){if(_isStartup)_startupShowFact();},2000);
+    setTimeout(function(){
+      _isStartup=false;
+      clearInterval(_startupFactTimer);
+      load();
+      setInterval(load,REFRESH*1000);
+      cd=REFRESH;
+    },10000);
+  },0);
+}
 
 function updateRiskScore(p){
   const color=scoreColor(p);
@@ -2205,9 +2287,39 @@ function calcGlobalScoreFromCsp(d){
 
 function updateCspGauges(d){
   const arcLen=314;
-  // Derive a short company name from the account hostname
-  const co=(d.account||'').replace(/\.lacework\.net$/i,'').replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase())||'';
+  const co=(d.account||'').replace(/\.lacework\.net$/i,'')||'';
   const cspLabel={aws:'AWS',azure:'Azure',gcp:'GCP'};
+
+  function cspSubAccounts(csp){
+    const names=new Set();
+    // Compliance — named accounts only, never raw numeric IDs
+    (d.compliance||[]).filter(r=>(r.cloud||'')===csp||(csp==='azure'&&(r.cloud||'')==='cloud')).forEach(finding=>{
+      (finding.resources||[]).slice(0,10).forEach(row=>{
+        if(csp==='aws'){
+          const alias=(row.ACCOUNT_ALIAS||'').trim();
+          if(alias) names.add(alias);                   // named alias only
+        } else if(csp==='azure'){
+          const n=row.SUBSCRIPTION_NAME||row.TENANT_NAME||'';
+          if(n) names.add(n);
+        } else if(csp==='gcp'){
+          const n=row.PROJECT_NAME||'';
+          if(n) names.add(n);
+        }
+      });
+    });
+    // Fallback: identity email domain for GCP; skip AWS (no alias = no name)
+    if(!names.size){
+      (d.identities||[]).filter(r=>cspOfIdentity(r)===csp).forEach(r=>{
+        const pid=r.PRINCIPAL_ID||'';
+        if(csp==='gcp'){
+          const m=pid.match(new RegExp('@([^.]+)\\.'));
+          if(m) names.add(m[1]);
+        }
+      });
+    }
+    return [...names].slice(0,3);
+  }
+
   ['aws','azure','gcp'].forEach(csp=>{
     const raw=calcCspScore(d,csp);
     const p=raw!==null?raw:100;
@@ -2217,10 +2329,17 @@ function updateCspGauges(d){
     const scoreEl=document.getElementById('csp-score-'+csp);
     const bandEl=document.getElementById('csp-band-'+csp);
     const labelEl=document.getElementById('csp-label-'+csp);
+    const orgEl=document.getElementById('csp-org-'+csp);
+    const subEl=document.getElementById('csp-sub-'+csp);
     if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',(p/100*arcLen)+' '+arcLen);}
     if(scoreEl){scoreEl.textContent=p;scoreEl.setAttribute('fill',color);}
     if(bandEl){bandEl.textContent=band;bandEl.setAttribute('fill',color);}
-    if(labelEl){labelEl.textContent=co?co+' · '+cspLabel[csp]:cspLabel[csp];}
+    if(labelEl){labelEl.textContent=cspLabel[csp];}
+    if(orgEl)orgEl.textContent=co||'—';
+    // FortiAccount: prefer d.subAccount (from LW key file / env), else CSP-derived names
+    const fortiAcct=(d.subAccount||'').trim();
+    const subs=fortiAcct?[fortiAcct]:cspSubAccounts(csp);
+    if(subEl)subEl.textContent=subs.length?subs.join(' · '):'—';
   });
 }
 
@@ -2270,7 +2389,7 @@ function logout(){
     document.getElementById('login-overlay').style.display='none';
     try{const u=JSON.parse(s);wireReportBtn(u);showUserBadge(u);}catch(_){}
   }
-  load();
+  startupSequence();
   loadAdminSettings();
 })();
 
@@ -2301,7 +2420,6 @@ function submitLogin(){
 document.getElementById('li-company').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
 document.getElementById('li-title').addEventListener('keydown',function(e){if(e.key==='Enter')submitLogin();});
 
-setInterval(load,REFRESH*1000);
 
 
 async function loadAdminSettings(){
@@ -2395,8 +2513,6 @@ function _fgRunCycle(){
     _fgCycleTimer=setTimeout(_fgRunCycle,_fgFreqSec*1000);
   },8000);
 }
-// Start immediately on load
-_fgRunCycle();
 function applyFactFreq(val){
   _fgFreqSec=parseInt(val,10)||30;
   _fgRunCycle();
@@ -2407,7 +2523,14 @@ function applyFactFreq(val){
 function toggleFgVibe(on){
   _fgEnabled=on;
   const arr=document.getElementById('fg-arrow');
-  if(!on){if(arr)arr.style.display='none';_fgHideCard();}
+  if(!on){
+    if(_fgCycleTimer){clearTimeout(_fgCycleTimer);_fgCycleTimer=null;}
+    if(_fgHideTimer){clearTimeout(_fgHideTimer);_fgHideTimer=null;}
+    if(arr)arr.style.display='none';
+    _fgHideCard();
+  } else {
+    _fgRunCycle();
+  }
   try{localStorage.setItem('fg-vibe',on?'1':'0');}catch(e){}
 }
 // Hover on FortiCNAPP link also triggers card
@@ -2423,6 +2546,7 @@ document.addEventListener('mouseout',function(ev){if(ev.target.closest('#fg-link
     if(cb)cb.checked=_fgEnabled;
     const sel=document.getElementById('settings-fact-freq');
     if(sel)sel.value=String(_fgFreqSec);
+    if(_fgEnabled)_fgRunCycle();
   }catch(e){}
 })();
 async function applySettings(){
@@ -2455,7 +2579,10 @@ setFooterInterval(REFRESH);
 setInterval(()=>{
   cd=Math.max(0,cd-1);
   const el=document.getElementById('countdown');
-  if(el)el.textContent='Next refresh in '+fmtSec(cd);
+  if(!el)return;
+  el.textContent=_isStartup
+    ?'Populating dashboard in '+fmtSec(Math.max(0,cd))+'…'
+    :'Next refresh in '+fmtSec(cd);
 },1000);
 (function(){var h=location.hash.replace('#','');if(h&&document.getElementById('view-'+h))nav(h);})();
 
@@ -3013,7 +3140,7 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
 </div>
 <div id="m-band" class="band" style="font-size:13px;font-weight:800;text-align:center;margin-top:-4px;margin-bottom:8px;letter-spacing:.04em">—</div>
 <hr class="divider">
-<div class="sec-title">Recommended Next Steps</div>
+<div class="sec-title">Exploit Simulation Layer</div>
 <div class="steps" id="steps"></div>
 <div class="meta">
   <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment empowered by FortiCNAPP<br>
@@ -3746,19 +3873,45 @@ function buildReportHtml(data, meta) {
   const secrets    = data.secrets    || [];
   const secretsAll = data.secretsAll || [];
 
-  // Server-side posture score (mirrors client calcPostureScore)
-  function calcScore(d) {
-    const r = [];
-    (d.alerts||[]).forEach(() => r.push(95));
-    (d.vulns||[]).forEach(v => r.push(Math.min(100, parseFloat(v.riskScore||0)*10)));
-    (d.compliance||[]).forEach(() => r.push(80));
-    (d.identities||[]).forEach(i => r.push(Math.min(100, (i.METRICS && i.METRICS.risk_score||0)*100)));
-    (d.secretsAll||[]).forEach(() => r.push(75));
-    return Math.max(0, Math.round(r.length ? 100 - r.reduce((s,v) => s+v, 0) / r.length : 100));
+  // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly
+  function _cspOfAlert(r) {
+    const t = ((r.alertType||'')+(r.alertName||'')).toUpperCase();
+    if (t.includes('AWS')||t.includes('CLOUDTRAIL')||t.includes('EC2')||t.includes('S3')) return 'aws';
+    if (t.includes('AZURE')||t.includes('AZ_')) return 'azure';
+    if (t.includes('GCP')||t.includes('GOOGLE')||t.includes('GKE')) return 'gcp';
+    return null;
   }
-  const score  = calcScore(data);
-  const sBand  = score>=90 ? 'Proactive Security' : score>=60 ? 'Some Attention Needed' : 'URGENT – Attention Needed';
-  const sColor = score>=90 ? '#22c55e' : score>=60 ? '#f59e0b' : '#ef4444';
+  function _cspOfIdentity(r) {
+    const p = ((r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'')).toUpperCase();
+    if (p.includes('AWS')) return 'aws';
+    if (p.includes('AZURE')) return 'azure';
+    if (p.includes('GCP')||p.includes('GOOGLE')) return 'gcp';
+    return null;
+  }
+  function calcCspScoreReport(csp) {
+    let C=0, H=0, M=0, L=0;
+    (data.alerts||[]).filter(r=>_cspOfAlert(r)===csp).forEach(r=>{
+      const s=(r.severity||'').toLowerCase();
+      if(s==='critical')C++;else if(s==='high')H++;else M++;
+    });
+    (data.compliance||[]).filter(r=>(r.cloud||'')===csp).forEach(r=>{
+      const s=(r.severity||'').toLowerCase();
+      if(s==='critical')C++;else H++;
+    });
+    (data.identities||[]).filter(r=>_cspOfIdentity(r)===csp).forEach(r=>{
+      const rs=(r.METRICS&&r.METRICS.risk_score)||0;
+      if(rs>=0.8)C++;else if(rs>=0.5)H++;else if(rs>=0.2)M++;else L++;
+    });
+    if(C+H+M+L===0) return null;
+    const log11 = n => Math.log(1+n)/Math.log(11);
+    const penalty = 40*log11(C)+30*log11(H)+20*log11(M)+10*log11(L);
+    return Math.max(0, Math.round(100-Math.min(100,penalty)));
+  }
+  const cspScores = { aws: calcCspScoreReport('aws'), azure: calcCspScoreReport('azure'), gcp: calcCspScoreReport('gcp') };
+  const cspVals   = ['aws','azure','gcp'].map(c => cspScores[c] !== null ? cspScores[c] : 100);
+  const score     = Math.round(cspVals.reduce((s,v)=>s+v,0)/cspVals.length);
+  const sBand     = score>=90 ? 'Proactive Security' : score>=50 ? 'Attention Needed' : 'URGENT – Immediate Action Required';
+  const sColor    = score>=90 ? '#22c55e' : score>=50 ? '#f59e0b' : '#ef4444';
   const total  = alerts.length + vulns.length + compliance.length + identities.length;
 
   // Helpers
@@ -3940,7 +4093,7 @@ function buildReportHtml(data, meta) {
   })();
 
   const nextStepsSection =
-    '<section id="next-steps" class="pagebreak">\n<h2>Recommended Next Steps</h2>\n' +
+    '<section id="next-steps" class="pagebreak">\n<h2>Exploit Simulation Layer</h2>\n' +
     '<p style="color:#5A5A5A;margin-bottom:24px">The following prioritised actions are derived from the findings in this report. Address them in order — each step reduces your attack surface and improves your Cloud Security Posture Score.</p>' +
     '<table style="width:100%;border-collapse:collapse">' +
     '<thead><tr style="background:#f5f5f5"><th style="padding:10px 14px;text-align:left;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#5A5A5A;width:32px">#</th>' +
@@ -3962,7 +4115,7 @@ function buildReportHtml(data, meta) {
     vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
     identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
     secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
-    '<a href="#next-steps" class="toc-card"><div class="tc-num">06 — Next Steps</div><div class="tc-title">Recommended Next Steps</div><div class="tc-sub">'+nextSteps.length+' prioritised action'+(nextSteps.length===1?'':'s')+' to improve your posture.</div></a>',
+    '<a href="#next-steps" class="toc-card"><div class="tc-num">06 — Simulation</div><div class="tc-title">Exploit Simulation Layer</div><div class="tc-sub">'+nextSteps.length+' prioritised action'+(nextSteps.length===1?'':'s')+' to improve your posture.</div></a>',
   ].filter(Boolean).join('\n      ');
 
 
@@ -4044,7 +4197,24 @@ function buildReportHtml(data, meta) {
   '  <div class="subtitle">'+esc(customer)+'</div>\n' +
   (function(){
     const arcLen=550, fill=Math.round((score/100)*arcLen);
-    return '  <div style="margin:1rem auto 0;max-width:340px;width:100%">\n'+
+    function miniGauge(label, p, bgColor) {
+      const arcL=314, f=Math.round((p/100)*arcL);
+      const c=p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';
+      const band=p>=90?'PROACTIVE':p>=50?'ATTENTION':'URGENT';
+      return '<div style="display:flex;flex-direction:column;align-items:center;gap:4px">'+
+        '<div style="font-size:9px;font-weight:900;letter-spacing:.12em;padding:3px 10px;border-radius:4px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
+        '<svg viewBox="-10 -10 270 155" style="width:130px;overflow:visible">'+
+          '<path fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>'+
+          '<path fill="none" stroke="'+c+'" stroke-width="14" stroke-linecap="round" stroke-dasharray="'+f+' '+arcL+'" d="M 25,120 A 100,100 0 0,1 225,120"/>'+
+          '<text x="125" y="102" text-anchor="middle" font-size="38" font-weight="900" font-family="-apple-system,sans-serif" fill="'+c+'">'+p+'</text>'+
+          '<text x="125" y="118" text-anchor="middle" font-size="9" font-weight="700" font-family="-apple-system,sans-serif" fill="rgba(255,255,255,0.6)" letter-spacing=".05em">'+band+'</text>'+
+        '</svg>'+
+      '</div>';
+    }
+    const awsP   = cspScores.aws   !== null ? cspScores.aws   : 100;
+    const azureP = cspScores.azure !== null ? cspScores.azure : 100;
+    const gcpP   = cspScores.gcp   !== null ? cspScores.gcp   : 100;
+    return '  <div style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
       '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
       '    <defs><linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
       '<stop offset="0%" stop-color="#ef4444"/>'+
@@ -4056,13 +4226,19 @@ function buildReportHtml(data, meta) {
       '</linearGradient></defs>\n'+
       '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
       '    <path fill="none" stroke="url(#rg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
-      '    <line x1="249" y1="55" x2="259" y2="22" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
-      '    <line x1="350" y1="156" x2="383" y2="146" stroke="rgba(255,255,255,0.5)" stroke-width="3" stroke-linecap="round"/>\n'+
+      '    <line x1="200" y1="32" x2="200" y2="62"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="350" y1="156" x2="383" y2="146" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
       '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
-      '    <text x="-8" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">0</text>\n'+
-      '    <text x="408" y="212" text-anchor="middle" font-size="16" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.55)">100</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
       '  </svg>\n'+
-      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:4px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
+      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#22c55e;font-weight:800">Proactive Security</span></div>\n'+
+      '  <div style="display:flex;justify-content:center;gap:28px;margin-top:20px;flex-wrap:wrap">'+
+        miniGauge('AWS',awsP,'#232F3E')+
+        miniGauge('AZURE',azureP,'#0078D4')+
+        miniGauge('GCP',gcpP,'#1a73e8')+
+      '</div>\n'+
       '  </div>\n';
   })()+
   '  <div class="meta-row">\n' +
