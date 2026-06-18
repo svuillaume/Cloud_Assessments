@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fortinet Rapid Cloud Assessment — Live Dashboard
+// Fortinet Rapid Cloud Assessment empowered by FortiCNAPP — Live Dashboard
 // Usage:  node server.js   |   open http://localhost:8080
 // No npm packages required.
 
@@ -31,7 +31,7 @@ function startRefreshTimer() {
   if (_refreshTimer) clearInterval(_refreshTimer);
   _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
 }
-const DAYS_BACK  = 14;   // look-back window default
+const DAYS_BACK  = 28;   // look-back window default
 let dynamicDaysBack = DAYS_BACK;
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ let tokenExpiry = 0;
 let cache = {
   alerts: [], vulns: [], compliance: [], identities: [],
   fetchedAt: null, errors: {}, account: LW_ACCOUNT,
-  riskScore: 0,
+  riskScore: 0, daysBack: DAYS_BACK,
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
 };
 
@@ -74,7 +74,7 @@ async function resolveReachableIP(hostname) {
   return null;
 }
 
-function request(method, hostname, path, headers, body) {
+function request(method, hostname, path, headers, body, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
     const resolvedIP = hostname === LW_ACCOUNT ? accountIP : null;
@@ -97,11 +97,65 @@ function request(method, hostname, path, headers, body) {
         resolve({ status: res.statusCode, body: parsed, raw });
       });
     });
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
     req.on('error', reject);
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+// ── External CVE lookup (NVD + FortiGuard) ───────────────────────────────────
+async function fetchCveDetails(cveId) {
+  const id = cveId.trim().toUpperCase();
+  const result = { id, nvd: null, fg: null, error: null };
+
+  // 1. NVD API — structured JSON, no auth
+  try {
+    const { status, body } = await request('GET', 'services.nvd.nist.gov',
+      `/rest/json/cves/2.0?cveId=${encodeURIComponent(id)}`,
+      { 'Accept': 'application/json', 'User-Agent': 'FortiCNAPP-RCA/1.0' }, null, 25000);
+    if (status === 200 && body?.vulnerabilities?.length) {
+      const cve = body.vulnerabilities[0].cve;
+      const desc = (cve.descriptions || []).find(d => d.lang === 'en')?.value || '';
+      const m31 = cve.metrics?.cvssMetricV31?.[0]?.cvssData;
+      const m30 = cve.metrics?.cvssMetricV30?.[0]?.cvssData;
+      const m2  = cve.metrics?.cvssMetricV2?.[0]?.cvssData;
+      const cvss = m31 || m30 || m2;
+      const cwes = (cve.weaknesses || []).flatMap(w => w.description.map(d => d.value)).filter(Boolean);
+      const refs = (cve.references || []).slice(0, 5).map(r => r.url);
+      result.nvd = {
+        description: desc,
+        cvssScore: cvss?.baseScore,
+        cvssVersion: m31 ? '3.1' : m30 ? '3.0' : '2.0',
+        cvssSeverity: cvss?.baseSeverity,
+        cvssVector: cvss?.vectorString,
+        cwes,
+        published: cve.published,
+        lastModified: cve.lastModified,
+        references: refs,
+      };
+    }
+  } catch (e) { result.nvdError = e.message.includes('timed out') ? 'NVD API unreachable from this server (timeout)' : e.message; }
+
+  // 2. FortiGuard — fetch search page HTML, extract what we can
+  try {
+    const { status, raw } = await request('GET', 'www.fortiguard.com',
+      `/threatintel-search?q=${encodeURIComponent(id)}`,
+      { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; FortiCNAPP-RCA)' }, null, 12000);
+    if (status === 200 && typeof raw === 'string') {
+      const descM = raw.match(/<meta\s+name="description"\s+content="([^"]{10,500})"/i);
+      const scoreM = raw.match(/(?:cvss[^>]*>|score[^>]*>|<b>)\s*(\d+\.\d)\s*(?:<\/|\/10)/i);
+      const titleM = raw.match(/<title>([^<]{5,120})<\/title>/i);
+      result.fg = {
+        title: titleM?.[1]?.trim() || null,
+        metaDesc: descM?.[1]?.trim() || null,
+        cvssHint: scoreM?.[1] || null,
+        url: `https://www.fortiguard.com/threatintel-search?q=${encodeURIComponent(id)}`,
+      };
+    }
+  } catch (e) { result.fgError = e.message; }
+
+  return result;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -165,6 +219,17 @@ async function get(path) {
   return resp;
 }
 
+async function postRaw(path, body, timeoutMs = 30000) {
+  const tok = await ensureToken();
+  const { status, body: resp } = await request('POST', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body, timeoutMs);
+  return { status, resp };
+}
+
+async function putRaw(path, body, timeoutMs = 30000) {
+  const tok = await ensureToken();
+  const { status, body: resp } = await request('PUT', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body, timeoutMs);
+  return { status, resp };
+}
 
 
 function timeFmt(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
@@ -194,18 +259,18 @@ function alertTimeWindows() {
 async function fetchAlerts() {
   const windows = alertTimeWindows();
   const batches = await Promise.all(windows.flatMap(tf => [
-    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }], paging: { rows: 100 } }),
-    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], paging: { rows: 100 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }], paging: { rows: 500 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], paging: { rows: 500 } }),
   ]));
   const rows = batches.flat();
-  const CATS = new Set(['anomaly','composite']);
+  const CATS = new Set(['anomaly', 'composite']);
   const filtered = rows
-    .filter(r => (r.status || '').toLowerCase() !== 'closed')
+    .filter(r => { const s = (r.status || '').toLowerCase(); return s === 'open' || s === 'in progress'; })
     .filter(r => CATS.has((r.derivedFields?.category || '').toLowerCase()));
-  console.log('[alerts] raw:',rows.length,'after category filter:',filtered.length);
+  console.log('[alerts] raw:',rows.length,'after hf filter:',filtered.length);
   return filtered
     .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
-    .slice(0, 20);
+    .slice(0, 50);
 }
 
 // ── 2. Vulns — POST /api/v2/Vulnerabilities/Hosts/search ─────────────────────
@@ -367,13 +432,20 @@ async function fetchSecretsAll() {
     nextUrl = rN?.paging?.urls?.nextPage || null;
   }
 
-  // Exclude system SSH host keys (etc/ssh/ssh_host_*) with chmod 600 (file_permissions=33152=0o100600)
   const filtered = all.filter(r => {
     const path = (r.FILE_PATH || '');
     const meta = (typeof r.SECRET_METADATA === 'object' && r.SECRET_METADATA) ? r.SECRET_METADATA : {};
-    const isHostKey = /etc\/ssh\/ssh_host_/i.test(path);
-    const isChmod600 = meta.file_permissions === 33152;
-    return !(isHostKey && isChmod600);
+    const p = meta.file_permissions;
+
+    // Always drop system SSH host keys — server identity keys, not user secrets
+    if (/etc\/ssh\/ssh_host_/i.test(path)) return false;
+
+    // For secrets with known permissions, only surface those more permissive than
+    // chmod 400 (owner read-only). (p & 0o377) !== 0 = any bit beyond owner-read is set.
+    if (p !== undefined && p !== null) return (p & 0o377) !== 0;
+
+    // Permissions not available — include (conservative: don't miss real findings)
+    return true;
   });
   console.log(`  [secrets-all] total: ${all.length}, after exclusions: ${filtered.length}`);
   return filtered;
@@ -384,7 +456,11 @@ async function fetchSecretsAll() {
 
 async function fetchSecrets() {
   const tf = timeFilter();
-  const queryText = `{source { LW_HE_SECRETS_SSH_PRIVATE_KEYS } return {HOSTNAME, FILE_PATH, SSH_KEY_TYPE}}`;
+  // FILE_PERMISSIONS is a top-level Number (Unix mode including file type bits).
+  // Regular file + chmod 400 = 0o100400 = 33024.
+  // Filter: > 33024 means at least one permission bit beyond owner-read is set.
+  // Also fetch rows where FILE_PERMISSIONS is NULL (include — unknown is risky).
+  const queryText = `{source { LW_HE_SECRETS_SSH_PRIVATE_KEYS } filter { FILE_PERMISSIONS > 33024 } return {HOSTNAME, FILE_PATH, SSH_KEY_TYPE, FILE_PERMISSIONS}}`;
   const rows = await post('Queries/execute', {
     query: { queryText },
     arguments: [
@@ -392,7 +468,7 @@ async function fetchSecrets() {
       { name: 'EndTimeRange',   value: tf.endTime   },
     ],
   });
-  console.log(`  [secrets-ssh] total returned: ${rows.length}`);
+  console.log(`  [secrets-ssh] total permissive (>chmod 400): ${rows.length}`);
   return rows;
 }
 
@@ -438,6 +514,7 @@ async function refreshData() {
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
+    daysBack: dynamicDaysBack,
     riskScore: calcRiskScore(alerts, vulns, identities),
     summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: secretsAll.length },
   };
@@ -728,6 +805,71 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 .login-btn{width:100%;margin-top:8px;padding:12px;border-radius:10px;background:#DA291C;color:#fff;font-size:13px;font-weight:700;border:none;cursor:pointer;letter-spacing:.04em;transition:filter .15s}
 .login-btn:hover{filter:brightness(1.1)}
 .login-err{font-size:11px;color:#ef4444;margin-top:8px;min-height:16px;text-align:center}
+.lab-tabs-bar{display:flex;gap:0;padding:0 24px;border-bottom:1px solid var(--border);background:var(--bg);flex-wrap:wrap}
+.lab-tab{padding:9px 20px;border:1px solid transparent;border-bottom:none;border-radius:7px 7px 0 0;background:transparent;font-size:12px;font-weight:700;color:var(--sub);cursor:pointer;transition:background .15s,color .15s,border-color .15s;letter-spacing:.04em;margin-bottom:-1px;position:relative}
+.lab-tab:hover{background:var(--surface);color:var(--text)}
+.lab-tab.active{background:var(--surface);color:var(--text);border-color:var(--border);border-bottom-color:var(--surface)}
+.lab-tab[data-csp=aws].active{color:#FF9900;border-top-color:#FF9900;border-left-color:#FF9900;border-right-color:#FF9900}
+.lab-tab[data-csp=azure].active{color:#0078D4;border-top-color:#0078D4;border-left-color:#0078D4;border-right-color:#0078D4}
+.lab-tab[data-csp=gcp].active{color:#4285F4;border-top-color:#4285F4;border-left-color:#4285F4;border-right-color:#4285F4}
+.cjmap-outer{padding:16px 16px 12px;display:flex;justify-content:center}
+.cjmap-svg{width:100%;max-width:750px;overflow:visible}
+.ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
+.ai-panel{background:#fff;border-radius:16px;width:540px;max-width:100%;height:72vh;max-height:680px;display:flex;flex-direction:column;box-shadow:0 28px 72px rgba(0,0,0,.26);overflow:hidden}
+.ai-hdr{padding:14px 18px 12px;border-bottom:1px solid #e2e8f0;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-shrink:0}
+.ai-hdr-left{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ai-hdr-tag{font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:#DA291C}
+.ai-hdr-title{font-size:13px;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ai-hdr-sub{font-size:10px;color:#94a3b8}
+.ai-close{width:28px;height:28px;border-radius:7px;border:none;background:#f1f5f9;font-size:16px;line-height:1;color:#64748b;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:background .15s}
+.ai-close:hover{background:#e2e8f0;color:#0f172a}
+.ai-body{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:10px}
+.ai-msg{max-width:85%;padding:10px 14px;border-radius:12px;font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.ai-msg.user{align-self:flex-end;background:#DA291C;color:#fff;border-bottom-right-radius:4px}
+.ai-msg.assistant{align-self:flex-start;background:#f1f5f9;color:#0f172a;border-bottom-left-radius:4px}
+.ai-msg.thinking{align-self:flex-start;background:#f8fafc;color:#94a3b8;font-style:italic;border:1px dashed #e2e8f0;border-bottom-left-radius:4px}
+.ai-feedback{display:flex;align-items:center;gap:6px;align-self:flex-start;margin-top:-4px;margin-left:2px}
+.ai-fb-btn{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px;font-size:13px;cursor:pointer;line-height:1;color:#64748b;transition:background .15s,border-color .15s}
+.ai-fb-btn:hover{background:#f1f5f9;border-color:#cbd5e1}
+.ai-fb-btn.voted{border-color:#22c55e;background:#f0fdf4;color:#15803d}
+.ai-fb-btn.voted-neg{border-color:#ef4444;background:#fef2f2;color:#dc2626}
+.ai-fb-note{font-size:10px;color:#94a3b8;margin-left:2px}
+@keyframes fg-arrow{0%,100%{transform:translateX(0)}50%{transform:translateX(5px)}}
+.fg-arrow{display:inline-block;animation:fg-arrow 0.9s ease-in-out infinite;color:#DA291C;font-style:normal;margin-right:3px;font-size:13px}
+#fg-inline{width:100%;max-width:clamp(380px,52vw,640px);margin-top:18px;opacity:0;transform:translateY(12px) scale(.97);transition:opacity .5s cubic-bezier(.22,1,.36,1),transform .5s cubic-bezier(.22,1,.36,1);pointer-events:none;position:relative}
+#fg-inline.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+#fg-inline::before{content:'';position:absolute;top:-9px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:10px solid #DA291C}
+#fg-inline::after{content:'';position:absolute;top:-7px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:9px solid transparent;border-right:9px solid transparent;border-bottom:9px solid #fff5f5}
+.fg-bubble{background:linear-gradient(135deg,#fff5f5 0%,#fff 60%);border:1.5px solid #DA291C;border-radius:14px;padding:16px 20px 14px;box-shadow:0 8px 32px rgba(218,41,28,.13),0 2px 8px rgba(0,0,0,.06);position:relative;overflow:hidden}
+.fg-bubble::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#DA291C,#ff6b5b,#DA291C)}
+.fg-bubble-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.fg-bubble-icon{width:28px;height:28px;border-radius:50%;background:#DA291C;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.fg-bubble-label{font-size:10px;font-weight:800;letter-spacing:.1em;color:#DA291C;text-transform:uppercase}
+.fg-bubble-src{font-size:9px;color:#94a3b8;margin-left:auto;font-style:italic}
+.fg-bubble-fact{font-size:13px;font-weight:600;color:#0f172a;line-height:1.7;padding-left:2px}
+.ai-footer{padding:10px 14px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-shrink:0}
+.mach-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2000;display:flex;align-items:flex-end;justify-content:flex-end}
+.mach-panel{background:#fff;width:480px;max-width:100vw;height:100vh;display:flex;flex-direction:column;box-shadow:-8px 0 40px rgba(0,0,0,.18);overflow:hidden}
+.mach-hdr{padding:16px 18px 12px;border-bottom:1px solid #e2e8f0;display:flex;align-items:flex-start;gap:10px;flex-shrink:0}
+.mach-hdr-icon{width:36px;height:36px;border-radius:8px;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.mach-title{font-size:13px;font-weight:800;color:#0f172a;word-break:break-all}
+.mach-sub{font-size:10px;color:#94a3b8;margin-top:2px}
+.mach-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 18px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
+.mach-section{background:#f8fafc;border-radius:8px;overflow:hidden}
+.mach-section-title{font-size:9px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#64748b;padding:6px 12px;background:#f1f5f9;border-bottom:1px solid #e2e8f0}
+.mach-row{display:flex;align-items:baseline;gap:8px;padding:5px 12px;border-bottom:1px solid #f1f5f9}
+.mach-row:last-child{border-bottom:none}
+.mach-key{font-size:10px;font-weight:700;color:#64748b;min-width:120px;flex-shrink:0}
+.mach-val{font-size:11px;color:#0f172a;word-break:break-all;font-family:monospace}
+.ai-input{flex:1;padding:9px 12px;border:1px solid #e2e8f0;border-radius:9px;font-size:12.5px;outline:none;color:#0f172a;background:#fafafa;transition:border-color .15s}
+.ai-input:focus{border-color:#DA291C;background:#fff}
+.ai-send{padding:9px 16px;background:#DA291C;color:#fff;border:none;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;transition:filter .15s}
+.ai-send:hover{filter:brightness(1.1)}
+.ai-send:disabled{opacity:.5;cursor:not-allowed;filter:none}
+.ai-prompt-row{display:flex;gap:10px;width:100%}
+.ai-prompt-btn{flex:1;padding:11px 8px;border:2px solid #DA291C;border-radius:10px;background:#fff;color:#DA291C;font-size:12px;font-weight:700;cursor:pointer;transition:background .15s,color .15s;letter-spacing:.03em}
+.ai-prompt-btn:hover{background:#DA291C;color:#fff}
+.ai-prompt-btn:disabled{opacity:.45;cursor:not-allowed;border-color:#cbd5e1;color:#94a3b8}
 </style>
 </head>
 <body>
@@ -809,11 +951,16 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">RTINET</span>
     </div>
     <div style="font-size:9px;font-weight:600;color:#6b7280;letter-spacing:.08em;text-transform:uppercase;margin-left:1px">Rapid Cloud Assessment</div>
+    <div style="font-size:8px;font-weight:500;color:#DA291C;letter-spacing:.06em;text-transform:uppercase;margin-left:1px">empowered by FortiCNAPP</div>
   </div>
   <div class="sb-sect">Dashboard</div>
   <div class="sb-item active" id="nav-overview" onclick="nav('overview')">
     <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
     CSPM Score
+  </div>
+  <div class="sb-item" id="nav-csp-scores" onclick="nav('csp-scores')">
+    <svg viewBox="0 0 24 24"><path d="M21.21 15.89A9 9 0 1 1 8.11 2.79"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+    CSPM Score per CSP
   </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
@@ -892,15 +1039,16 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
 
 <!-- ═══ View: Dashboard ═══ -->
 <div class="view active" id="view-overview">
-  <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:28px 48px 24px;gap:0">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:20px 24px 16px;gap:0">
 
     <!-- Title -->
     <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Cloud Security Posture Management Score</div>
-    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:16px">Fortinet Rapid Cloud Assessment · last ${DAYS_BACK} days</div>
+    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px">Fortinet Rapid Cloud Assessment empowered by <i class="fg-arrow" id="fg-arrow">→</i><a id="fg-link" href="https://community.fortinet.com/forticnapp-63" target="_blank" style="color:#DA291C;text-decoration:none;font-weight:700">FortiCNAPP</a> · last ${DAYS_BACK} days</div>
 
-    <!-- Gauge — viewBox expanded to host speech bubbles near arc labels -->
+    <!-- Centering wrapper: responsive — fills available space up to a comfortable max -->
+    <div style="width:100%;max-width:clamp(480px,58vw,740px);display:flex;flex-direction:column;align-items:center">
     <!-- Arc label positions (SVG units): URGENT≈(58,67)  ATTENTION≈(314,43)  PROACTIVE≈(396,180) -->
-    <svg id="gauge-svg" viewBox="-88 -46 636 294" style="display:block;width:100%;max-width:900px;overflow:visible">
+    <svg id="gauge-svg" viewBox="-88 -46 636 294" style="display:block;width:100%;overflow:visible">
       <defs>
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
           <stop offset="0%"    stop-color="#ef4444"/>
@@ -933,8 +1081,8 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="58" font-weight="900"
             letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
       <!-- Scale endpoints -->
-      <text x="25"  y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
-      <text x="375" y="228" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+      <text x="-8"  y="218" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+      <text x="408" y="218" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
 
       <!-- ── URGENT bubble — left, tail centered on right edge → arc at ~(58,67) ── -->
       <g id="bubble-urgent" opacity="0.35" style="transition:opacity .4s,filter .4s">
@@ -967,6 +1115,20 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       </g>
     </svg>
 
+    </div><!-- /gauge-wrapper -->
+
+    <!-- Fact bubble -->
+    <div id="fg-inline">
+      <div class="fg-bubble">
+        <div class="fg-bubble-header">
+          <div class="fg-bubble-icon">☁️</div>
+          <span class="fg-bubble-label">Fortinet Cloud Security Report 2026</span>
+          <span class="fg-bubble-src" id="fg-inline-src">fortinet.com</span>
+        </div>
+        <div class="fg-bubble-fact" id="fg-inline-fact"></div>
+      </div>
+    </div>
+
     <!-- hidden ov-* elements so JS updates don't error -->
     <span id="ov-a" style="display:none"></span>
     <span id="ov-v" style="display:none"></span>
@@ -974,8 +1136,74 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <span id="ov-c" style="display:none"></span>
 
   </div>
-  <div class="footer">Fortinet Rapid Cloud Assessment &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment empowered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
 </div><!-- /view-overview -->
+
+<!-- ═══ View: CSPM Score per CSP ═══ -->
+<div class="view" id="view-csp-scores">
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:28px 24px 24px;gap:0">
+    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Cloud Security Posture — per Cloud Provider</div>
+    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:32px">Individual CSPM scores for AWS · Azure · GCP</div>
+    <div style="display:flex;justify-content:center;gap:40px;width:100%;flex-wrap:wrap">
+
+      <!-- AWS -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#FF9900">AWS</span>
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+          <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path id="csp-arc-aws" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
+                stroke-dasharray="0 314" d="M 25,120 A 100,100 0 0,1 225,120"
+                style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
+          <text id="csp-score-aws" x="125" y="100" text-anchor="middle" font-size="38" font-weight="900"
+                font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
+          <text id="csp-band-aws" x="125" y="117" text-anchor="middle" font-size="10" font-weight="700"
+                font-family="-apple-system,sans-serif" fill="#94a3b8" letter-spacing=".05em"></text>
+          <text x="25"  y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+          <text x="225" y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+        </svg>
+      </div>
+
+      <!-- Azure -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#0078D4">AZURE</span>
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+          <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path id="csp-arc-azure" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
+                stroke-dasharray="0 314" d="M 25,120 A 100,100 0 0,1 225,120"
+                style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
+          <text id="csp-score-azure" x="125" y="100" text-anchor="middle" font-size="38" font-weight="900"
+                font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
+          <text id="csp-band-azure" x="125" y="117" text-anchor="middle" font-size="10" font-weight="700"
+                font-family="-apple-system,sans-serif" fill="#94a3b8" letter-spacing=".05em"></text>
+          <text x="25"  y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+          <text x="225" y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+        </svg>
+      </div>
+
+      <!-- GCP -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <span style="font-size:11px;font-weight:900;letter-spacing:.14em;padding:4px 18px;border-radius:5px;color:#fff;background:#4285F4">GCP</span>
+        <svg viewBox="-25 -20 300 155" style="width:clamp(200px,28vw,360px);overflow:visible">
+          <path fill="none" stroke="#f0f4f8" stroke-width="18" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>
+          <path id="csp-arc-gcp" fill="none" stroke="#e2e8f0" stroke-width="14" stroke-linecap="round"
+                stroke-dasharray="0 314" d="M 25,120 A 100,100 0 0,1 225,120"
+                style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
+          <text id="csp-score-gcp" x="125" y="100" text-anchor="middle" font-size="38" font-weight="900"
+                font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
+          <text id="csp-band-gcp" x="125" y="117" text-anchor="middle" font-size="10" font-weight="700"
+                font-family="-apple-system,sans-serif" fill="#94a3b8" letter-spacing=".05em"></text>
+          <text x="25"  y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
+          <text x="225" y="135" text-anchor="middle" font-size="11" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
+        </svg>
+      </div>
+
+    </div>
+  </div>
+  <div class="footer">Fortinet Rapid Cloud Assessment empowered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span class="footer-interval-ref">—</span> &nbsp;·&nbsp; <span id="footer-time-csp"></span></div>
+</div><!-- /view-csp-scores -->
 
 <!-- ═══ View: Critical Alerts ═══ -->
 <div class="view" id="view-alerts">
@@ -983,7 +1211,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">High Fidelity Alerts</div>
-      <div class="vh-sub">Active threats &amp; policy violations · last ${DAYS_BACK} days</div>
+      <div class="vh-sub" id="sub-alerts">Active threats &amp; policy violations · last ${DAYS_BACK} days</div>
     </div>
     <span class="vh-badge" id="cnt-a">—</span>
   </div>
@@ -996,7 +1224,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">Internet Threat Exposure</div>
-      <div class="vh-sub">Host CVEs · Risk Score ≥ 9.0 · Agentless scan &nbsp;<span class="agent-tip" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available</span></div>
+      <div class="vh-sub">Host CVEs · Risk Score ≥ 9.0 · Agentless scan &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
   </div>
@@ -1035,7 +1263,7 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">Discovered Secrets</div>
-      <div class="vh-sub">SSH keys, API tokens &amp; credentials detected on hosts</div>
+      <div class="vh-sub">High-permission secrets &amp; credentials detected on hosts</div>
     </div>
     <span class="vh-badge" id="cnt-sa">—</span>
   </div>
@@ -1094,6 +1322,17 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
       <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</div>
     </div>
   </div>
+
+  <!-- ── Lab tab bar: Global | AWS | Azure | GCP ── -->
+  <div class="lab-tabs-bar">
+    <button class="lab-tab active" id="labtab-global" onclick="switchLabTab('global')">Global</button>
+    <button class="lab-tab" id="labtab-aws" data-csp="aws" onclick="switchLabTab('aws')">AWS</button>
+    <button class="lab-tab" id="labtab-azure" data-csp="azure" onclick="switchLabTab('azure')">Azure</button>
+    <button class="lab-tab" id="labtab-gcp" data-csp="gcp" onclick="switchLabTab('gcp')">GCP</button>
+  </div>
+
+  <!-- Global (all-cloud) diagram -->
+  <div id="lab-global-panel">
   <!-- Step 1 — circle node aligned with Step 2 (cx=160 = 16% of SVG width) -->
   <div id="lab-asset-action" style="display:none;flex-direction:column;align-items:flex-start;padding:8px 0 0 calc(16% - 25px);gap:0">
     <div id="jnd0-circle" onclick="nav('asset-risk')" style="width:104px;height:104px;border-radius:50%;background:#ef4444;box-shadow:0 6px 24px rgba(239,68,68,.38);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;gap:1px;transition:filter .15s" onmouseover="this.style.filter='brightness(1.08)'" onmouseout="this.style.filter=''">
@@ -1183,6 +1422,75 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <text id="jnd6-cnt" x="840" y="400" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
   </svg>
   </div>
+  </div><!-- /lab-global-panel -->
+
+  <!-- ── Per-CSP diagram (shared SVG, re-rendered per active tab) ── -->
+  <div id="lab-csp-panel" style="display:none">
+    <!-- CSP header row -->
+    <div style="padding:14px 24px 0;display:flex;align-items:center;gap:10px">
+      <span id="clab-csp-badge" style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:3px 12px;border-radius:5px;color:#fff;background:#94a3b8">—</span>
+      <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Proactive Security</span>
+    </div>
+    <!-- CSP snake diagram -->
+    <div class="cjmap-outer">
+    <svg class="cjmap-svg" viewBox="0 0 700 480" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <filter id="cjnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
+          <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
+        </filter>
+        <filter id="cjph-shadow" x="-5%" y="-30%" width="115%" height="180%">
+          <feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="rgba(0,0,0,.18)"/>
+        </filter>
+      </defs>
+
+      <!-- Phase chevron headers -->
+      <polygon id="cjph1" points="0,4 350,4 374,27 350,50 0,50" fill="#ef4444" filter="url(#cjph-shadow)"/>
+      <text x="175" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+
+      <polygon id="cjph2" points="350,4 700,4 700,50 350,50 374,27" fill="#94a3b8" filter="url(#cjph-shadow)"/>
+      <text id="cjph2-txt" x="525" y="32" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
+
+      <!-- Background snake (gray dashed) -->
+      <path d="M250,155 L250,365 C250,435 550,435 550,365 L550,155"
+        fill="none" stroke="#e2e8f0" stroke-width="10" stroke-dasharray="16,10" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- Colored animated snake -->
+      <path id="cjsnake" d="M250,155 L250,365 C250,435 550,435 550,365 L550,155"
+        fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="14,12" stroke-linecap="round" stroke-linejoin="round"
+        style="animation:snake-flow 1.2s linear infinite"/>
+
+      <!-- Direction arrows -->
+      <polygon points="243,246 257,246 250,262" fill="#cbd5e1"/>
+      <polygon points="388,425 402,431 388,437" fill="#cbd5e1"/>
+      <polygon points="543,264 557,264 550,248" fill="#cbd5e1"/>
+
+      <!-- Node 1 — Identities -->
+      <circle id="cjnd1" cx="250" cy="155" r="58" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+      <text x="250" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 1</text>
+      <text x="250" y="153" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+      <text id="cjnd1-cnt" x="250" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+      <!-- Node 2 — Alerts -->
+      <circle id="cjnd2" cx="250" cy="365" r="58" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+      <text x="250" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
+      <text x="250" y="363" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
+      <text id="cjnd2-cnt" x="250" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+      <!-- Node 3 — Compliance -->
+      <circle id="cjnd3" cx="550" cy="365" r="58" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+      <text x="550" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
+      <text x="550" y="363" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+      <text id="cjnd3-cnt" x="550" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+
+      <!-- Goal — Proactive Security -->
+      <circle id="cjnd-goal" cx="550" cy="155" r="58" fill="#22c55e" filter="url(#cjnd-shadow)"/>
+      <text x="550" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
+      <text x="550" y="153" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
+      <text x="550" y="167" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
+      <text id="cjnd-goal-cnt" x="550" y="192" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+    </svg>
+    </div>
+  </div>
 </div>
 
 <div class="view" id="view-admin-settings">
@@ -1213,12 +1521,38 @@ td.desc{font-size:11px;color:var(--sub);max-width:520px;white-space:normal;line-
     <div style="font-size:10px;color:#94a3b8;padding:0 4px">Changes take effect immediately on the server. The browser page reloads at the same cadence.</div>
 
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-top:16px">
+      <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Cloud Security Facts</div>
+      <div style="font-size:11px;color:#64748b;margin-bottom:14px">Rotating Fortinet 2026 Cloud Report &amp; blog facts shown under the main gauge. Adjust how often a new fact appears.</div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:600;color:#0f172a">
+          <input type="checkbox" id="settings-vibe-toggle" checked onchange="toggleFgVibe(this.checked)" style="width:16px;height:16px;accent-color:#DA291C;cursor:pointer">
+          Enable Cloud Security Facts
+        </label>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:600;color:#374151">Frequency:</span>
+        <select id="settings-fact-freq" style="padding:7px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none" onchange="applyFactFreq(this.value)">
+          <option value="30">Every 30 seconds (default)</option>
+          <option value="60">Every 1 minute</option>
+          <option value="120">Every 2 minutes</option>
+          <option value="300">Every 5 minutes</option>
+          <option value="600">Every 10 minutes</option>
+          <option value="1800">Every 30 minutes</option>
+          <option value="3600">Every 60 minutes</option>
+        </select>
+        <span id="settings-fact-saved" style="font-size:12px;color:#22c55e;font-weight:700;opacity:0;transition:opacity .4s">✓ Saved</span>
+      </div>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-top:16px">
       <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Assessment Window</div>
       <div style="font-size:11px;color:#64748b;margin-bottom:14px">Sliding look-back period used for all API queries (alerts, CVEs, identities, secrets, compliance).</div>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <select id="settings-days-select" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none">
           <option value="7">7 days</option>
-          <option value="14">14 days (default)</option>
+          <option value="14">14 days</option>
+          <option value="21">21 days (default)</option>
+          <option value="30">30 days</option>
         </select>
         <button onclick="applyDaysBack()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Apply</button>
         <span id="settings-days-saved" style="font-size:12px;color:#22c55e;font-weight:700;opacity:0;transition:opacity .4s">✓ Saved</span>
@@ -1270,6 +1604,29 @@ function status(s){
 }
 function cloud(c){const m={aws:'b-ok',azure:'b-hi',gcp:'b-cr'};return'<span class="b '+(m[c]||'b-nt')+'">'+(c||'').toUpperCase()+'</span>';}
 function strip(s){return(s||'').toLowerCase()==='critical'?'strip-cr':'strip-hi';}
+function shortenAlertDesc(d){
+  if(!d)return'—';
+  const t=d.toLowerCase();
+  // Strip IPs, ports, domains, hashes before pattern matching
+  const clean=d.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g,'').replace(/\b[a-f0-9]{32,}\b/gi,'').replace(/\s{2,}/g,' ').trim();
+  if(/crypto.?min|mining/i.test(t))              return'Crypto Mining Detected';
+  if(/bad.?ip|malicious.?ip|known.?bad/i.test(t))return'Bad External Communication';
+  if(/brute.?force|password.?spray|credential.?stuff/i.test(t)) return'Brute Force / Credential Attack';
+  if(/data.?exfil|exfiltrat/i.test(t))           return'Data Exfiltration Risk';
+  if(/dns.?tunnel|dns.?exfil/i.test(t))          return'DNS Tunneling Detected';
+  if(/lateral.?mov/i.test(t))                    return'Lateral Movement';
+  if(/privilege.?escal|priv.?esc/i.test(t))       return'Privilege Escalation';
+  if(/command.?and.?control|c2|c&c/i.test(t))    return'C2 Communication';
+  if(/port.?scan|network.?scan/i.test(t))         return'Port / Network Scan';
+  if(/ransomware/i.test(t))                       return'Ransomware Activity';
+  if(/reverse.?shell|shell.?spawn|remote.?shell/i.test(t)) return'Reverse Shell Activity';
+  if(/anomal.*login|unusual.*login|suspicious.*login/i.test(t)) return'Suspicious Login Activity';
+  if(/new.*admin|admin.*creat|iam.*escalat/i.test(t)) return'Privileged Account Change';
+  if(/unauthorized.*api|api.*abuse/i.test(t))     return'Unauthorized API Access';
+  if(/tor\b|vpn.?exit|proxy/i.test(t))            return'Anonymised External Communication';
+  // Fallback: strip specifics and truncate
+  return clean.length>50?clean.slice(0,48)+'…':clean||d.slice(0,50);
+}
 function setKpi(id,n){const el=document.getElementById(id);if(el)el.textContent=n;}
 function buildPie(d){
   var segs=[
@@ -1308,13 +1665,18 @@ function renderAlerts(rows,err){
   setKpi('kpi-a',rows.length);setCount('cnt-a',rows.length,true);
   if(!rows.length){state('body-a','','No open critical alerts');return}
   const baseA='https://'+(_lastData?.account||'');
-  setBody('body-a','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Alert</th><th>Description</th><th>Status</th><th>Time</th></tr></thead><tbody>'
+  setBody('body-a','<div class="tbl-wrap"><table><thead><tr><th>Alert ID</th><th>Alert</th><th>Description</th><th>Status</th><th>Time</th><th></th></tr></thead><tbody>'
     +rows.map(r=>{
-      const desc=(r.alertInfo?.description||'').replace(/\s+/g,' ').trim();
+      const rawDesc=(r.alertInfo?.description||r.alertType||'').replace(/\s+/g,' ').trim();
+      const desc=shortenAlertDesc(rawDesc);
       const href=baseA;
+      const aid=e(String(r.alertId||''));
       return'<tr class="'+strip('critical')+'">'
-        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(String(r.alertId||''))+'">'+cpIcon+'</button></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+aid+'">'+cpIcon+'</button></td>'
         +'<td class="p"><a class="rf-link" href="'+e(href)+'" target="_blank">'+e(r.alertName||'—')+'</a></td>'
+        +'<td style="white-space:nowrap"><button class="ai-inv-btn" data-aid="'+aid+'" data-aname="'+e(r.alertName||'')+'" data-asev="'+e(r.severity||'')+'" '
+          +'style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;font-size:10px;font-weight:700;background:#DA291C;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap" '
+          +'title="Investigate with FortiCNAPP Agent AI">&#x1F916; Investigate</button></td>'
         +'<td class="desc">'+e(desc||'—')+'</td>'
         +'<td>'+status(r.status)+'</td>'
         +'<td class="m">'+fmtDate(r.startTime)+'</td>'
@@ -1327,16 +1689,18 @@ function renderVulns(rows,err){
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
   if(!rows.length){state('body-v','','No CVEs with risk score \\u2265 9');return}
   const baseV='https://'+(_lastData?.account||'');
-  setBody('body-v','<div class="tbl-wrap"><table><thead><tr><th>CVE / Vuln ID</th><th>Risk</th><th>Package</th><th>Host</th><th>Fix Version</th></tr></thead><tbody>'
+  setBody('body-v','<div class="tbl-wrap"><table><thead><tr><th>CVE / Vuln ID</th><th>Risk</th><th>Package</th><th>Host</th><th>Fix Version</th><th></th></tr></thead><tbody>'
     +rows.map(r=>{
       const fix=r.fixInfo?.fix_available===true||String(r.fixInfo?.fix_available)==='1'||r.fixInfo?.fix_available==='1';
       const fixVer=r.fixInfo?.fixed_version||'';
+      const cveId=e(r.vulnId||r.cveId||'');
       return'<tr class="strip-cr">'
-        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+e(r.vulnId||r.cveId||'')+'">'+cpIcon+'</button></td>'
+        +'<td class="m"><a class="rf-link" href="'+e(baseV)+'" target="_blank">'+e(r.vulnId||r.cveId||'\\u2014')+'</a><button class="cp-btn" data-cp="'+cveId+'">'+cpIcon+'</button></td>'
         +'<td class="r"><span class="risk-score">'+parseFloat(r.riskScore||0).toFixed(1)+'</span></td>'
         +'<td class="p">'+e(r.featureKey?.name||'—')+'</td>'
         +'<td class="m">'+e(r.evalCtx?.hostname||r.mid||'—')+'</td>'
         +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,18)||'Fix \\u2713')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
+        +'<td><a href="https://www.fortiguard.com/threatintel-search?q='+cveId+'" target="_blank" style="font-size:10px;padding:2px 9px;border-radius:5px;background:#f97316;color:#fff;font-weight:700;white-space:nowrap;text-decoration:none;display:inline-block" title="FortiGuard Threat Intel">FortiGuard ↗</a></td>'
       +'</tr>';
     }).join('')+'</tbody></table></div>');
 }
@@ -1346,7 +1710,7 @@ function renderCompliance(rows,err){
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
   const baseC='https://'+(_lastData?.account||'');
-  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Policy ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th></tr></thead><tbody>'
+  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Policy ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th><th></th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
       +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a><button class="cp-btn" data-cp="'+e(r.alertId||'')+'">'+cpIcon+'</button></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
@@ -1354,6 +1718,7 @@ function renderCompliance(rows,err){
       +'<td class="desc">'+e(r.description||'—')+'</td>'
       +'<td>'+sev(r.severity)+'</td>'
       +'<td class="r">'+e(r.violations||0)+'</td>'
+      +'<td><button class="comp-det-btn" data-pid="'+e(r.alertId||'')+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#f59e0b;color:#fff;font-weight:700" title="Non-compliant resources">Details</button></td>'
     +'</tr>').join('')+'</tbody></table></div>');
 }
 
@@ -1361,7 +1726,7 @@ function renderIdentities(rows,err){
   if(err){state('body-i','',err);return}
   setKpi('kpi-i',rows.length);setCount('cnt-i',rows.length,true);
   if(!rows.length){state('body-i','','No high-risk no-MFA identities found');return}
-  setBody('body-i','<div class="tbl-wrap"><table><thead><tr><th>Identity</th><th>Cloud</th><th>Risk</th><th>Unused</th><th>MFA</th><th>Last Used</th></tr></thead><tbody>'
+  setBody('body-i','<div class="tbl-wrap"><table><thead><tr><th>Identity</th><th>Cloud</th><th>Risk</th><th>Unused</th><th>MFA</th><th>Last Used</th><th></th></tr></thead><tbody>'
     +rows.map(r=>{
       const risks=r.METRICS?.risks??[];
       const isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
@@ -1376,6 +1741,7 @@ function renderIdentities(rows,err){
         +'<td class="r">'+unused+'</td>'
         +'<td><span class="tag-nomfa">NO MFA</span></td>'
         +'<td class="m">'+fmtDate(r.LAST_USED_TIME)+'</td>'
+        +'<td><button class="ident-det-btn" data-pid="'+e(r.PRINCIPAL_ID||'')+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#8b5cf6;color:#fff;font-weight:700" title="Identity details">Details</button></td>'
       +'</tr>';
     }).join('')+'</tbody></table></div>');
 }
@@ -1392,6 +1758,8 @@ function renderSecretsAll(rows,err){
     if(!groups[cat])groups[cat]=[];
     groups[cat].push(r);
   });
+  const SECRET_TYPE_LABELS={'SSH_PRIVATE_KEY':'Moderate to High Permissive Access SSH Private Key','SSH_PRIVATE_KEYS':'Moderate to High Permissive Access SSH Private Key','RSA':'Moderate to High Permissive Access SSH Private Key (RSA)','ECDSA':'Moderate to High Permissive Access SSH Private Key (ECDSA)','ED25519':'Moderate to High Permissive Access SSH Private Key (ED25519)','AWS_SECRET_ACCESS_KEY':'Moderate to High Permissive Access AWS Secret Access Key','AWS_ACCESS_KEY':'Moderate to High Permissive Access AWS Secret Access Key','AWS_CREDENTIALS':'Moderate to High Permissive Access AWS Credentials','AWS_SECRET':'Moderate to High Permissive Access AWS Secret Access Key'};
+  const displayCat=cat=>SECRET_TYPE_LABELS[cat]||SECRET_TYPE_LABELS[cat.toUpperCase()]||cat;
   const isHighRisk=cat=>{const l=cat.toLowerCase();return l.includes('key')||l.includes('token')||l.includes('password')||l.includes('credential');};
   const sortedGroups=Object.entries(groups).sort((a,b)=>{
     const ah=isHighRisk(a[0])?1:0,bh=isHighRisk(b[0])?1:0;
@@ -1406,20 +1774,31 @@ function renderSecretsAll(rows,err){
       const inContainer=r.IS_IN_CONTAINER===true||r.IS_IN_CONTAINER==='true'||r.IS_IN_CONTAINER===1;
       const containerLabel=inContainer?'<span class="b b-hi" title="'+e(r.CONTAINER_KEY||'')+'">'+e(r.CONTAINER_KEY?r.CONTAINER_KEY.slice(0,16):'Container')+'</span>':'<span style="color:#94a3b8">—</span>';
       const detectedAt=r.RECORD_CREATED_TIME?fmtDate(r.RECORD_CREATED_TIME):r.BATCH_END_TIME?fmtDate(r.BATCH_END_TIME):'—';
+      const meta=(typeof r.SECRET_METADATA==='object'&&r.SECRET_METADATA)?r.SECRET_METADATA:{};
+      const rawPerms=r.FILE_PERMISSIONS!=null?r.FILE_PERMISSIONS:meta.file_permissions;
+      let dacHtml;
+      if(rawPerms==null){
+        dacHtml='<span style="color:#94a3b8">—</span>';
+      }else{
+        const oct=(rawPerms&0o777).toString(8).padStart(3,'0');
+        const permissive=(rawPerms&0o377)!==0;
+        const col=permissive?'#ef4444':'#22c55e';
+        dacHtml='<code style="font-size:12px;font-weight:700;color:'+col+'">'+oct+'</code>';
+      }
       return'<tr>'
         +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
         +'<td>'+containerLabel+'</td>'
         +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
-        +'<td class="p"><small>'+e(r.SECRET_METADATA||'—')+'</small><button class="cp-btn" data-cp="'+e(r.SECRET_METADATA||'')+'">'+cpIcon+'</button></td>'
+        +'<td style="text-align:center">'+dacHtml+'</td>'
         +'<td class="m">'+detectedAt+'</td>'
         +'</tr>';
     }).join('');
     return'<div style="margin-bottom:18px">'
       +'<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:'+hdrBg+';border-left:4px solid '+hdrColor+';border-radius:0 6px 6px 0;margin-bottom:4px">'
-        +'<span style="font-weight:700;font-size:13px;color:'+hdrColor+'">'+e(cat)+'</span>'
+        +'<span style="font-weight:700;font-size:13px;color:'+hdrColor+'">'+e(displayCat(cat))+'</span>'
         +'<span style="background:'+hdrColor+';color:#fff;border-radius:10px;font-size:11px;font-weight:700;padding:1px 8px">'+items.length+'</span>'
       +'</div>'
-      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th>Metadata</th><th>Detected</th></tr></thead><tbody>'
+      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th style="text-align:center">DAC</th><th>Detected</th></tr></thead><tbody>'
         +rowsHtml
       +'</tbody></table></div>'
     +'</div>';
@@ -1443,8 +1822,15 @@ function renderAssetRisk(d){
   const map={};
   const get=(host,mid)=>{
     const key=host||mid||'unknown';
-    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],secrets:[],risk:0};
+    if(!map[key])map[key]={name:host||mid||'unknown',mid:mid||'',vulns:[],secrets:[],risk:0,powerState:null};
     return map[key];
+  };
+  // Helper: extract PowerState from evalCtx.machineTags array [{key,value}]
+  const getPowerState=r=>{
+    const tags=r.evalCtx?.machineTags;
+    if(!Array.isArray(tags))return null;
+    const t=tags.find(t=>(t.key||'').toLowerCase()==='powerstate');
+    return t?(t.value||'').toLowerCase():null;
   };
   (d.vulns||[]).forEach(r=>{
     const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
@@ -1453,6 +1839,9 @@ function renderAssetRisk(d){
     const a=get(host,r.evalCtx?.mid||'');
     a.vulns.push({id:r.vulnId||'',score:r.riskScore,w});
     a.risk+=w;
+    // Record confirmed PowerState (running wins; any non-null tag locks it)
+    const ps=getPowerState(r);
+    if(ps&&a.powerState!=='running')a.powerState=ps;
   });
   (d.secretsAll||[]).forEach(r=>{
     const host=r.HOSTNAME||r.MID||'';
@@ -1461,7 +1850,8 @@ function renderAssetRisk(d){
     a.secrets.push({type:r.SECRET_TYPE||''});
     a.risk+=50;
   });
-  const all=Object.values(map).filter(a=>a.risk>0).sort((a,b)=>b.risk-a.risk);
+  // Only include assets that are confirmed running, or where PowerState is unknown (no tag data)
+  const all=Object.values(map).filter(a=>a.risk>0&&(a.powerState===null||a.powerState==='running')).sort((a,b)=>b.risk-a.risk);
   const maxRisk=all[0]?.risk||1;
   // Only show assets whose normalized score > 20
   const sorted=all.filter(a=>Math.round(a.risk/maxRisk*100)>20);
@@ -1490,7 +1880,8 @@ function renderAssetRisk(d){
       +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
         +'<div style="font-size:20px;font-weight:900;color:'+medalColor(i)+';width:30px;text-align:center;flex-shrink:0">#'+(i+1)+'</div>'
         +'<div style="flex:1;min-width:0">'
-          +'<div style="display:flex;align-items:center;gap:6px"><span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span><button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button></div>'
+          +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="font-weight:700;font-size:13px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+e(a.name)+'</span><button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy hostname" style="flex-shrink:0">'+cpIcon+'</button>'
+            +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#6366f1;color:#fff;font-weight:700;flex-shrink:0" title="Host details">Details</button></div>'
           +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#94a3b8;margin-top:1px;font-family:monospace">'+e(a.mid)+'</div>':'')
         +'</div>'
         +'<div style="font-size:24px;font-weight:900;color:'+color+';flex-shrink:0">'+score+'</div>'
@@ -1514,6 +1905,7 @@ function nav(name){
 }
 
 let _lastData=null;
+let _currentLabTab='global';
 
 // Cloud Security Posture Score: higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100.
@@ -1570,6 +1962,103 @@ function renderRiskFindings(d){
   setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th colspan="2">Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 }
 
+// ── CSP detection helpers (client-side) ──────────────────────────────────────
+function cspOfAlert(r){
+  const t=((r.alertType||'')+(r.alertName||'')).toUpperCase();
+  if(t.includes('AWS')||t.includes('CLOUDTRAIL')||t.includes('EC2')||t.includes('S3'))return 'aws';
+  if(t.includes('AZURE')||t.includes('AZ_'))return 'azure';
+  if(t.includes('GCP')||t.includes('GOOGLE')||t.includes('GKE'))return 'gcp';
+  return null;
+}
+function cspOfIdentity(r){
+  const p=((r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'')).toUpperCase();
+  if(p.includes('AWS'))return 'aws';
+  if(p.includes('AZURE'))return 'azure';
+  if(p.includes('GCP')||p.includes('GOOGLE'))return 'gcp';
+  return null;
+}
+// Option 3 — Hybrid Severity-Bucket model (logarithmic penalty, base 11)
+// Buckets: CRITICAL(max -40) | HIGH(max -30) | MEDIUM(max -20) | LOW(max -10)
+// penalty_b = max_b × log₁₁(1 + count_b)   score = 100 − Σ penalty_b
+function calcCspScore(d,csp){
+  let C=0,H=0,M=0,L=0;
+  // Alerts — severity from API ('Critical'|'High')
+  (d.alerts||[]).filter(r=>cspOfAlert(r)===csp).forEach(r=>{
+    const s=(r.severity||'').toLowerCase();
+    if(s==='critical')C++;else if(s==='high')H++;else M++;
+  });
+  // Compliance violations — severity from policy definition
+  (d.compliance||[]).filter(r=>(r.cloud||'')===csp).forEach(r=>{
+    const s=(r.severity||'').toLowerCase();
+    if(s==='critical')C++;else H++;
+  });
+  // Identities — bucket by risk_score (0–1 scale)
+  (d.identities||[]).filter(r=>cspOfIdentity(r)===csp).forEach(r=>{
+    const rs=r.METRICS?.risk_score||0;
+    if(rs>=0.8)C++;else if(rs>=0.5)H++;else if(rs>=0.2)M++;else L++;
+  });
+  if(C+H+M+L===0)return null;
+  const log11=n=>Math.log(1+n)/Math.log(11);
+  const penalty=40*log11(C)+30*log11(H)+20*log11(M)+10*log11(L);
+  return Math.max(0,Math.round(100-Math.min(100,penalty)));
+}
+function cspBadgeColor(csp){return{aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[csp]||'#94a3b8';}
+
+function renderCspLab(d,csp){
+  const alerts=(d.alerts||[]).filter(r=>cspOfAlert(r)===csp);
+  const compliance=(d.compliance||[]).filter(r=>(r.cloud||'')===csp);
+  const identities=(d.identities||[]).filter(r=>cspOfIdentity(r)===csp);
+  const raw=calcCspScore(d,csp);
+  const p=raw!==null?raw:100;
+  const color=scoreColor(p);
+  const band=scoreBand(p);
+  const bc=cspBadgeColor(csp);
+  const badge=document.getElementById('clab-csp-badge');
+  if(badge){badge.textContent=csp.toUpperCase();badge.style.background=bc;}
+  const scoreEl=document.getElementById('clab-score');
+  if(scoreEl){scoreEl.textContent=p;scoreEl.style.color=color;}
+  const bandEl=document.getElementById('clab-band-txt');
+  if(bandEl)bandEl.textContent=band;
+  const nodes=[
+    {nd:'cjnd1',cnt:'cjnd1-cnt',count:identities.length,activeClr:'#ef4444'},
+    {nd:'cjnd2',cnt:'cjnd2-cnt',count:alerts.length,    activeClr:'#ef4444'},
+    {nd:'cjnd3',cnt:'cjnd3-cnt',count:compliance.length,activeClr:'#f59e0b'},
+  ];
+  nodes.forEach(n=>{
+    const el=document.getElementById(n.nd),ct=document.getElementById(n.cnt);
+    if(ct)ct.textContent=n.count;
+    if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
+  });
+  const goal=document.getElementById('cjnd-goal');
+  const goalCnt=document.getElementById('cjnd-goal-cnt');
+  if(goal)goal.setAttribute('fill',color);
+  if(goalCnt)goalCnt.textContent=p;
+  const ph2=document.getElementById('cjph2');
+  const ph2txt=document.getElementById('cjph2-txt');
+  if(ph2)ph2.setAttribute('fill',color);
+  if(ph2txt)ph2txt.textContent=p>=90?'ACHIEVED':'GOAL';
+  const snake=document.getElementById('cjsnake');
+  if(snake)snake.setAttribute('stroke',color);
+}
+
+function switchLabTab(tab){
+  _currentLabTab=tab;
+  ['global','aws','azure','gcp'].forEach(t=>{
+    const btn=document.getElementById('labtab-'+t);
+    if(btn)btn.classList.toggle('active',t===tab);
+  });
+  const gp=document.getElementById('lab-global-panel');
+  const cp=document.getElementById('lab-csp-panel');
+  if(tab==='global'){
+    if(gp)gp.style.display='';
+    if(cp)cp.style.display='none';
+  }else{
+    if(gp)gp.style.display='none';
+    if(cp)cp.style.display='';
+    if(_lastData)renderCspLab(_lastData,tab);
+  }
+}
+
 function renderLab(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
@@ -1611,13 +2100,18 @@ async function load(){
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
     renderAssetRisk(d);
-    updateRiskScore(calcPostureScore(d));
+    updateRiskScore(calcGlobalScoreFromCsp(d));
+    updateCspGauges(d);
     renderRiskFindings(d);
     renderLab(d);
+    if(_currentLabTab!=='global')renderCspLab(d,_currentLabTab);
     buildPie(d);
     document.getElementById('fetched-at').textContent=fmtDate(d.fetchedAt);
     const da=document.getElementById('dash-acct');if(da)da.textContent=d.account||'';
-    document.getElementById('footer-time').textContent='Assessment window: last ${DAYS_BACK} days';
+    const _db=d.daysBack||${DAYS_BACK};
+    document.getElementById('footer-time').textContent='Assessment window: last '+_db+' days';
+    const _sa=document.getElementById('sub-alerts');
+    if(_sa)_sa.textContent='Active threats & policy violations · last '+_db+' days';
     const live=document.getElementById('live-dot');
     live.className='live-dot '+(Object.keys(d.errors||{}).length?'err':'ok');
     const bar=document.getElementById('err-bar');
@@ -1649,6 +2143,27 @@ function updateLadder(p){
     if(!el)return;
     el.setAttribute('opacity', b===band ? '1' : '0.35');
     el.style.filter = b===band ? 'url(#bub-glow)' : '';
+  });
+}
+
+function calcGlobalScoreFromCsp(d){
+  const scores=['aws','azure','gcp'].map(csp=>{const r=calcCspScore(d,csp);return r!==null?r:100;});
+  return Math.round(scores.reduce((s,v)=>s+v,0)/scores.length);
+}
+
+function updateCspGauges(d){
+  const arcLen=314;
+  ['aws','azure','gcp'].forEach(csp=>{
+    const raw=calcCspScore(d,csp);
+    const p=raw!==null?raw:100;
+    const color=scoreColor(p);
+    const band=p>=90?'PROACTIVE':p>=50?'ATTENTION':'URGENT';
+    const arc=document.getElementById('csp-arc-'+csp);
+    const scoreEl=document.getElementById('csp-score-'+csp);
+    const bandEl=document.getElementById('csp-band-'+csp);
+    if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',(p/100*arcLen)+' '+arcLen);}
+    if(scoreEl){scoreEl.textContent=p;scoreEl.setAttribute('fill',color);}
+    if(bandEl){bandEl.textContent=band;bandEl.setAttribute('fill',color);}
   });
 }
 
@@ -1746,13 +2261,113 @@ async function loadAdminSettings(){
     if(cur)cur.textContent=fmtSec(sec);
     setFooterInterval(sec);
     cd=sec;
-    const days=s.daysBack||14;
+    const days=s.daysBack||21;
     const dsel=document.getElementById('settings-days-select');
     if(dsel)dsel.value=String(days);
     const dcur=document.getElementById('settings-cur-days');
     if(dcur)dcur.textContent=days+' days';
   }catch(ex){}
 }
+// ── FortiCNAPP link vibrate + cowsay ─────────────────────────────────────────
+const FG_FACTS=[
+  "83% of cloud breaches in 2026 started with a misconfiguration — not a zero-day. Patch your posture first. 🔧",
+  "67% of organizations experienced a cloud security incident in the past 12 months. Is yours next? 🎯",
+  "The average cost of a cloud data breach reached $5.17M in 2026 — up 9% from the prior year. ☕ That's a lot of coffee.",
+  "78% of cloud workloads still run with excessive IAM permissions. Least-privilege is the policy, not the reality. 🔑",
+  "Organizations with CNAPP detected breaches 2.4× faster than those relying on point tools alone. ⚡",
+  "Multi-cloud environments are 3.5× more likely to suffer a breach than single-cloud deployments. Complexity is the enemy. 🌐",
+  "Credential theft was the initial vector in 64% of all cloud incidents. Rotate your keys — yes, all of them. 🔐",
+  "91% of cloud environments had at least one critical misconfiguration at the time of assessment. Yours probably does too. 👀",
+  "Container workloads with unpatched CVEs (CVSS ≥ 9) increased 41% year-over-year. Ship secure or ship slow. 📦",
+  "The average dwell time before cloud breach detection: 197 days. FortiCNAPP cuts that to hours. ⏱️",
+  "Shadow IT introduces ~1,200 ungoverned cloud services per enterprise annually. You can't protect what you can't see. 👻",
+  "Secrets hardcoded in cloud workloads increased 38% in 2026. Your dev team is human. FortiCNAPP is not. 🤖",
+  "73% of cloud-native apps had at least one high-severity vulnerability in their runtime environment. Ship fast, patch faster. 🚀",
+  "Identity-based attacks now account for 71% of cloud lateral movement. Your IAM graph is an attacker's roadmap. 🗺️",
+  "FortiCNAPP unified CSPM, CWPP, and CIEM cut mean-time-to-remediate by 58% vs. siloed tools. One platform. Full coverage. 🛡️"
+];
+const FG_COW_LINES=["  \\\\   ^__^","   \\\\  (oo)\\\\_____","      (__)\\\\     )","          ||----w |","          ||     ||"];
+let _fgEnabled=true,_fgHideTimer=null,_fgLiveFacts=[],_fgAllFacts=FG_FACTS.slice();
+// Fetch latest Fortinet blog headlines and merge with built-in facts
+function _fgLoadLiveFacts(){
+  fetch('/api/fg-facts').then(function(r){return r.json();}).then(function(d){
+    if(d.facts&&d.facts.length){
+      _fgLiveFacts=d.facts;
+      _fgAllFacts=FG_FACTS.concat(_fgLiveFacts);
+    }
+  }).catch(function(){});
+  // Refresh live facts every 30 min
+  setTimeout(_fgLoadLiveFacts,1800000);
+}
+_fgLoadLiveFacts();
+function _fgPickFact(){return _fgAllFacts[Math.floor(Math.random()*_fgAllFacts.length)];}
+function _fgShowCard(){
+  if(!_fgEnabled)return;
+  const card=document.getElementById('fg-inline');
+  const factEl=document.getElementById('fg-inline-fact');
+  const srcEl=document.getElementById('fg-inline-src');
+  if(!card||!factEl)return;
+  const fact=_fgPickFact();
+  factEl.textContent=fact;
+  if(srcEl)srcEl.textContent=fact.startsWith('📰')?'fortinet.com/blog':'fortinet.com/cloud-security-report-2026';
+  card.classList.add('show');
+}
+function _fgHideCard(){
+  const card=document.getElementById('fg-inline');
+  if(card)card.classList.remove('show');
+}
+let _fgFreqSec=30,_fgCycleTimer=null;
+// Arrow blinks independently every 90-150s for 3s
+function _fgArrowCycle(){
+  if(!_fgEnabled){setTimeout(_fgArrowCycle,15000);return;}
+  const arr=document.getElementById('fg-arrow');
+  if(arr)arr.style.display='';
+  setTimeout(function(){
+    if(arr)arr.style.display='none';
+    setTimeout(_fgArrowCycle,90000+Math.floor(Math.random()*60000));
+  },3000);
+}
+setTimeout(_fgArrowCycle,5000);
+// Card cycle — show for 8s, hide, wait _fgFreqSec, repeat
+function _fgRunCycle(){
+  if(_fgCycleTimer)clearTimeout(_fgCycleTimer);
+  if(_fgHideTimer)clearTimeout(_fgHideTimer);
+  if(_fgEnabled)_fgShowCard();
+  _fgHideTimer=setTimeout(function(){
+    _fgHideCard();
+    _fgCycleTimer=setTimeout(_fgRunCycle,_fgFreqSec*1000);
+  },8000);
+}
+// Start immediately on load
+_fgRunCycle();
+function applyFactFreq(val){
+  _fgFreqSec=parseInt(val,10)||30;
+  _fgRunCycle();
+  try{localStorage.setItem('fg-freq',String(_fgFreqSec));}catch(e){}
+  const s=document.getElementById('settings-fact-saved');
+  if(s){s.style.opacity='1';setTimeout(function(){s.style.opacity='0';},2000);}
+}
+function toggleFgVibe(on){
+  _fgEnabled=on;
+  const arr=document.getElementById('fg-arrow');
+  if(!on){if(arr)arr.style.display='none';_fgHideCard();}
+  try{localStorage.setItem('fg-vibe',on?'1':'0');}catch(e){}
+}
+// Hover on FortiCNAPP link also triggers card
+document.addEventListener('mouseover',function(ev){if(ev.target.closest('#fg-link'))_fgShowCard();});
+document.addEventListener('mouseout',function(ev){if(ev.target.closest('#fg-link'))_fgHideCard();});
+(function(){
+  try{
+    const savedVibe=localStorage.getItem('fg-vibe');
+    _fgEnabled=savedVibe===null||savedVibe==='1';
+    const savedFreq=parseInt(localStorage.getItem('fg-freq')||'30',10);
+    _fgFreqSec=savedFreq||30;
+    const cb=document.getElementById('settings-vibe-toggle');
+    if(cb)cb.checked=_fgEnabled;
+    const sel=document.getElementById('settings-fact-freq');
+    if(sel)sel.value=String(_fgFreqSec);
+  }catch(e){}
+})();
 async function applySettings(){
   const sel=document.getElementById('settings-refresh-select');
   if(!sel)return;
@@ -1787,7 +2402,395 @@ setInterval(()=>{
 },1000);
 (function(){var h=location.hash.replace('#','');if(h&&document.getElementById('view-'+h))nav(h);})();
 
+// ── AI Investigation Chat ─────────────────────────────────────────────────────
+document.addEventListener('click',function(ev){
+  const btn=ev.target.closest('.ai-inv-btn');
+  if(btn)openAiChat(btn.dataset.aid,btn.dataset.aname,btn.dataset.asev);
+});
+let _aiThreadId=null,_aiAlertId=null,_aiSending=false,_aiStartPromise=null;
+
+const _AI_PROMPTS={
+  triage:'Triage this alert: is it a true or false positive? State severity, what triggered it, affected resources, and the top 3 immediate actions.'
+};
+
+function openAiChat(alertId,alertName,severity){
+  _aiThreadId=null;_aiAlertId=alertId;_aiSending=false;
+  document.getElementById('ai-chat-title').textContent=alertName||('Alert '+alertId);
+  document.getElementById('ai-chat-sub').textContent='Alert ID: '+alertId+(severity?' · '+severity:'');
+  document.getElementById('ai-chat-body').innerHTML='';
+  document.getElementById('ai-chat-input').value='';
+  document.getElementById('ai-prompt-row').style.display='flex';
+  document.getElementById('ai-btn-triage').disabled=false;
+  document.getElementById('ai-chat-input').style.display='none';
+  document.getElementById('ai-send-btn').style.display='none';
+  document.getElementById('ai-chat-overlay').style.display='flex';
+  // Pre-start the thread immediately while user reads / picks a prompt
+  _aiStartPromise=fetch('/api/ai/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alertId})}).then(r=>r.json());
+}
+
+function _aiStartTimer(el,prefix){
+  let s=0;
+  const t=setInterval(()=>{el.textContent=prefix+' ('+( ++s)+'s)';},1000);
+  return ()=>clearInterval(t);
+}
+
+async function pickAiPrompt(type){
+  if(_aiSending)return;
+  _aiSending=true;
+  document.getElementById('ai-btn-triage').disabled=true;
+  _aiAddMsg('user',type==='triage'?'Triage':'Incident Report');
+  const thinking=_aiAddMsg('thinking','Connecting to FortiCNAPP Agent AI…');
+  const stopTimer=_aiStartTimer(thinking,'Connecting to FortiCNAPP Agent AI…');
+  try{
+    // Await pre-started thread (may already be ready)
+    const ds=await _aiStartPromise;
+    if(ds.error)throw new Error(ds.error);
+    _aiThreadId=ds.threadId;
+    thinking.textContent='Analysing alert… 0s';
+    stopTimer();
+    const stopTimer2=_aiStartTimer(thinking,'Analysing alert…');
+    // Send canned question
+    const rq=await fetch('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:_aiThreadId,alertId:_aiAlertId,message:_AI_PROMPTS[type]})});
+    stopTimer2();
+    const dq=await rq.json();
+    thinking.remove();
+    if(dq.error)_aiAddMsg('assistant','Error: '+dq.error);
+    else _aiAddMsg('assistant',dq.message||'(no response)',dq.responseId);
+    document.getElementById('ai-prompt-row').style.display='none';
+    document.getElementById('ai-chat-input').style.display='flex';
+    document.getElementById('ai-send-btn').style.display='flex';
+    document.getElementById('ai-chat-input').focus();
+  }catch(err){
+    stopTimer();
+    thinking.remove();
+    _aiAddMsg('assistant','Error: '+err.message);
+    document.getElementById('ai-btn-triage').disabled=false;
+  }finally{
+    _aiSending=false;
+  }
+}
+
+function _aiAddMsg(role,content,responseId){
+  const body=document.getElementById('ai-chat-body');
+  const d=document.createElement('div');
+  d.className='ai-msg '+role;
+  d.dataset.role=role;
+  d.textContent=content;
+  body.appendChild(d);
+  if(role==='assistant'&&responseId){
+    const fb=document.createElement('div');
+    fb.className='ai-feedback';
+    fb.innerHTML='<button class="ai-fb-btn" data-rid="'+responseId+'" data-val="positive" title="Helpful">&#x1F44D;</button>'
+      +'<button class="ai-fb-btn" data-rid="'+responseId+'" data-val="negative" title="Not helpful">&#x1F44E;</button>'
+      +'<span class="ai-fb-note">Rate this response</span>';
+    fb.querySelectorAll('.ai-fb-btn').forEach(btn=>btn.addEventListener('click',function(){
+      if(this.closest('.ai-feedback').dataset.voted)return;
+      const rating=this.dataset.val;
+      this.closest('.ai-feedback').dataset.voted='1';
+      this.classList.add(rating==='positive'?'voted':'voted-neg');
+      this.closest('.ai-feedback').querySelector('.ai-fb-note').textContent=rating==='positive'?"Thanks for the feedback!":"Thanks, we'll improve.";
+      fetch('/api/ai/rate',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({threadId:_aiThreadId,responseId:this.dataset.rid,rating})});
+    }));
+    body.appendChild(fb);
+  }
+  body.scrollTop=body.scrollHeight;
+  return d;
+}
+
+async function sendAiMessage(){
+  if(_aiSending||!_aiThreadId)return;
+  const inp=document.getElementById('ai-chat-input');
+  const msg=inp.value.trim();
+  if(!msg)return;
+  inp.value='';
+  _aiSending=true;
+  document.getElementById('ai-send-btn').disabled=true;
+  _aiAddMsg('user',msg);
+  const thinking=_aiAddMsg('thinking','Thinking…');
+  try{
+    const r=await fetch('/api/ai/message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:_aiThreadId,alertId:_aiAlertId,message:msg})});
+    const d=await r.json();
+    thinking.remove();
+    if(d.error)_aiAddMsg('assistant','Error: '+d.error);
+    else _aiAddMsg('assistant',d.message||'(no response)',d.responseId);
+  }catch(err){
+    thinking.remove();
+    _aiAddMsg('assistant','Error: '+err.message);
+  }finally{
+    _aiSending=false;
+    document.getElementById('ai-send-btn').disabled=false;
+    document.getElementById('ai-chat-input').focus();
+  }
+}
+
+function closeAiChat(){
+  document.getElementById('ai-chat-overlay').style.display='none';
+  _aiThreadId=null;_aiAlertId=null;
+}
+
+// ── Machine Details panel ─────────────────────────────────────────────────────
+document.addEventListener('click',function(ev){
+  const mb=ev.target.closest('.mach-inv-btn');
+  if(mb)openMachineDetails(mb.dataset.hostname);
+  const ib=ev.target.closest('.ident-det-btn');
+  if(ib)openIdentityDetails(ib.dataset.pid);
+  const cb=ev.target.closest('.comp-det-btn');
+  if(cb)openComplianceDetails(cb.dataset.pid);
+});
+
+function closeMachPanel(){document.getElementById('mach-overlay').style.display='none';}
+
+async function openCveDetails(cveId){
+  const ov=document.getElementById('mach-overlay');
+  const title=document.getElementById('mach-panel-title');
+  const sub=document.getElementById('mach-panel-sub');
+  const body=document.getElementById('mach-panel-body');
+  title.textContent=cveId;
+  sub.textContent='Querying FortiGuard Threat Intel & NVD…';
+  body.innerHTML='<div class="state"><div class="spinner"></div><span>Fetching CVE details…</span></div>';
+  ov.style.display='flex';
+  try{
+    const r=await fetch('/api/cve?id='+encodeURIComponent(cveId));
+    const d=await r.json();
+    if(d.error){body.innerHTML='<div class="state">Error: '+e(d.error)+'</div>';return;}
+
+    const nvd=d.nvd;
+    const fg=d.fg;
+    const fgUrl=(fg?.url)||('https://www.fortiguard.com/threatintel-search?q='+encodeURIComponent(cveId));
+
+    sub.textContent=nvd?(nvd.cvssSeverity||'')+(nvd.cvssScore?' · CVSS '+nvd.cvssScore:''):'No NVD data';
+
+    const scoreColor=s=>s>=9?'#ef4444':s>=7?'#f97316':s>=4?'#f59e0b':'#22c55e';
+    const mkRow=(k,v)=>v!=null&&v!==''?'<div class="mach-row"><span class="mach-key">'+k+'</span><span class="mach-val">'+e(String(v))+'</span></div>':'';
+
+    const fgSection='<div class="mach-section">'
+      +'<div class="mach-section-title" style="display:flex;align-items:center;justify-content:space-between">'
+        +'<span>FortiGuard Threat Intel</span>'
+        +'<a href="'+e(fgUrl)+'" target="_blank" style="font-size:10px;font-weight:700;color:#DA291C;text-decoration:none">Open ↗</a>'
+      +'</div>'
+      +(fg?.metaDesc?mkRow('Summary',fg.metaDesc):'')
+      +(fg?.cvssHint?mkRow('CVSS (FortiGuard)','~'+fg.cvssHint):'')
+      +(!fg?.metaDesc&&!fg?.cvssHint?'<div class="mach-row"><span class="mach-val" style="color:#94a3b8;font-family:sans-serif">Page is dynamically rendered — click Open to view in FortiGuard.</span></div>':'')
+    +'</div>';
+
+    const nvdSection=nvd?'<div class="mach-section" id="nvd-section">'
+      +'<div class="mach-section-title">NVD Details</div>'
+      +(nvd.cvssScore!=null?'<div class="mach-row"><span class="mach-key">CVSS '+nvd.cvssVersion+' Score</span><span class="mach-val" style="font-weight:800;font-size:14px;color:'+scoreColor(nvd.cvssScore)+'">'+nvd.cvssScore+' · '+(nvd.cvssSeverity||'—')+'</span></div>':'')
+      +(nvd.cvssVector?mkRow('Vector',nvd.cvssVector):'')
+      +(nvd.cwes?.length?mkRow('CWE',nvd.cwes.join(', ')):'')
+      +(nvd.description?'<div class="mach-row" style="align-items:flex-start"><span class="mach-key">Description</span><span class="mach-val" style="font-family:sans-serif;white-space:normal;line-height:1.5">'+e(nvd.description)+'</span></div>':'')
+      +mkRow('Published',nvd.published?nvd.published.slice(0,10):'—')
+      +mkRow('Last Modified',nvd.lastModified?nvd.lastModified.slice(0,10):'—')
+      +(nvd.references?.length?'<div class="mach-row" style="align-items:flex-start"><span class="mach-key">References</span><span class="mach-val" style="font-family:sans-serif;white-space:normal">'+nvd.references.map(u=>'<a href="'+e(u)+'" target="_blank" style="display:block;color:#2563eb;font-size:10px;margin-bottom:2px;overflow-wrap:break-word">'+e(u)+'</a>').join('')+'</span></div>':'')
+    +'</div>':'<div class="mach-section"><div class="mach-section-title">NVD Details</div><div class="mach-row"><span class="mach-val" style="color:#94a3b8;font-family:sans-serif;white-space:normal">'+(d.nvdError||'NVD data unavailable')+' — use the FortiGuard link above.</span></div></div>';
+
+    body.innerHTML=fgSection+nvdSection;
+  }catch(err){
+    body.innerHTML='<div class="state">Error: '+e(err.message)+'</div>';
+    sub.textContent='Lookup failed';
+  }
+}
+
+function openComplianceDetails(policyId){
+  const ov=document.getElementById('mach-overlay');
+  const title=document.getElementById('mach-panel-title');
+  const sub=document.getElementById('mach-panel-sub');
+  const body=document.getElementById('mach-panel-body');
+
+  const policy=(_lastData?.compliance||[]).find(r=>r.alertId===policyId);
+  if(!policy){body.innerHTML='<div class="state">Policy not found in cache.</div>';ov.style.display='flex';return;}
+
+  title.textContent=policy.title||policyId;
+  sub.textContent=policyId+' · '+(policy.violations||0)+' non-compliant resource'+(policy.violations!==1?'s':'');
+  ov.style.display='flex';
+
+  const resources=policy.resources||[];
+  if(!resources.length){body.innerHTML='<div class="state">No resource details cached.</div>';return;}
+
+  // Determine columns from first row — prioritise known key fields
+  const PRIO=['RESOURCE_KEY','RESOURCE_ID','RESOURCE_ARN','URN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','NAME','ACCOUNT_ID','ACCOUNT_ALIAS','REGION','LOCATION','RESOURCE_TYPE','SUBSCRIPTION_ID'];
+  const allKeys=[...new Set(resources.flatMap(r=>Object.keys(r)))];
+  const prioKeys=PRIO.filter(k=>allKeys.includes(k));
+  const extraKeys=allKeys.filter(k=>!PRIO.includes(k)).slice(0,6);
+  const cols=[...prioKeys,...extraKeys].slice(0,8);
+
+  const headerHtml=cols.map(k=>'<th style="font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#64748b;padding:6px 10px;border-bottom:1px solid #e2e8f0;white-space:nowrap">'+e(k.replace(/_/g,' '))+'</th>').join('');
+  const rowsHtml=resources.map(r=>'<tr style="border-bottom:1px solid #f1f5f9">'
+    +cols.map(k=>'<td style="font-size:11px;padding:5px 10px;font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+e(String(r[k]||''))+'">'+e(String(r[k]??'—'))+'</td>').join('')
+  +'</tr>').join('');
+
+  body.innerHTML='<div style="width:100%;overflow-x:auto;overflow-y:visible"><table style="min-width:100%;border-collapse:collapse"><thead><tr>'+headerHtml+'</tr></thead><tbody>'+rowsHtml+'</tbody></table></div>'
+    +'<div style="padding:8px 12px;font-size:10px;color:#94a3b8">'+resources.length+' resource'+(resources.length!==1?'s':'')+' shown (capped at 100) · '+e(policy.description||'')+'</div>';
+}
+
+async function openIdentityDetails(principalId){
+  const ov=document.getElementById('mach-overlay');
+  const title=document.getElementById('mach-panel-title');
+  const sub=document.getElementById('mach-panel-sub');
+  const body=document.getElementById('mach-panel-body');
+  title.textContent=principalId.split('/').pop()||principalId;
+  sub.textContent='Querying LW_CE_IDENTITIES…';
+  body.innerHTML='<div class="state"><div class="spinner"></div><span>Loading identity details…</span></div>';
+  ov.style.display='flex';
+  try{
+    const r=await fetch('/api/identity?principalId='+encodeURIComponent(principalId));
+    const d=await r.json();
+    if(d.error){body.innerHTML='<div class="state">Error: '+e(d.error)+'</div>';sub.textContent='Query failed';return;}
+    const rows=d.rows||[];
+    if(!rows.length){body.innerHTML='<div class="state">No identity record found.</div>';sub.textContent='No data';return;}
+    const m=rows[0];
+    sub.textContent=(m.PROVIDER_TYPE||'')+(m.NAME&&m.NAME!==principalId?' · '+m.NAME:'');
+
+    const metrics=(typeof m.METRICS==='object'&&m.METRICS)?m.METRICS:{};
+    const entCounts=(typeof m.ENTITLEMENT_COUNTS==='object'&&m.ENTITLEMENT_COUNTS)?m.ENTITLEMENT_COUNTS:{};
+    const accessKeys=Array.isArray(m.ACCESS_KEYS)?m.ACCESS_KEYS:(typeof m.ACCESS_KEYS==='object'&&m.ACCESS_KEYS)?[m.ACCESS_KEYS]:[];
+
+    const riskColor=s=>s>='high'||s==='critical'?'#ef4444':s==='medium'?'#f59e0b':'#22c55e';
+    const riskScore=Math.round((metrics.risk_score||0)*100);
+    const riskSev=(metrics.risk_severity||'—').toUpperCase();
+    const riskFlags=(metrics.risks||[]);
+
+    const mkRow=(k,v)=>v!=null&&v!==''?'<div class="mach-row"><span class="mach-key">'+k+'</span><span class="mach-val">'+e(String(v))+'</span></div>':'';
+
+    const identSection='<div class="mach-section">'
+      +'<div class="mach-section-title">Identity</div>'
+      +mkRow('Principal ID',m.PRINCIPAL_ID)
+      +mkRow('Name',m.NAME)
+      +mkRow('Provider',m.PROVIDER_TYPE)
+      +mkRow('Created',m.CREATED_TIME?fmtDate(m.CREATED_TIME):'—')
+      +mkRow('Last Used',m.LAST_USED_TIME?fmtDate(m.LAST_USED_TIME):'—')
+    +'</div>';
+
+    const riskSection='<div class="mach-section">'
+      +'<div class="mach-section-title">Risk</div>'
+      +'<div class="mach-row"><span class="mach-key">Risk Score</span><span class="mach-val" style="font-weight:800;color:'+riskColor(riskSev.toLowerCase())+'">'+riskScore+' / 100</span></div>'
+      +'<div class="mach-row"><span class="mach-key">Severity</span><span class="mach-val" style="font-weight:700;color:'+riskColor(riskSev.toLowerCase())+'">'+riskSev+'</span></div>'
+      +(riskFlags.length?'<div class="mach-row"><span class="mach-key">Risk Flags</span><span class="mach-val">'+riskFlags.map(f=>'<span style="display:inline-block;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:4px;padding:1px 6px;font-size:10px;margin:1px">'+e(f)+'</span>').join(' ')+'</span></div>':'')
+      +'<div class="mach-row"><span class="mach-key">MFA</span><span class="mach-val" style="color:#ef4444;font-weight:700">NO MFA</span></div>'
+    +'</div>';
+
+    const entSection=Object.keys(entCounts).length?'<div class="mach-section">'
+      +'<div class="mach-section-title">Entitlements</div>'
+      +Object.entries(entCounts).map(([k,v])=>mkRow(k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()),v)).join('')
+    +'</div>':'';
+
+    const keySection=accessKeys.length?'<div class="mach-section">'
+      +'<div class="mach-section-title">Access Keys ('+accessKeys.length+')</div>'
+      +accessKeys.map((k,i)=>{
+        const kobj=(typeof k==='object'&&k)?k:{};
+        return'<div style="padding:6px 12px;border-bottom:1px solid #f1f5f9">'
+          +'<div style="font-size:10px;font-weight:700;color:#64748b;margin-bottom:3px">Key '+(i+1)+(kobj.access_key_id?' · <span style="font-family:monospace;color:#0f172a">'+e(kobj.access_key_id)+'</span>':'')+'</div>'
+          +Object.entries(kobj).filter(([k2])=>k2!=='access_key_id').map(([k2,v2])=>mkRow(k2.replace(/_/g,' '),v2)).join('')
+        +'</div>';
+      }).join('')
+    +'</div>':'';
+
+    body.innerHTML=identSection+riskSection+entSection+keySection;
+  }catch(err){
+    body.innerHTML='<div class="state">Error: '+e(err.message)+'</div>';
+    sub.textContent='Query failed';
+  }
+}
+
+async function openMachineDetails(hostname){
+  const ov=document.getElementById('mach-overlay');
+  const title=document.getElementById('mach-panel-title');
+  const sub=document.getElementById('mach-panel-sub');
+  const body=document.getElementById('mach-panel-body');
+  title.textContent=hostname;
+  sub.textContent='Querying LW_HE_MACHINES…';
+  body.innerHTML='<div class="state"><div class="spinner"></div><span>Loading host metadata…</span></div>';
+  ov.style.display='flex';
+  try{
+    const r=await fetch('/api/machine?hostname='+encodeURIComponent(hostname));
+    const d=await r.json();
+    if(d.error){body.innerHTML='<div class="state">Error: '+e(d.error)+'</div>';sub.textContent='Query failed';return;}
+    const rows=d.rows||[];
+    if(!rows.length){body.innerHTML='<div class="state">No machine record found for this host.</div>';sub.textContent='No data';return;}
+    const m=rows[0];
+    sub.textContent='MID: '+(m.MID||'—');
+    const tags=(typeof m.TAGS==='object'&&m.TAGS)?m.TAGS:{};
+
+    // Key tag fields to surface
+    const TAG_KEYS=[
+      ['instanceId','Instance ID'],['instanceType','Instance Type'],
+      ['aws:instance-id','Instance ID'],['aws:instance-type','Instance Type'],
+      ['VmProvider','Cloud Provider'],['zone','Zone / AZ'],
+      ['Hostname','Hostname (tag)'],['Account','Account'],
+      ['aws:account','AWS Account'],['Region','Region'],['LwTokenShort','Agent Token'],
+      ['Name','Name'],['Environment','Environment'],['Owner','Owner'],
+      ['Project','Project'],['Team','Team'],
+    ];
+    const seen=new Set();
+    const tagRows=TAG_KEYS.map(([k,label])=>{
+      const val=tags[k];
+      if(!val||seen.has(label))return'';
+      seen.add(label);
+      return'<div class="mach-row"><span class="mach-key">'+label+'</span><span class="mach-val">'+e(String(val))+'</span></div>';
+    }).join('');
+
+    // Extra tags not in the key list
+    const extraTags=Object.entries(tags).filter(([k])=>!TAG_KEYS.some(([tk])=>tk===k)&&!seen.has(k)).slice(0,20)
+      .map(([k,v])=>'<div class="mach-row"><span class="mach-key">'+e(k)+'</span><span class="mach-val">'+e(String(v||''))+'</span></div>').join('');
+
+    body.innerHTML=
+      '<div class="mach-section">'
+        +'<div class="mach-section-title">Host</div>'
+        +'<div class="mach-row"><span class="mach-key">Hostname</span><span class="mach-val">'+e(m.HOSTNAME||'—')+'</span></div>'
+        +'<div class="mach-row"><span class="mach-key">Machine ID</span><span class="mach-val">'+e(m.MID||'—')+'</span></div>'
+      +'</div>'
+      +(tagRows||extraTags?
+        '<div class="mach-section">'
+          +'<div class="mach-section-title">Cloud &amp; Instance Metadata</div>'
+          +(tagRows||'')+(extraTags||'')
+        +'</div>':
+        '<div class="mach-section"><div class="mach-row"><span class="mach-key">Tags</span><span class="mach-val" style="color:#94a3b8">No tag data available</span></div></div>'
+      )
+      +(rows.length>1?'<div style="font-size:10px;color:#94a3b8;padding:4px 8px">'+rows.length+' records found — showing most recent</div>':'');
+  }catch(err){
+    body.innerHTML='<div class="state">Error: '+e(err.message)+'</div>';
+    sub.textContent='Query failed';
+  }
+}
+
 </script>
+
+<div id="ai-chat-overlay" class="ai-overlay" style="display:none" onclick="if(event.target===this)closeAiChat()">
+  <div class="ai-panel">
+    <div class="ai-hdr">
+      <div class="ai-hdr-left">
+        <div class="ai-hdr-tag">FortiCNAPP Agent AI</div>
+        <div id="ai-chat-title" class="ai-hdr-title"></div>
+        <div id="ai-chat-sub" class="ai-hdr-sub"></div>
+      </div>
+      <button class="ai-close" onclick="closeAiChat()" title="Close">✕</button>
+    </div>
+    <div id="ai-chat-body" class="ai-body"></div>
+    <div class="ai-footer">
+      <div id="ai-prompt-row" class="ai-prompt-row">
+        <button class="ai-prompt-btn" id="ai-btn-triage" onclick="pickAiPrompt('triage')">&#x1F50D; Triage this Alert</button>
+      </div>
+      <input id="ai-chat-input" class="ai-input" style="display:none" placeholder="Ask a follow-up question…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendAiMessage()}" />
+      <button id="ai-send-btn" class="ai-send" style="display:none" onclick="sendAiMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- Machine Details panel -->
+<div id="mach-overlay" class="mach-overlay" style="display:none" onclick="if(event.target===this)closeMachPanel()">
+  <div class="mach-panel">
+    <div class="mach-hdr">
+      <div class="mach-hdr-icon">&#x1F5A5;&#xFE0F;</div>
+      <div style="flex:1;min-width:0">
+        <div id="mach-panel-title" class="mach-title">—</div>
+        <div id="mach-panel-sub" class="mach-sub">—</div>
+      </div>
+      <button onclick="closeMachPanel()" style="width:28px;height:28px;border-radius:7px;border:none;background:#f1f5f9;font-size:16px;color:#64748b;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center">✕</button>
+    </div>
+    <div id="mach-panel-body" class="mach-body"></div>
+  </div>
+</div>
 
 </body>
 </html>`;
@@ -1854,7 +2857,7 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
 <div class="sec-title">Recommended Next Steps</div>
 <div class="steps" id="steps"></div>
 <div class="meta">
-  <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment<br>
+  <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment empowered by FortiCNAPP<br>
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
@@ -2916,7 +3919,7 @@ function buildReportHtml(data, meta) {
   '<div class="kpi-card high"><div class="kpi-number">'+vulns.length+'</div><div class="kpi-label">Critical CVEs (Risk ≥ 9)</div></div>' +
   '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
   '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
-  (secrets.length ? '<div class="kpi-card info"><div class="kpi-number">'+secrets.length+'</div><div class="kpi-label">SSH Keys Detected</div></div>' : '') +
+  (secrets.length ? '<div class="kpi-card info"><div class="kpi-number">'+secrets.length+'</div><div class="kpi-label">Moderate to High Permissive Access SSH Keys</div></div>' : '') +
   '</div>\n' +
   '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
   '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
@@ -2955,6 +3958,7 @@ function buildReportHtml(data, meta) {
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
+const NO_CACHE = { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' };
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
@@ -3017,13 +4021,13 @@ function requestHandler(req, res) {
           }
         } else if (payload.daysBack !== undefined) {
           const d = payload.daysBack;
-          if (d === 7 || d === 14) {
+          if (d === 7 || d === 14 || d === 21 || d === 30) {
             dynamicDaysBack = d;
             res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
             res.end(JSON.stringify({ ok: true, daysBack: dynamicDaysBack }));
           } else {
             res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
-            res.end(JSON.stringify({ error: 'daysBack must be 7 or 14' }));
+            res.end(JSON.stringify({ error: 'daysBack must be 7, 14, 21, or 30' }));
           }
         } else {
           res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
@@ -3036,24 +4040,190 @@ function requestHandler(req, res) {
     });
     return;
   }
-  if (req.url === '/api/data') {
+  if (req.url === '/api/ai/start' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const alertId = payload.alertId;
+        const lwBody = {
+          conversationContext: {
+            metaInstructions: `User is asking about this alert? {alertId:${alertId}}`,
+            entities: [],
+            entityPayloads: [],
+          },
+          providerConfig: { provider: 'bedrock', modelConfig: { type: 'claude-v5' } },
+        };
+        const { status, resp } = await postRaw('AiAssistants/start', lwBody, 120000);
+        if (status !== 200 && status !== 201) {
+          res.writeHead(status, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: `AI Assistant returned HTTP ${status}: ${JSON.stringify(resp).slice(0,200)}` }));
+          return;
+        }
+        const threadId = resp?.data?.threadId || null;
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ threadId }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/ai/message' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (!payload.threadId) throw new Error('threadId required');
+        const lwBody = {
+          userQuestion: payload.message,
+          conversationContext: {
+            metaInstructions: `User is asking about this alert? {alertId:${payload.alertId}}`,
+            entities: [],
+            entityPayloads: [],
+          },
+          providerConfig: { provider: 'bedrock', modelConfig: { type: 'claude-v5' } },
+          history: [],
+        };
+        const { status, resp } = await putRaw(`AiAssistants/${payload.threadId}`, lwBody, 120000);
+        if (status !== 200 && status !== 201) {
+          res.writeHead(status, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: `AI response returned HTTP ${status}: ${JSON.stringify(resp).slice(0,200)}` }));
+          return;
+        }
+        const answer = resp?.data?.response?.assistantResponse || '';
+        const responseId = resp?.data?.response?.responseId || null;
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ message: answer, responseId }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (req.url.startsWith('/api/cve') && req.method === 'GET') {
+    (async () => {
+      try {
+        const id = decodeURIComponent((req.url.split('id=')[1]||'').split('&')[0]);
+        if (!id) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'id required' })); return; }
+        const data = await fetchCveDetails(id);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url.startsWith('/api/identity') && req.method === 'GET') {
+    (async () => {
+      try {
+        const pid = decodeURIComponent((req.url.split('principalId=')[1]||'').split('&')[0]).replace(/'/g, "\\'");
+        if (!pid) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'principalId required' })); return; }
+        const tf = timeFilter();
+        const queryText = `{source { LW_CE_IDENTITIES } filter { PRINCIPAL_ID = '${pid}' } return distinct {PRINCIPAL_ID, PROVIDER_TYPE, NAME, LAST_USED_TIME, CREATED_TIME, METRICS, ACCESS_KEYS, ENTITLEMENT_COUNTS}}`;
+        const rows = await post('Queries/execute', { query: { queryText }, arguments: [
+          { name: 'StartTimeRange', value: tf.startTime },
+          { name: 'EndTimeRange',   value: tf.endTime   },
+        ]});
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ rows: rows || [] }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url.startsWith('/api/machine') && req.method === 'GET') {
+    (async () => {
+      try {
+        const hostname = decodeURIComponent((req.url.split('hostname=')[1]||'').split('&')[0]).replace(/'/g,'');
+        if (!hostname) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'hostname required' })); return; }
+        const tf = timeFilter();
+        const queryText = `{source { LW_HE_MACHINES } filter { HOSTNAME = '${hostname}' } return {MID, HOSTNAME, TAGS}}`;
+        const rows = await post('Queries/execute', { query: { queryText }, arguments: [
+          { name: 'StartTimeRange', value: tf.startTime },
+          { name: 'EndTimeRange',   value: tf.endTime   },
+        ]});
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ rows: rows || [] }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url === '/api/ai/rate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (!payload.threadId || !payload.responseId || !payload.rating) throw new Error('threadId, responseId and rating required');
+        const lwBody = { responseId: payload.responseId, rating: payload.rating, ...(payload.feedback ? { feedback: payload.feedback } : {}) };
+        const { status } = await putRaw(`AiAssistants/${payload.threadId}/rate`, lwBody, 30000);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ ok: status === 200 || status === 204 }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (req.url === '/api/fg-facts') {
+    (async () => {
+      const blogFacts = [];
+      try {
+        const { status, raw } = await request('GET', 'www.fortinet.com', '/blog/cloud-security',
+          { 'Accept': 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; FortiCNAPP-RCA/1.0)' }, null, 12000);
+        if (status === 200 && raw) {
+          // Extract article titles from heading links
+          const re = /<h[23][^>]*>[\s\S]{0,60}<a[^>]*>([^<]{20,180})<\/a>/gi;
+          let m;
+          while ((m = re.exec(raw)) !== null) {
+            const t = m[1].trim().replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ');
+            if (t && !blogFacts.find(f => f.includes(t.slice(0,30)))) {
+              blogFacts.push('📰 Fortinet Blog: ' + t);
+            }
+            if (blogFacts.length >= 8) break;
+          }
+        }
+      } catch(e) { /* network unavailable — return empty */ }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...CORS });
+      res.end(JSON.stringify({ facts: blogFacts }));
+    })();
+  } else if (req.url === '/api/data') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', ...CORS });
     res.end(JSON.stringify(cache));
   } else if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain', ...CORS });
     res.end('OK');
   } else if (req.url === '/mobile') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(MOBILE_HTML);
   } else if (req.url === '/desktop') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
   } else if (req.url.startsWith('/report')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
     const author   = (qs.get('author')   || 'Fortinet').trim();
     if (!cache.fetchedAt) {
-      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
@@ -3078,13 +4248,13 @@ function requestHandler(req, res) {
         else console.log('[report] saved pdf to', pdfPath);
       });
     });
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
   } else if (isMobile && req.url === '/') {
     res.writeHead(302, { Location: '/mobile', ...CORS });
     res.end();
   } else {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
   }
 }
@@ -3093,7 +4263,7 @@ function startApp(listeningPort, protocol) {
   const mode = MOCK_FILE ? 'MOCK' : 'LIVE';
   const url  = `${protocol}://localhost:${listeningPort}`;
   console.log('\n┌──────────────────────────────────────────────────┐');
-  console.log(`│  Fortinet Rapid Cloud Assessment — ${mode.padEnd(11)}│`);
+  console.log(`│  Fortinet Rapid Cloud Assessment empowered by FortiCNAPP — ${mode.padEnd(11)}│`);
   console.log('├──────────────────────────────────────────────────┤');
   console.log(`│  Account  : ${LW_ACCOUNT.padEnd(37)}│`);
   if (MOCK_FILE) {

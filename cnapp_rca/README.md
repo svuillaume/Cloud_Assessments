@@ -7,15 +7,17 @@ A live security dashboard and Customer-ready Cloud Rapid Assessment Report power
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Quick Start](#quick-start)
-4. [Step-by-Step Setup](#step-by-step-setup)
-5. [Production Deployment with HTTPS](#production-deployment-with-https)
-6. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
-7. [Updating the Dashboard](#updating-the-dashboard)
-8. [Collecting Visitor Contacts](#collecting-visitor-contacts)
-9. [Troubleshooting](#troubleshooting)
-10. [Additional Resources](#additional-resources)
+2. [How the Score Works](#how-the-score-works)
+3. [Assessment Windows](#assessment-windows)
+4. [Prerequisites](#prerequisites)
+5. [Quick Start](#quick-start)
+6. [Step-by-Step Setup](#step-by-step-setup)
+7. [Production Deployment with HTTPS](#production-deployment-with-https)
+8. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+9. [Updating the Dashboard](#updating-the-dashboard)
+10. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+11. [Troubleshooting](#troubleshooting)
+12. [Additional Resources](#additional-resources)
 
 ---
 
@@ -29,6 +31,71 @@ This project provides two tools that work together to deliver cloud security ins
 | PDF Report | (generated from dashboard) | Customer-ready report exported from the live data |
 
 The dashboard is a single Node.js file with no npm dependencies. You can run it directly with Node.js or inside a Docker container.
+
+---
+
+## How the Score Works
+
+Every cloud environment gets a single score from **0 to 100 — higher is better.**
+
+### The short version (non-technical)
+
+Think of the score as a health check result for your cloud security. 100 means nothing dangerous was found. Lower scores mean open issues need attention. The score is designed to be honest but not alarmist — one critical finding in a large, otherwise-clean environment won't collapse your score to zero.
+
+**Score bands:**
+
+| Score | What it means | Action |
+|:-----:|--------------|--------|
+| 90 – 100 | **Proactive Security** | Strong posture. Keep monitoring. |
+| 50 – 89 | **Some Attention Needed** | Real gaps exist. Prioritise Critical and High findings. |
+| 0 – 49 | **URGENT** | High risk. Immediate action required. |
+
+### How the number is built
+
+**Step 1 — One score per cloud (AWS, Azure, GCP)**
+
+For each cloud provider, findings are sorted into four severity buckets (Critical, High, Medium, Low). Each bucket can subtract a maximum number of points from 100:
+
+| Severity | Max deduction | Example findings |
+|----------|:------------:|-----------------|
+| Critical | 40 pts | Active threat alert, authentication bypass, root-level exposure |
+| High | 30 pts | Exploitable misconfiguration, privileged identity at risk |
+| Medium | 20 pts | Policy drift, over-permissioned role |
+| Low | 10 pts | Best-practice deviation, minor hygiene issue |
+
+The penalty grows **logarithmically** — meaning the first finding in a bucket hurts more than the tenth. A flood of low-priority notes will not make your score collapse if your critical issues are clean.
+
+```
+CSP Score = 100 − (40 × log₁₁(1+Critical) + 30 × log₁₁(1+High) + 20 × log₁₁(1+Medium) + 10 × log₁₁(1+Low))
+```
+
+**Step 2 — Global score**
+
+The main gauge shows the straight average of the three cloud scores:
+
+```
+Global Score = (AWS Score + Azure Score + GCP Score) / 3
+```
+
+A cloud with zero findings contributes 100 to the average. If your environment is AWS-only, Azure and GCP both score 100 and the global score equals your AWS score.
+
+> For the full formula, worked examples, and an explanation of why this approach was chosen over simple averaging, see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
+
+---
+
+## Assessment Windows
+
+The dashboard queries FortiCNAPP over different look-back windows depending on what the API supports.
+
+| Finding Type | Severities Fetched | Look-back Window | Notes |
+|---|---|---|---|
+| High-Fidelity Alerts | Critical, High | **21 days** | Anomaly + Composite categories only; status Open or In Progress; chunked into 7-day API calls |
+| Compliance | Critical, High | **21 days** | Sequential fetch to avoid rate-limit collisions |
+| Identities | All | **21 days** | |
+| Secrets | All | **21 days** | |
+| CVEs / Vulnerabilities | Critical (riskScore ≥ 9) | **7 days** | Hard cap imposed by the Lacework API — cannot be extended |
+
+The default window is **21 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs always remain at 7 days regardless of the selected window.
 
 ---
 
@@ -281,7 +348,7 @@ If the dashboard cannot connect to FortiCNAPP, check the following:
 
 ## Additional Resources
 
-- See `SCORING_GUIDE.md` for the full scoring formula and a worked example
+- See [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full scoring formula, plain-English explanation, and a worked example
 - FortiCNAPP documentation: https://docs.fortinet.com
 - Let's Encrypt: https://letsencrypt.org
 - DuckDNS (free DNS): https://www.duckdns.org
