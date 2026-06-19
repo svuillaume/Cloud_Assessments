@@ -2746,15 +2746,20 @@ function renderAssetRisk(d){
       });
       svg+='</g>';
 
-      // Attacker node — same style as global Exploit Simulation Layer
-      svg+='<circle cx="60" cy="'+cy+'" r="40" fill="#ef4444" filter="url(#'+sid+')"/>';
-      svg+='<line x1="60" y1="'+(cy-18)+'" x2="60" y2="'+(cy-10)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<ellipse cx="60" cy="'+(cy-6)+'" rx="8" ry="5" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+5)+'" rx="10" ry="7" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+15)+'" rx="7" ry="5" fill="white"/>';
-      svg+='<line x1="50" y1="'+(cy+8)+'" x2="44" y2="'+(cy+18)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="70" y1="'+(cy+8)+'" x2="76" y2="'+(cy+18)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<text x="60" y="'+(cy+38)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+      // Attacker node — exact icon from global Exploit Simulation Layer
+      svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
+      svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+4)+'" rx="12" ry="9" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+17)+'" rx="9" ry="7" fill="white"/>';
+      svg+='<line x1="49" y1="'+(cy-4)+'" x2="40" y2="'+(cy-9)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="49" y1="'+(cy+4)+'" x2="38" y2="'+(cy+4)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="49" y1="'+(cy+12)+'" x2="40" y2="'+(cy+17)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="71" y1="'+(cy-4)+'" x2="80" y2="'+(cy-9)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="71" y1="'+(cy+4)+'" x2="82" y2="'+(cy+4)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="71" y1="'+(cy+12)+'" x2="80" y2="'+(cy+17)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="55" y1="'+(cy-27)+'" x2="51" y2="'+(cy-35)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="65" y1="'+(cy-27)+'" x2="69" y2="'+(cy-35)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<text x="60" y="'+(cy+48)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
 
       // Host node — r=40 matching global, text sized like global node labels
       var hn=a.name.length>16?a.name.substring(0,15)+'…':a.name;
