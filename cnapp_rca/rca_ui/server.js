@@ -1540,7 +1540,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <button class="lab-tab" id="labtab-gcp" data-csp="gcp" onclick="switchLabTab('gcp')">GCP</button>
   </div>
 
-  <!-- Global (all-cloud) diagram — attack path graph -->
+  <!-- Global — Consequence vs Likelihood risk matrix -->
   <div id="lab-global-panel">
   <div class="jmap-outer">
   <svg class="jmap-svg" viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet">
@@ -1550,102 +1550,131 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       </filter>
     </defs>
 
-    <!-- Passive resource nodes -->
-    <circle cx="155" cy="130" r="14" fill="#e2e8f0"/>
-    <circle cx="158" cy="258" r="13" fill="#e2e8f0"/>
-    <circle cx="340" cy="192" r="16" fill="#e2e8f0"/>
-    <circle cx="510" cy="190" r="14" fill="#e2e8f0"/>
-    <circle cx="700" cy="165" r="15" fill="#e2e8f0"/>
-    <circle cx="700" cy="230" r="13" fill="#e2e8f0"/>
-    <circle cx="530" cy="72" r="12" fill="#e2e8f0"/>
-    <circle cx="530" cy="312" r="12" fill="#e2e8f0"/>
+    <!-- Chart title -->
+    <text x="502" y="22" text-anchor="middle" font-size="11" font-weight="900" fill="#1e293b" letter-spacing="3" font-family="-apple-system,sans-serif">CONSEQUENCE  VS  LIKELIHOOD</text>
+    <!-- Rotated Y-axis label -->
+    <text transform="rotate(-90)" x="-188" y="14" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="2" font-family="-apple-system,sans-serif">Consequence</text>
 
-    <!-- Static background tracks -->
-    <g stroke="#dde3ed" stroke-width="2.5" stroke-linecap="round" fill="none">
-      <line x1="98" y1="190" x2="190" y2="190"/>
-      <line x1="266" y1="174" x2="392" y2="116"/>
-      <line x1="266" y1="208" x2="392" y2="272"/>
-      <line x1="470" y1="99" x2="582" y2="97"/>
-      <line x1="470" y1="291" x2="582" y2="294"/>
-      <line x1="656" y1="112" x2="775" y2="168"/>
-      <line x1="655" y1="276" x2="775" y2="213"/>
+    <!-- Risk matrix background — green base, overlays for yellow/orange/red zones -->
+    <!-- Chart area: x=115..890 (775px wide), y=40..335 (295px tall), 5×5 cells 155×59 -->
+    <rect x="115" y="40" width="775" height="295" fill="#bbf7d0" rx="3" opacity="0.75"/>
+    <!-- Row 0 Catastrophic: yellow@col0, orange@col1, red@col2-4 -->
+    <rect x="115" y="40" width="155" height="59" fill="#fef08a" opacity="0.9"/>
+    <rect x="270" y="40" width="155" height="59" fill="#fed7aa" opacity="0.9"/>
+    <rect x="425" y="40" width="465" height="59" fill="#fecaca" opacity="0.9"/>
+    <!-- Row 1 Major: yellow@col1, orange@col2-3, red@col4 -->
+    <rect x="270" y="99" width="155" height="59" fill="#fef08a" opacity="0.9"/>
+    <rect x="425" y="99" width="310" height="59" fill="#fed7aa" opacity="0.9"/>
+    <rect x="735" y="99" width="155" height="59" fill="#fecaca" opacity="0.9"/>
+    <!-- Row 2 Moderate: yellow@col2, orange@col3-4 -->
+    <rect x="425" y="158" width="155" height="59" fill="#fef08a" opacity="0.9"/>
+    <rect x="580" y="158" width="310" height="59" fill="#fed7aa" opacity="0.9"/>
+    <!-- Row 3 Minor: yellow@col3-4 -->
+    <rect x="580" y="217" width="310" height="59" fill="#fef08a" opacity="0.9"/>
+    <!-- Row 4 Insignificant: yellow@col4 -->
+    <rect x="735" y="276" width="155" height="59" fill="#fef08a" opacity="0.9"/>
+
+    <!-- Grid lines -->
+    <g stroke="#94a3b8" stroke-width="0.6" fill="none" opacity="0.5">
+      <line x1="115" y1="40"  x2="115" y2="335"/>
+      <line x1="270" y1="40"  x2="270" y2="335"/>
+      <line x1="425" y1="40"  x2="425" y2="335"/>
+      <line x1="580" y1="40"  x2="580" y2="335"/>
+      <line x1="735" y1="40"  x2="735" y2="335"/>
+      <line x1="890" y1="40"  x2="890" y2="335"/>
+      <line x1="115" y1="40"  x2="890" y2="40"/>
+      <line x1="115" y1="99"  x2="890" y2="99"/>
+      <line x1="115" y1="158" x2="890" y2="158"/>
+      <line x1="115" y1="217" x2="890" y2="217"/>
+      <line x1="115" y1="276" x2="890" y2="276"/>
+      <line x1="115" y1="335" x2="890" y2="335"/>
     </g>
-    <!-- Animated dot flow — stroke updated by JS via jsnake -->
-    <g id="jsnake" stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">
-      <line x1="98" y1="190" x2="190" y2="190" style="animation:path-flow 1.1s linear infinite 0s"/>
-      <line x1="266" y1="174" x2="392" y2="116" style="animation:path-flow 1.1s linear infinite .12s"/>
-      <line x1="266" y1="208" x2="392" y2="272" style="animation:path-flow 1.1s linear infinite .22s"/>
-      <line x1="470" y1="99" x2="582" y2="97" style="animation:path-flow 1.1s linear infinite .08s"/>
-      <line x1="470" y1="291" x2="582" y2="294" style="animation:path-flow 1.1s linear infinite .2s"/>
-      <line x1="656" y1="112" x2="775" y2="168" style="animation:path-flow 1.1s linear infinite .05s"/>
-      <line x1="655" y1="276" x2="775" y2="213" style="animation:path-flow 1.1s linear infinite .28s"/>
+
+    <!-- Y-axis labels (consequence rows, top=Catastrophic) -->
+    <text x="112" y="73"  text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">5 (Catastrophic)</text>
+    <text x="112" y="132" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">4 (Major)</text>
+    <text x="112" y="191" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">3 (Moderate)</text>
+    <text x="112" y="250" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">2 (Minor)</text>
+    <text x="112" y="309" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">1 (Insignificant)</text>
+
+    <!-- X-axis labels (likelihood columns) -->
+    <text x="192" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Rare</text>
+    <text x="347" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Unlikely</text>
+    <text x="502" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Possible</text>
+    <text x="657" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Probable</text>
+    <text x="812" y="350" text-anchor="middle" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">Almost Certain</text>
+    <text x="502" y="370" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="2" font-family="-apple-system,sans-serif">Likelihood</text>
+
+    <!-- Attacker entry node (unchanged icon, left of chart) -->
+    <circle cx="60" cy="188" r="38" fill="#ef4444" filter="url(#jnd-shadow)"/>
+    <ellipse cx="60" cy="180" rx="10" ry="7" fill="white"/>
+    <ellipse cx="60" cy="192" rx="12" ry="9" fill="white"/>
+    <ellipse cx="60" cy="205" rx="9"  ry="7" fill="white"/>
+    <line x1="49" y1="184" x2="40" y2="179" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="49" y1="192" x2="38" y2="192" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="49" y1="200" x2="40" y2="205" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="184" x2="80" y2="179" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="192" x2="82" y2="192" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="71" y1="200" x2="80" y2="205" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="55" y1="161" x2="51" y2="153" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="65" y1="161" x2="69" y2="153" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <text x="60" y="236" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
+
+    <!-- Animated threat flows: attacker → risk matrix (stroke updated by JS via jsnake) -->
+    <g id="jsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="5 15">
+      <line x1="98" y1="188" x2="115" y2="70"  style="animation:path-flow 1.1s linear infinite 0s"/>
+      <line x1="98" y1="188" x2="115" y2="129" style="animation:path-flow 1.1s linear infinite .18s"/>
     </g>
 
-    <!-- Attacker entry node -->
-    <circle cx="60" cy="190" r="38" fill="#ef4444" filter="url(#jnd-shadow)"/>
-    <ellipse cx="60" cy="182" rx="10" ry="7" fill="white"/>
-    <ellipse cx="60" cy="194" rx="12" ry="9" fill="white"/>
-    <ellipse cx="60" cy="207" rx="9" ry="7" fill="white"/>
-    <line x1="49" y1="186" x2="40" y2="181" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="49" y1="194" x2="38" y2="194" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="49" y1="202" x2="40" y2="207" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="186" x2="80" y2="181" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="194" x2="82" y2="194" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="202" x2="80" y2="207" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="55" y1="163" x2="51" y2="155" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="65" y1="163" x2="69" y2="155" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <text x="60" y="238" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
+    <!-- Node 1 — Identities: Possible × Catastrophic (col2=502, row0=70) -->
+    <circle id="jnd1" cx="502" cy="70" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+    <text x="502" y="63"  text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+    <text id="jnd1-cnt" x="502" y="84"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="530" cy="42" r="11" fill="#FCD34D"/>
+    <text x="530" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 3 — Internet Exposed Hosts (1st hop from Attacker) -->
-    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav(&quot;vulns&quot;)"/>
-    <text x="230" y="181" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
-    <text x="230" y="194" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
-    <text id="jnd3-cnt" x="230" y="213" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="258" cy="162" r="11" fill="#FCD34D"/>
-    <text x="258" y="167" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 2 — Crit. Alerts: Almost Certain × Catastrophic (col4=812, row0=70) -->
+    <circle id="jnd2" cx="812" cy="70" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+    <text x="812" y="63"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
+    <text id="jnd2-cnt" x="812" y="84"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="840" cy="42" r="11" fill="#FCD34D"/>
+    <text x="840" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 1 — Identities (upper branch) -->
-    <circle id="jnd1" cx="430" cy="100" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-    <text x="430" y="93" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-    <text id="jnd1-cnt" x="430" y="114" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="458" cy="72" r="11" fill="#FCD34D"/>
-    <text x="458" y="77" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 3 — Exposed Hosts: Probable × Catastrophic (col3=657, row0=70) -->
+    <circle id="jnd3" cx="657" cy="70" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <text x="657" y="59"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
+    <text x="657" y="72"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
+    <text id="jnd3-cnt" x="657" y="92"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="685" cy="42" r="11" fill="#FCD34D"/>
+    <text x="685" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 2 — Alerts (lower branch) -->
-    <circle id="jnd2" cx="430" cy="290" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-    <text x="430" y="283" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
-    <text id="jnd2-cnt" x="430" y="304" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="458" cy="262" r="11" fill="#FCD34D"/>
-    <text x="458" y="267" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 4 — Compliance: Unlikely × Major (col1=347, row1=129) -->
+    <circle id="jnd4" cx="347" cy="129" r="40" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+    <text x="347" y="122" text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+    <text id="jnd4-cnt" x="347" y="143" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="375" cy="101" r="11" fill="#FCD34D"/>
+    <text x="375" y="106" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 4 — Compliance -->
-    <circle id="jnd4" cx="620" cy="95" r="40" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-    <text x="620" y="88" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-    <text id="jnd4-cnt" x="620" y="109" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="648" cy="67" r="11" fill="#FCD34D"/>
-    <text x="648" y="72" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 5 — Secrets: Probable × Major (col3=657, row1=129) -->
+    <circle id="jnd5" cx="657" cy="129" r="40" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
+    <text x="657" y="122" text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
+    <text id="jnd5-cnt" x="657" y="143" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <circle cx="685" cy="101" r="11" fill="#FCD34D"/>
+    <text x="685" y="106" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 5 — Secrets -->
-    <circle id="jnd5" cx="620" cy="295" r="40" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
-    <text x="620" y="288" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
-    <text id="jnd5-cnt" x="620" y="309" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="648" cy="267" r="11" fill="#FCD34D"/>
-    <text x="648" y="272" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- Goal — High Value Resources / Proactive Security -->
-    <circle id="jnd6" cx="820" cy="190" r="50" fill="#22c55e" filter="url(#jnd-shadow)"/>
-    <rect x="807" y="155" width="26" height="32" rx="3" fill="white" opacity="0.9"/>
-    <line x1="812" y1="163" x2="828" y2="163" stroke="#22c55e" stroke-width="1.5"/>
-    <line x1="812" y1="169" x2="828" y2="169" stroke="#22c55e" stroke-width="1.5"/>
-    <line x1="812" y1="175" x2="823" y2="175" stroke="#22c55e" stroke-width="1.5"/>
-    <text x="820" y="199" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
-    <text x="820" y="210" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
-    <text id="jnd6-cnt" x="820" y="226" text-anchor="middle" font-size="9.5" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
-    <text x="820" y="252" text-anchor="middle" font-size="7.5" fill="#64748b" font-family="-apple-system,sans-serif">High Value Resources</text>
+    <!-- Goal — Proactive Security target in safe zone (Rare × Insignificant = green) -->
+    <circle id="jnd6" cx="192" cy="306" r="28" fill="#22c55e" filter="url(#jnd-shadow)"/>
+    <rect x="181" y="287" width="22" height="27" rx="2" fill="white" opacity="0.9"/>
+    <line x1="185" y1="293" x2="199" y2="293" stroke="#22c55e" stroke-width="1.5"/>
+    <line x1="185" y1="298" x2="199" y2="298" stroke="#22c55e" stroke-width="1.5"/>
+    <line x1="185" y1="303" x2="195" y2="303" stroke="#22c55e" stroke-width="1.5"/>
+    <text x="192" y="317" text-anchor="middle" font-size="7"   font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
+    <text x="192" y="326" text-anchor="middle" font-size="7"   font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
+    <text id="jnd6-cnt" x="192" y="337" text-anchor="middle" font-size="7.5" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
 
     <!-- Goal status pill -->
-    <rect id="jph3" x="766" y="259" width="108" height="19" rx="9.5" fill="#94a3b8"/>
-    <text id="jph3-txt" x="820" y="272" text-anchor="middle" font-size="8.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
+    <rect id="jph3" x="140" y="344" width="104" height="17" rx="8.5" fill="#94a3b8"/>
+    <text id="jph3-txt" x="192" y="356" text-anchor="middle" font-size="7.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
 
   </svg>
   </div>
