@@ -899,6 +899,8 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 .rf-link{color:var(--sub);text-decoration:none;font-weight:500}
 .rf-link:hover{color:var(--accent);text-decoration:underline}
 .cp-btn{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:none;background:transparent;color:var(--border2);cursor:pointer;border-radius:2px;padding:0;margin-left:4px;vertical-align:middle;flex-shrink:0;transition:color .1s}
+.ar-exposed-row{cursor:pointer;transition:background .12s}
+.ar-exposed-row:hover{background:#fff1f2}
 .cp-btn:hover{color:var(--accent)}
 .cp-btn.ok{color:var(--ok)}
 
@@ -2614,22 +2616,29 @@ function renderAssetRisk(d){
       inetHtml='<span style="font-size:9px;font-weight:700;color:#b91c1c;border:1px solid #fca5a5;border-radius:3px;padding:1px 5px;white-space:nowrap">INTERNET'+(a.publicIP?' \xb7 '+e(a.publicIP):'')+'</span>';
     }
 
-    html+='<div style="display:grid;grid-template-columns:28px 1fr 80px;align-items:start;gap:0;padding:8px 16px;border-bottom:1px solid #f3f4f6;cursor:default">'
+    var isExposed=a.internetExposed===true;
+    var rowCls=isExposed?'ar-host-row ar-exposed-row':'ar-host-row';
+
+    html+='<div class="'+rowCls+'" data-hostname="'+e(a.name)+'" style="display:grid;grid-template-columns:28px 1fr 80px;align-items:start;gap:0;padding:8px 16px;border-bottom:1px solid #f3f4f6">'
       // Rank
       +'<div style="font-size:11px;font-weight:700;color:#9ca3af;font-variant-numeric:tabular-nums;padding-top:2px;border-left:2px solid '+t.col+';padding-left:6px">'+(i+1)+'</div>'
 
       // Host + factors
       +'<div style="min-width:0;padding-right:12px">'
         +'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:4px">'
-          +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:600;color:#111827;word-break:break-all">'+e(a.name)+'</span>'
-          +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
-          +inetHtml
+          +(isExposed
+            ?'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:700;color:#b91c1c;word-break:break-all;text-decoration:underline;text-underline-offset:2px">'+e(a.name)+'</span>'
+            +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
+            +inetHtml
+            +'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px;letter-spacing:.04em">&#9650; Exploit Graph</span>'
+            :'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:600;color:#111827;word-break:break-all">'+e(a.name)+'</span>'
+            +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
+          )
         +'</div>'
         +(a.mid&&a.mid!==a.name?'<div style="font-size:10px;color:#9ca3af;font-family:monospace;margin-bottom:4px">'+e(a.mid)+'</div>':'')
         +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
           +chips
-          +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center">'
-            +(a.internetExposed===true?'<button class="host-graph-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #fca5a5;cursor:pointer;background:#fff7f7;color:#b91c1c;font-weight:700">Attack Path</button>':'')
+          +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
             +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #d1d5db;cursor:pointer;background:#f9fafb;color:#374151;font-weight:600">Details</button>'
             +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">GeoIP</button>':'')
             +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy">'+cpIcon+'</button>'
@@ -3792,8 +3801,8 @@ function closeMachPanel(){document.getElementById('mach-overlay').style.display=
 // ── Host Attack Path modal ─────────────────────────────────────────────────────
 document.getElementById('host-graph-overlay').addEventListener('click',function(ev){if(ev.target===this)closeHostGraph();});
 document.addEventListener('click',function(ev){
-  var btn=ev.target.closest('.host-graph-btn');
-  if(btn)openHostGraph(btn.dataset.hostname);
+  var btn=ev.target.closest('.ar-exposed-row');
+  if(btn&&!ev.target.closest('.mach-inv-btn,.geo-btn,.cp-btn'))openHostGraph(btn.dataset.hostname);
 });
 
 // ── GeoIP panel ───────────────────────────────────────────────────────────────
