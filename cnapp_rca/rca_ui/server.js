@@ -2004,6 +2004,7 @@ function _renderVulns(rows,err){
       +'<div style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
         +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+        +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;font-weight:700;color:#b91c1c;background:#fff1f2;border:1px solid #fca5a5;border-radius:4px;padding:2px 8px;cursor:pointer;white-space:nowrap;flex-shrink:0">&#9651; Exploit Graph</button>'
         +'<span style="display:flex;gap:5px;align-items:center;flex-shrink:0">'
           +(host.crit?'<span class="b b-cr" style="font-size:9px">'+host.crit+' Crit</span>':'')
           +(host.high?'<span class="b b-hi" style="font-size:9px">'+host.high+' High</span>':'')
@@ -2732,34 +2733,34 @@ function renderAssetRisk(d){
       svg+='</g>';
 
       // Attacker node
-      svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
-      svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="12" ry="9" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+14)+'" rx="9" ry="7" fill="white"/>';
-      svg+='<text x="60" y="'+(cy+33)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+      svg+='<circle cx="60" cy="'+cy+'" r="34" fill="#ef4444" filter="url(#'+sid+')"/>';
+      svg+='<ellipse cx="60" cy="'+(cy-7)+'" rx="8" ry="6" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="10" ry="7" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+12)+'" rx="8" ry="6" fill="white"/>';
+      svg+='<text x="60" y="'+(cy+30)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
 
-      // Host node — clickable, coloured by tier
-      var hn=a.name.length>18?a.name.substring(0,17)+'…':a.name;
-      svg+='<circle cx="240" cy="'+cy+'" r="55" fill="'+tc+'" filter="url(#'+sid+')"/>';
-      svg+='<text x="240" y="'+(cy-20)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
-      svg+='<text x="240" y="'+(cy-4)+'" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
-      if(a.publicIP)svg+='<text x="240" y="'+(cy+11)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
-      svg+='<text x="240" y="'+(cy+26)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.85)" letter-spacing="1.5" font-family="-apple-system,sans-serif">'+tier+'</text>';
-      svg+='<circle cx="268" cy="'+(cy-45)+'" r="11" fill="#FCD34D"/>';
-      svg+='<text x="268" y="'+(cy-40)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
+      // Host node — coloured by tier
+      var hn=a.name.length>20?a.name.substring(0,19)+'…':a.name;
+      svg+='<circle cx="240" cy="'+cy+'" r="58" fill="'+tc+'" filter="url(#'+sid+')"/>';
+      svg+='<text x="240" y="'+(cy-22)+'" text-anchor="middle" font-size="8" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="1.5" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
+      svg+='<text x="240" y="'+(cy-5)+'" text-anchor="middle" font-size="13" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
+      if(a.publicIP)svg+='<text x="240" y="'+(cy+12)+'" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.75)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
+      svg+='<text x="240" y="'+(cy+28)+'" text-anchor="middle" font-size="9" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="2" font-family="-apple-system,sans-serif">'+tier+'</text>';
+      svg+='<circle cx="272" cy="'+(cy-48)+'" r="12" fill="#FCD34D"/>';
+      svg+='<text x="272" y="'+(cy-42)+'" text-anchor="middle" font-size="15" font-weight="900" fill="#92400E">!</text>';
 
-      // Factor nodes — use data-nav class for click, avoid inline quote issues
+      // Factor nodes
       factors.forEach(function(f,i){
-        svg+='<circle cx="486" cy="'+fy[i]+'" r="42" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-        svg+='<text x="486" y="'+(fy[i]-7)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
-        svg+='<text x="486" y="'+(fy[i]+13)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+        svg+='<circle cx="486" cy="'+fy[i]+'" r="44" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+        svg+='<text x="486" y="'+(fy[i]-8)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
+        svg+='<text x="486" y="'+(fy[i]+16)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
       });
 
       // Remediate goal
-      svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
-      svg+='<text x="730" y="'+(cy-10)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
-      svg+='<text x="730" y="'+(cy+6)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
-      svg+='<text x="730" y="'+(cy+20)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
+      svg+='<circle cx="730" cy="'+cy+'" r="52" fill="#22c55e" filter="url(#'+sid+')"/>';
+      svg+='<text x="730" y="'+(cy-12)+'" text-anchor="middle" font-size="11" font-weight="800" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
+      svg+='<text x="730" y="'+(cy+5)+'" text-anchor="middle" font-size="11" font-weight="800" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
+      svg+='<text x="730" y="'+(cy+21)+'" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.8)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
       svg+='</svg>';
 
       // Risk findings list
@@ -2789,7 +2790,8 @@ function renderAssetRisk(d){
       if(critMisconfig>0)remItems.push('Fix '+critMisconfig+' misconfiguration'+(critMisconfig!==1?'s':''));
       if(secCnt>0)remItems.push('Remove '+secCnt+' exposed secret'+(secCnt!==1?'s':''));
 
-      html+='<div style="margin:14px 16px;border:1px solid '+tbd+';border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">'
+      var safeId=a.name.replace(/[^a-zA-Z0-9]/g,'-');
+      html+='<div id="ar-host-'+safeId+'" style="margin:14px 16px;border:1px solid '+tbd+';border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">'
         // Card header
         +'<div style="padding:8px 16px;background:'+tbg+';border-bottom:1px solid '+tbd+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
           +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(a.name)+'</span>'
@@ -3948,6 +3950,19 @@ function updateGraphEdges(rolePid,principals){
 function svgEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function closeMachPanel(){document.getElementById('mach-overlay').style.display='none';}
+
+// ── Host Internet Exposure → Correlated Risk card jump ────────────────────────
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest('.goto-host-card-btn');
+  if(!btn)return;
+  var name=btn.dataset.hostname||'';
+  var safeId=name.replace(/[^a-zA-Z0-9]/g,'-');
+  nav('asset-risk');
+  setTimeout(function(){
+    var el=document.getElementById('ar-host-'+safeId);
+    if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
+  },120);
+});
 
 // ── Host Attack Path modal ─────────────────────────────────────────────────────
 document.getElementById('host-graph-overlay').addEventListener('click',function(ev){if(ev.target===this)closeHostGraph();});
