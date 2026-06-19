@@ -2004,7 +2004,6 @@ function _renderVulns(rows,err){
       +'<div style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
         +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
-        +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;font-weight:700;color:#b91c1c;background:#fff1f2;border:1px solid #fca5a5;border-radius:4px;padding:2px 8px;cursor:pointer;white-space:nowrap;flex-shrink:0">&#9651; Exploit Graph</button>'
         +'<span style="display:flex;gap:5px;align-items:center;flex-shrink:0">'
           +(host.crit?'<span class="b b-cr" style="font-size:9px">'+host.crit+' Crit</span>':'')
           +(host.high?'<span class="b b-hi" style="font-size:9px">'+host.high+' High</span>':'')
@@ -2014,12 +2013,27 @@ function _renderVulns(rows,err){
         +'</span>'
       +'</div>'
       // Expanded section
-      +'<div id="'+bodyId+'" style="display:none;margin-top:6px;padding-left:28px">'
-      // Machine details link
-      +'<div style="margin-bottom:8px">'
-        +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">Machine Details</button>'
-        +'<span style="font-size:9px;color:var(--muted);margin-left:8px">'+n+' CVE'+(n!==1?'s':'')+'</span>'
+      +'<div id="'+bodyId+'" style="display:none;margin-top:8px;padding-left:28px">'
+      // ── Action list: Machine Details + Exploit Graph ───────────────────────
+      +'<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;border:1px solid var(--border);border-radius:7px;overflow:hidden">'
+        +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:none;border-bottom:1px solid var(--border);cursor:pointer;text-align:left;width:100%">'
+          +'<span style="font-size:16px">&#128196;</span>'
+          +'<span style="flex:1">'
+            +'<span style="display:block;font-size:10px;font-weight:700;color:var(--text)">Machine Details</span>'
+            +'<span style="display:block;font-size:9px;color:var(--muted)">Inventory · config · network info</span>'
+          +'</span>'
+          +'<span style="font-size:10px;color:var(--muted)">&#8594;</span>'
+        +'</button>'
+        +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff8f8;border:none;cursor:pointer;text-align:left;width:100%">'
+          +'<span style="font-size:16px">&#9651;</span>'
+          +'<span style="flex:1">'
+            +'<span style="display:block;font-size:10px;font-weight:700;color:#b91c1c">Exploit Simulation Graph</span>'
+            +'<span style="display:block;font-size:9px;color:#9ca3af">Attack path · CVEs · misconfig · remediation</span>'
+          +'</span>'
+          +'<span style="font-size:10px;color:#b91c1c">&#8594;</span>'
+        +'</button>'
       +'</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed</div>'
       // Compact correlated risk strip
       +(arScore
         ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
