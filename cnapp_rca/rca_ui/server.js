@@ -2029,39 +2029,28 @@ function _renderVulns(rows,err){
     }
 
     html+='<div style="padding:11px 16px 10px;border-bottom:1px solid var(--border)">'
-      // ── Single clean header row ────────────────────────────────────────────
+      // ── Host header row ────────────────────────────────────────────────────
       +'<div style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
-        +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+        // Hostname + inline hyperlinks
+        +'<div style="flex:1;min-width:0">'
+          +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+          +'<span style="display:flex;gap:5px;align-items:center;margin-top:2px">'
+            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">Machine Details</button>'
+            +'<span style="font-size:9px;color:var(--muted)">|</span>'
+            +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
+          +'</span>'
+        +'</div>'
         +'<span style="display:flex;gap:5px;align-items:center;flex-shrink:0">'
           +(host.crit?'<span class="b b-cr" style="font-size:9px">'+host.crit+' Crit</span>':'')
           +(host.high?'<span class="b b-hi" style="font-size:9px">'+host.high+' High</span>':'')
           +(host.fixable?'<span class="b b-ok" style="font-size:9px">'+host.fixable+' fix</span>':'')
           +'<span style="font-size:18px;font-weight:800;color:'+rsCol+';font-variant-numeric:tabular-nums;line-height:1;min-width:32px;text-align:right">'+host.maxRisk.toFixed(1)+'</span>'
-          +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap">&#9654; Details</button>'
+          +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap">&#9654; CVEs</button>'
         +'</span>'
       +'</div>'
-      // Expanded section
+      // Expanded CVE section (action list removed — links are now inline on the hostname)
       +'<div id="'+bodyId+'" style="display:none;margin-top:8px;padding-left:28px">'
-      // ── Action list: Machine Details + Exploit Graph ───────────────────────
-      +'<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;border:1px solid var(--border);border-radius:7px;overflow:hidden">'
-        +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:none;border-bottom:1px solid var(--border);cursor:pointer;text-align:left;width:100%">'
-          +'<span style="font-size:16px">&#128196;</span>'
-          +'<span style="flex:1">'
-            +'<span style="display:block;font-size:10px;font-weight:700;color:var(--text)">Machine Details</span>'
-            +'<span style="display:block;font-size:9px;color:var(--muted)">Inventory · config · network info</span>'
-          +'</span>'
-          +'<span style="font-size:10px;color:var(--muted)">&#8594;</span>'
-        +'</button>'
-        +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff8f8;border:none;cursor:pointer;text-align:left;width:100%">'
-          +'<span style="font-size:16px">&#9651;</span>'
-          +'<span style="flex:1">'
-            +'<span style="display:block;font-size:10px;font-weight:700;color:#b91c1c">Exploit Simulation Graph</span>'
-            +'<span style="display:block;font-size:9px;color:#9ca3af">Attack path · CVEs · misconfig · remediation</span>'
-          +'</span>'
-          +'<span style="font-size:10px;color:#b91c1c">&#8594;</span>'
-        +'</button>'
-      +'</div>'
       +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed</div>'
       // Compact correlated risk strip
       +(arScore
