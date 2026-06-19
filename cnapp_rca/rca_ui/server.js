@@ -1597,7 +1597,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <text x="60" y="238" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
 
     <!-- Node 3 — Internet Exposed Hosts (1st hop from Attacker) -->
-    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav(&quot;asset-risk&quot;)"/>
+    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav(&quot;vulns&quot;)"/>
     <text x="230" y="181" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
     <text x="230" y="194" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
     <text id="jnd3-cnt" x="230" y="213" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
@@ -2659,6 +2659,150 @@ function renderAssetRisk(d){
   });
 
   html+='<div style="padding:8px 16px;font-size:9px;color:#9ca3af">CIEM &amp; Misconfig are account-wide · CVEs &amp; Secrets are per-host</div>';
+
+  // ── Per-exposed-host Exploit Simulation graphs ──────────────────────────────
+  var exposedRanked=ranked.filter(function(r){return r.a.internetExposed===true;});
+  if(exposedRanked.length){
+    var TCOL={CRITICAL:'#b91c1c',HIGH:'#c2410c',MEDIUM:'#92400e',LOW:'#4b5563'};
+    var TBD ={CRITICAL:'#fca5a5',HIGH:'#fdba74',MEDIUM:'#fcd34d',LOW:'#d1d5db'};
+    var TBG ={CRITICAL:'#fff7f7',HIGH:'#fff7ed',MEDIUM:'#fffbeb',LOW:'#f9fafb'};
+
+    html+='<div style="margin:16px 0 0;border-top:2px solid #fca5a5">'
+      +'<div style="padding:10px 16px 0;font-size:10px;font-weight:800;letter-spacing:.14em;color:#b91c1c;text-transform:uppercase">'
+      +'&#9651; Exploit Simulation — Internet-Exposed Hosts'
+      +'<span style="font-weight:400;color:#9ca3af;letter-spacing:normal;margin-left:8px">'+exposedRanked.length+' host'+(exposedRanked.length!==1?'s with active attack surface':'')+'</span>'
+      +'</div>';
+
+    exposedRanked.forEach(function(row){
+      var a=row.a;var score=row.score;var tier=row.t.label;
+      var tc=TCOL[tier];var tbd=TBD[tier];var tbg=TBG[tier];
+
+      // Build risk factors for this host
+      var factors=[];
+      if(a.vulns&&a.vulns.length)
+        factors.push({label:'CVEs',count:a.vulns.length,color:'#f97316',nav:'vulns'});
+      if(critMisconfig>0)
+        factors.push({label:'Non-Compliance',count:critMisconfig,color:'#f59e0b',nav:'compliance'});
+      var secCnt=(a.ciemSecrets||[]).length+(a.genericSecrets||[]).length;
+      if(secCnt>0)
+        factors.push({label:'Secrets',count:secCnt,color:'#eab308',nav:'secrets-all'});
+      if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
+
+      var n=factors.length;
+      var H=n===1?180:n===2?240:300;
+      var cy=H/2;
+      var fy=n===1?[cy]:n===2?[cy-60,cy+60]:[cy-78,cy,cy+78];
+      var sid='hpi'+a.name.replace(/[^a-zA-Z0-9]/g,'_');
+
+      var svg='<svg viewBox="0 0 900 '+H+'" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block">'
+        +'<defs><filter id="'+sid+'" x="-30%" y="-30%" width="160%" height="160%">'
+        +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
+        +'</filter></defs>';
+
+      // Gray tracks
+      svg+='<g stroke="#e2e8f0" stroke-width="2.5" stroke-linecap="round" fill="none">'
+        +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'"/>';
+      factors.forEach(function(f,i){
+        svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'"/>';
+        svg+='<line x1="527" y1="'+fy[i]+'" x2="663" y2="'+cy+'"/>';
+      });
+      svg+='</g>';
+
+      // Red attack flow
+      svg+='<g stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
+        +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite"/>';
+      factors.forEach(function(f,i){
+        svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
+      });
+      svg+='</g>';
+
+      // Green remediation flow
+      svg+='<g stroke="#22c55e" stroke-width="2" stroke-linecap="round" fill="none" stroke-dasharray="4 12">';
+      factors.forEach(function(f,i){
+        svg+='<line x1="527" y1="'+fy[i]+'" x2="663" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
+      });
+      svg+='</g>';
+
+      // Attacker node
+      svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
+      svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="12" ry="9" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+14)+'" rx="9" ry="7" fill="white"/>';
+      svg+='<text x="60" y="'+(cy+33)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+
+      // Host node — clickable, coloured by tier
+      var hn=a.name.length>18?a.name.substring(0,17)+'…':a.name;
+      svg+='<circle cx="240" cy="'+cy+'" r="55" fill="'+tc+'" filter="url(#'+sid+')"/>';
+      svg+='<text x="240" y="'+(cy-20)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
+      svg+='<text x="240" y="'+(cy-4)+'" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
+      if(a.publicIP)svg+='<text x="240" y="'+(cy+11)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
+      svg+='<text x="240" y="'+(cy+26)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.85)" letter-spacing="1.5" font-family="-apple-system,sans-serif">'+tier+'</text>';
+      svg+='<circle cx="268" cy="'+(cy-45)+'" r="11" fill="#FCD34D"/>';
+      svg+='<text x="268" y="'+(cy-40)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
+
+      // Factor nodes — use data-nav class for click, avoid inline quote issues
+      factors.forEach(function(f,i){
+        svg+='<circle cx="486" cy="'+fy[i]+'" r="42" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+        svg+='<text x="486" y="'+(fy[i]-7)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
+        svg+='<text x="486" y="'+(fy[i]+13)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+      });
+
+      // Remediate goal
+      svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
+      svg+='<text x="730" y="'+(cy-10)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
+      svg+='<text x="730" y="'+(cy+6)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
+      svg+='<text x="730" y="'+(cy+20)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
+      svg+='</svg>';
+
+      // Risk findings list
+      var findings='';
+      if(a.vulns&&a.vulns.length){
+        var top5=a.vulns.slice(0,5);
+        findings+='<div style="margin-bottom:6px"><div style="font-size:9px;font-weight:700;color:#c2410c;letter-spacing:.06em;margin-bottom:3px">CVEs ('+a.vulns.length+')</div>'
+          +top5.map(function(v){return'<span style="display:inline-block;font-family:monospace;font-size:9px;background:#fff7ed;border:1px solid #fdba74;border-radius:3px;padding:1px 6px;margin:1px 2px;color:#92400e">'+e(v.id||'')+'</span>';}).join('')
+          +(a.vulns.length>5?'<span style="font-size:9px;color:#9ca3af;margin-left:4px">+' +(a.vulns.length-5)+' more</span>':'')
+        +'</div>';
+      }
+      if(critMisconfig>0){
+        findings+='<div style="margin-bottom:6px"><div style="font-size:9px;font-weight:700;color:#92400e;letter-spacing:.06em;margin-bottom:3px">Critical Misconfigurations ('+critMisconfig+')</div>'
+          +'<span style="font-size:9px;color:#6b7280">Account-wide — affects all internet-exposed hosts</span>'
+        +'</div>';
+      }
+      if(secCnt>0){
+        findings+='<div style="margin-bottom:6px"><div style="font-size:9px;font-weight:700;color:#92400e;letter-spacing:.06em;margin-bottom:3px">Secrets / Credentials ('+(secCnt)+')</div>'
+          +(a.ciemSecrets.length?'<span style="display:inline-block;font-size:9px;background:#fef2f2;border:1px solid #fca5a5;border-radius:3px;padding:1px 6px;margin:1px 2px;color:#b91c1c">CIEM: '+a.ciemSecrets.length+' high-perm</span>':'')
+          +(a.genericSecrets.length?'<span style="display:inline-block;font-size:9px;background:#fffbeb;border:1px solid #fcd34d;border-radius:3px;padding:1px 6px;margin:1px 2px;color:#92400e">'+a.genericSecrets.length+' generic secret'+(a.genericSecrets.length!==1?'s':'')+'</span>':'')
+        +'</div>';
+      }
+
+      // Remediation footer
+      var remItems=[];
+      if(a.vulns&&a.vulns.length)remItems.push('Patch '+a.vulns.length+' CVE'+(a.vulns.length!==1?'s':''));
+      if(critMisconfig>0)remItems.push('Fix '+critMisconfig+' misconfiguration'+(critMisconfig!==1?'s':''));
+      if(secCnt>0)remItems.push('Remove '+secCnt+' exposed secret'+(secCnt!==1?'s':''));
+
+      html+='<div style="margin:14px 16px;border:1px solid '+tbd+';border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">'
+        // Card header
+        +'<div style="padding:8px 16px;background:'+tbg+';border-bottom:1px solid '+tbd+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+          +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(a.name)+'</span>'
+          +'<span style="font-size:9px;font-weight:700;color:'+tc+';letter-spacing:.08em;border:1px solid '+tc+';border-radius:3px;padding:2px 7px">'+tier+'</span>'
+          +(a.publicIP
+            ?'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET &middot; '+e(a.publicIP)+'</span>'
+            :'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET EXPOSED</span>')
+          +'<span style="margin-left:auto;font-size:11px;color:#6b7280">Risk Score: <b style="color:'+tc+'">'+score+'/100</b></span>'
+        +'</div>'
+        // SVG attack graph
+        +'<div style="padding:6px 0;background:#fff">'+svg+'</div>'
+        // Risk findings
+        +(findings?'<div style="padding:10px 16px;background:#f9fafb;border-top:1px solid #e5e7eb">'+findings+'</div>':'')
+        // Remediation footer
+        +(remItems.length?'<div style="padding:8px 16px;background:#f0fdf4;border-top:1px solid #bbf7d0;font-size:10px;font-weight:600;color:#166534">&#10003; To close: '+remItems.join(' &nbsp;&middot;&nbsp; ')+'</div>':'')
+      +'</div>';
+    });
+
+    html+='</div>';
+  }
+
   setBody('body-ar',html);
 }
 
@@ -3003,12 +3147,7 @@ function openHostGraph(hostName){
 
   document.getElementById('host-graph-title').textContent='Attack Path — '+hostName;
   document.getElementById('host-graph-body').innerHTML=html;
-  // Wire factor node clicks inside the freshly rendered SVG
-  document.querySelectorAll('#host-graph-body .hg-nav-node').forEach(function(el){
-    el.addEventListener('click',function(){closeHostGraph();nav(this.dataset.nav);});
-  });
-  const ov=document.getElementById('host-graph-overlay');
-  ov.style.display='flex';
+  document.getElementById('host-graph-overlay').style.display='flex';
 }
 
 async function load(){
@@ -3804,7 +3943,14 @@ function closeMachPanel(){document.getElementById('mach-overlay').style.display=
 
 // ── Host Attack Path modal ─────────────────────────────────────────────────────
 document.getElementById('host-graph-overlay').addEventListener('click',function(ev){if(ev.target===this)closeHostGraph();});
+// Factor node clicks in both inline cards and modal
 document.addEventListener('click',function(ev){
+  var node=ev.target.closest('.hg-nav-node');
+  if(node){
+    if(node.closest('#host-graph-overlay'))closeHostGraph();
+    nav(node.dataset.nav);
+    return;
+  }
   var btn=ev.target.closest('.ar-exposed-row');
   if(btn&&!ev.target.closest('.mach-inv-btn,.geo-btn,.cp-btn'))openHostGraph(btn.dataset.hostname);
 });
