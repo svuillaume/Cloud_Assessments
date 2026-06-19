@@ -3163,6 +3163,13 @@ function openHostGraph(hostName){
 async function load(){
   try{
     const d=await fetch('/api/data').then(r=>r.json());
+    // Data not ready yet (server still fetching) — retry in 15s
+    if(!d.fetchedAt){
+      document.getElementById('live-dot').className='live-dot';
+      document.getElementById('fetched-at').textContent='Loading…';
+      setTimeout(load,15000);
+      return;
+    }
     _lastData=d;
     renderAlerts(d.alerts,d.errors?.alerts);
     _preTriageAll(d.alerts);
