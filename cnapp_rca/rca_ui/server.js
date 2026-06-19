@@ -2712,9 +2712,9 @@ function renderAssetRisk(d){
       if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
 
       var n=factors.length;
-      var H=n===1?180:n===2?240:300;
+      var H=n===1?140:n===2?210:280;
       var cy=H/2;
-      var fy=n===1?[cy]:n===2?[cy-60,cy+60]:[cy-78,cy,cy+78];
+      var fy=n===1?[cy]:n===2?[cy-50,cy+50]:[cy-70,cy,cy+70];
       var sid='hpi'+a.name.replace(/[^a-zA-Z0-9]/g,'_');
 
       var svg='<svg viewBox="0 0 900 '+H+'" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block">'
@@ -2722,59 +2722,66 @@ function renderAssetRisk(d){
         +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
         +'</filter></defs>';
 
-      // Gray tracks
-      svg+='<g stroke="#e2e8f0" stroke-width="2.5" stroke-linecap="round" fill="none">'
-        +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'"/>';
+      // Gray tracks (attacker→host: 100→200, host→factors: 280→446, factors→goal: 526→680)
+      svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">'
+        +'<line x1="100" y1="'+cy+'" x2="200" y2="'+cy+'"/>';
       factors.forEach(function(f,i){
-        svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'"/>';
-        svg+='<line x1="527" y1="'+fy[i]+'" x2="663" y2="'+cy+'"/>';
+        svg+='<line x1="280" y1="'+cy+'" x2="446" y2="'+fy[i]+'"/>';
+        svg+='<line x1="526" y1="'+fy[i]+'" x2="680" y2="'+cy+'"/>';
       });
       svg+='</g>';
 
       // Red attack flow
-      svg+='<g stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
-        +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite"/>';
+      svg+='<g stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
+        +'<line x1="100" y1="'+cy+'" x2="200" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite"/>';
       factors.forEach(function(f,i){
-        svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
+        svg+='<line x1="280" y1="'+cy+'" x2="446" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
       });
       svg+='</g>';
 
       // Green remediation flow
       svg+='<g stroke="#22c55e" stroke-width="2" stroke-linecap="round" fill="none" stroke-dasharray="4 12">';
       factors.forEach(function(f,i){
-        svg+='<line x1="527" y1="'+fy[i]+'" x2="663" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
+        svg+='<line x1="526" y1="'+fy[i]+'" x2="680" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
       });
       svg+='</g>';
 
-      // Attacker node
-      svg+='<circle cx="60" cy="'+cy+'" r="34" fill="#ef4444" filter="url(#'+sid+')"/>';
-      svg+='<ellipse cx="60" cy="'+(cy-7)+'" rx="8" ry="6" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="10" ry="7" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+12)+'" rx="8" ry="6" fill="white"/>';
-      svg+='<text x="60" y="'+(cy+30)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+      // Attacker node — same style as global Exploit Simulation Layer
+      svg+='<circle cx="60" cy="'+cy+'" r="40" fill="#ef4444" filter="url(#'+sid+')"/>';
+      svg+='<line x1="60" y1="'+(cy-18)+'" x2="60" y2="'+(cy-10)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<ellipse cx="60" cy="'+(cy-6)+'" rx="8" ry="5" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+5)+'" rx="10" ry="7" fill="white"/>';
+      svg+='<ellipse cx="60" cy="'+(cy+15)+'" rx="7" ry="5" fill="white"/>';
+      svg+='<line x1="50" y1="'+(cy+8)+'" x2="44" y2="'+(cy+18)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="70" y1="'+(cy+8)+'" x2="76" y2="'+(cy+18)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<text x="60" y="'+(cy+38)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
 
-      // Host node — coloured by tier
-      var hn=a.name.length>20?a.name.substring(0,19)+'…':a.name;
-      svg+='<circle cx="240" cy="'+cy+'" r="58" fill="'+tc+'" filter="url(#'+sid+')"/>';
-      svg+='<text x="240" y="'+(cy-22)+'" text-anchor="middle" font-size="8" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="1.5" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
-      svg+='<text x="240" y="'+(cy-5)+'" text-anchor="middle" font-size="13" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
-      if(a.publicIP)svg+='<text x="240" y="'+(cy+12)+'" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.75)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
-      svg+='<text x="240" y="'+(cy+28)+'" text-anchor="middle" font-size="9" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="2" font-family="-apple-system,sans-serif">'+tier+'</text>';
-      svg+='<circle cx="272" cy="'+(cy-48)+'" r="12" fill="#FCD34D"/>';
-      svg+='<text x="272" y="'+(cy-42)+'" text-anchor="middle" font-size="15" font-weight="900" fill="#92400E">!</text>';
+      // Host node — r=40 matching global, text sized like global node labels
+      var hn=a.name.length>16?a.name.substring(0,15)+'…':a.name;
+      svg+='<circle cx="240" cy="'+cy+'" r="40" fill="'+tc+'" filter="url(#'+sid+')"/>';
+      svg+='<text x="240" y="'+(cy-12)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.7)" letter-spacing="1" font-family="-apple-system,sans-serif">EXPOSED</text>';
+      svg+='<text x="240" y="'+(cy+3)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
+      if(a.publicIP)svg+='<text x="240" y="'+(cy+16)+'" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,.75)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
+      svg+='<circle cx="268" cy="'+(cy-32)+'" r="11" fill="#FCD34D"/>';
+      svg+='<text x="268" y="'+(cy-27)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
 
-      // Factor nodes
+      // Factor nodes — r=40, matching global node size exactly
       factors.forEach(function(f,i){
-        svg+='<circle cx="486" cy="'+fy[i]+'" r="44" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-        svg+='<text x="486" y="'+(fy[i]-8)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
-        svg+='<text x="486" y="'+(fy[i]+16)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+        svg+='<circle cx="486" cy="'+fy[i]+'" r="40" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+        svg+='<text x="486" y="'+(fy[i]-6)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
+        svg+='<text x="486" y="'+(fy[i]+14)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+        svg+='<circle cx="514" cy="'+(fy[i]-32)+'" r="11" fill="#FCD34D"/>';
+        svg+='<text x="514" y="'+(fy[i]-27)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>';
       });
 
-      // Remediate goal
-      svg+='<circle cx="730" cy="'+cy+'" r="52" fill="#22c55e" filter="url(#'+sid+')"/>';
-      svg+='<text x="730" y="'+(cy-12)+'" text-anchor="middle" font-size="11" font-weight="800" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
-      svg+='<text x="730" y="'+(cy+5)+'" text-anchor="middle" font-size="11" font-weight="800" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
-      svg+='<text x="730" y="'+(cy+21)+'" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.8)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
+      // Remediate goal — r=50, text matching global "Proactive Security" style
+      svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
+      svg+='<rect x="717" y="'+(cy-20)+'" width="26" height="32" rx="3" fill="white" opacity="0.9"/>';
+      svg+='<line x1="722" y1="'+(cy-12)+'" x2="738" y2="'+(cy-12)+'" stroke="#22c55e" stroke-width="1.5"/>';
+      svg+='<line x1="722" y1="'+(cy-6)+'"  x2="738" y2="'+(cy-6)+'"  stroke="#22c55e" stroke-width="1.5"/>';
+      svg+='<line x1="722" y1="'+cy+'"       x2="733" y2="'+cy+'"       stroke="#22c55e" stroke-width="1.5"/>';
+      svg+='<text x="730" y="'+(cy+22)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Remediate</text>';
+      svg+='<text x="730" y="'+(cy+34)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">to Close</text>';
       svg+='</svg>';
 
       // Risk findings list
