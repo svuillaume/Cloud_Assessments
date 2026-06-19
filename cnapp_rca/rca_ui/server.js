@@ -1457,6 +1457,20 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="body-ar"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
+<!-- Per-Host Attack Path modal -->
+<div id="host-graph-overlay" style="display:none;position:fixed;inset:0;z-index:3100;background:rgba(0,0,0,.6);align-items:flex-start;justify-content:center;overflow-y:auto;padding:40px 16px">
+  <div style="background:#fff;border-radius:14px;width:min(920px,96vw);box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden;margin:auto">
+    <div id="host-graph-hdr" style="background:linear-gradient(135deg,#7f1d1d,#b91c1c);padding:16px 22px;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:14px;font-weight:800;color:#fff;letter-spacing:.04em" id="host-graph-title">Attack Path</div>
+        <div style="font-size:11px;color:#fca5a5;margin-top:2px">Exploit Simulation · Internet-Exposed Host</div>
+      </div>
+      <button onclick="closeHostGraph()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;color:#fff;font-size:18px;width:32px;height:32px;cursor:pointer;line-height:1">&#x2715;</button>
+    </div>
+    <div id="host-graph-body" style="padding:0"></div>
+  </div>
+</div>
+
 <!-- GeoIP detail panel -->
 <div id="geo-overlay" style="display:none;position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.55);align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:14px;width:min(480px,96vw);box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden">
@@ -1576,11 +1590,11 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <line x1="65" y1="163" x2="69" y2="155" stroke="white" stroke-width="2" stroke-linecap="round"/>
     <text x="60" y="238" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
 
-    <!-- Node 3 — Internet Exposure (1st hop from Attacker) -->
-    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
-    <text x="230" y="183" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Internet</text>
-    <text x="230" y="196" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposure</text>
-    <text id="jnd3-cnt" x="230" y="214" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <!-- Node 3 — Internet Exposed Hosts (1st hop from Attacker) -->
+    <circle id="jnd3" cx="230" cy="190" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav(&quot;asset-risk&quot;)"/>
+    <text x="230" y="181" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
+    <text x="230" y="194" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
+    <text id="jnd3-cnt" x="230" y="213" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
     <circle cx="258" cy="162" r="11" fill="#FCD34D"/>
     <text x="258" y="167" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
@@ -1698,6 +1712,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     </svg>
     </div>
   </div>
+
 </div>
 
 <div class="view" id="view-admin-settings">
@@ -2521,6 +2536,9 @@ function renderAssetRisk(d){
     if(sorted.length>0){circle.style.animation='step1-flash 2.5s ease-in-out infinite';}
     else{circle.style.animation='';circle.style.boxShadow='0 6px 24px rgba(239,68,68,.38)';}
   }
+  // Store for openHostGraph — same map, same keys, same critMisconfig
+  _renderedAssetMap={map:map,maxRisk:maxRisk,critMisc:critMisconfig};
+
   if(!sorted.length){state('body-ar','','No significant host-level risk detected');return;}
 
   // Tier definitions (console palette)
@@ -2611,6 +2629,7 @@ function renderAssetRisk(d){
         +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
           +chips
           +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center">'
+            +(a.internetExposed===true?'<button class="host-graph-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #fca5a5;cursor:pointer;background:#fff7f7;color:#b91c1c;font-weight:700">Attack Path</button>':'')
             +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #d1d5db;cursor:pointer;background:#f9fafb;color:#374151;font-weight:600">Details</button>'
             +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">GeoIP</button>':'')
             +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy">'+cpIcon+'</button>'
@@ -2631,7 +2650,6 @@ function renderAssetRisk(d){
 }
 
 function nav(name){
-  if(name==='asset-risk')name='vulns';
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('active'));
   var ve=document.getElementById('view-'+name);if(ve)ve.classList.add('active');
@@ -2640,6 +2658,7 @@ function nav(name){
 }
 
 let _lastData=null;
+let _renderedAssetMap=null;  // set by renderAssetRisk, read by openHostGraph
 let _currentLabTab='global';
 // Identity graph state
 var _igNodePos={};var _igNW=185;var _igNH=38;var _igTrustMap={};
@@ -2822,11 +2841,18 @@ function renderLab(d){
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
+  // Compute internet-exposed hosts for jnd3 and per-host graphs
+  const {map:_hmap,critMisc:_critMisc}=buildAssetRiskMap(d);
+  const _allHosts=Object.values(_hmap);
+  const _maxRisk=_allHosts.reduce(function(m,a){return Math.max(m,a.risk);},1);
+  _allHosts.forEach(function(a){a.normalizedScore=Math.round(a.risk/_maxRisk*100);});
+  const _exposedHosts=_allHosts.filter(function(h){return h.internetExposed===true&&h.normalizedScore>20;})
+    .sort(function(a,b){return b.normalizedScore-a.normalizedScore;});
   // ── Snake journey map: update SVG elements ──
   const nodes=[
     {nd:'jnd1',cnt:'jnd1-cnt',count:(d.identities||[]).length, activeClr:'#ef4444'},
     {nd:'jnd2',cnt:'jnd2-cnt',count:(d.alerts||[]).length,     activeClr:'#ef4444'},
-    {nd:'jnd3',cnt:'jnd3-cnt',count:(d.vulns||[]).length,      activeClr:'#f97316'},
+    {nd:'jnd3',cnt:'jnd3-cnt',count:_exposedHosts.length,      activeClr:'#f97316'},
     {nd:'jnd4',cnt:'jnd4-cnt',count:(d.compliance||[]).length, activeClr:'#f59e0b'},
     {nd:'jnd5',cnt:'jnd5-cnt',count:(d.secretsAll||[]).length, activeClr:'#eab308'},
   ];
@@ -2845,6 +2871,131 @@ function renderLab(d){
   // Snake path color tracks score band
   const snake=document.getElementById('jsnake');
   if(snake)snake.setAttribute('stroke',color);
+}
+
+function closeHostGraph(){
+  const ov=document.getElementById('host-graph-overlay');
+  if(ov)ov.style.display='none';
+}
+
+function openHostGraph(hostName){
+  if(!_renderedAssetMap)return;
+  const {map:hmap,maxRisk:maxR,critMisc:cm}=_renderedAssetMap;
+  const allH=Object.values(hmap);
+  allH.forEach(function(a){a.normalizedScore=Math.round(a.risk/maxR*100);});
+  const host=allH.find(function(h){return h.name===hostName;});
+  if(!host)return;
+
+  const TIER_COL={CRITICAL:'#b91c1c',HIGH:'#c2410c',MEDIUM:'#92400e',LOW:'#4b5563'};
+  const TIER_BD ={CRITICAL:'#fca5a5',HIGH:'#fdba74',MEDIUM:'#fcd34d',LOW:'#d1d5db'};
+  const TIER_BG ={CRITICAL:'#fff7f7',HIGH:'#fff7ed',MEDIUM:'#fffbeb',LOW:'#f9fafb'};
+  const tierOf=function(s,ex){
+    if(s>=75)return ex?'CRITICAL':'MEDIUM';
+    if(s>=50)return ex?'HIGH':'LOW';
+    if(s>=30)return'MEDIUM';
+    return'LOW';
+  };
+
+  var score=host.normalizedScore||0;
+  var tier=tierOf(score,host.internetExposed);
+  var tc=TIER_COL[tier],tbd=TIER_BD[tier],tbg=TIER_BG[tier];
+
+  var factors=[];
+  if(host.vulns&&host.vulns.length)
+    factors.push({label:'CVEs',count:host.vulns.length,color:'#f97316',nav:'vulns'});
+  if(cm>0)
+    factors.push({label:'Non-Compliance',count:cm,color:'#f59e0b',nav:'compliance'});
+  var secCnt=(host.ciemSecrets||[]).length+(host.genericSecrets||[]).length;
+  if(secCnt>0)
+    factors.push({label:'Secrets',count:secCnt,color:'#eab308',nav:'secrets-all'});
+
+  var n=factors.length||1;
+  var H=n===1?180:n===2?240:300;
+  var cy=H/2;
+  var fy=n===1?[cy]:n===2?[cy-58,cy+58]:[cy-76,cy,cy+76];
+  var sid='hfm'+host.name.replace(/[^a-zA-Z0-9]/g,'_');
+
+  var svg='<svg viewBox="0 0 900 '+H+'" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block">'
+    +'<defs><filter id="'+sid+'" x="-30%" y="-30%" width="160%" height="160%">'
+    +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
+    +'</filter></defs>';
+
+  svg+='<g stroke="#e2e8f0" stroke-width="2.5" stroke-linecap="round" fill="none">'
+    +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'"/>';
+  factors.forEach(function(f,i){
+    svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'"/>';
+    svg+='<line x1="527" y1="'+fy[i]+'" x2="665" y2="'+cy+'"/>';
+  });
+  svg+='</g>';
+
+  svg+='<g stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
+    +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite 0s"/>';
+  factors.forEach(function(f,i){
+    svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
+  });
+  svg+='</g>';
+
+  svg+='<g stroke="#22c55e" stroke-width="2" stroke-linecap="round" fill="none" stroke-dasharray="4 12">';
+  factors.forEach(function(f,i){
+    svg+='<line x1="527" y1="'+fy[i]+'" x2="665" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
+  });
+  svg+='</g>';
+
+  // Attacker
+  svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
+  svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
+  svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="12" ry="9" fill="white"/>';
+  svg+='<ellipse cx="60" cy="'+(cy+14)+'" rx="9" ry="7" fill="white"/>';
+  svg+='<text x="60" y="'+(cy+33)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+
+  // Host node
+  var hn=host.name.length>18?host.name.substring(0,17)+'…':host.name;
+  svg+='<circle cx="240" cy="'+cy+'" r="55" fill="'+tc+'" filter="url(#'+sid+')"/>';
+  svg+='<text x="240" y="'+(cy-20)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
+  svg+='<text x="240" y="'+(cy-4)+'" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
+  if(host.publicIP)svg+='<text x="240" y="'+(cy+11)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(host.publicIP)+'</text>';
+  svg+='<text x="240" y="'+(cy+26)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.85)" letter-spacing="1.5" font-family="-apple-system,sans-serif">'+tier+'</text>';
+  svg+='<circle cx="268" cy="'+(cy-45)+'" r="11" fill="#FCD34D"/>';
+  svg+='<text x="268" y="'+(cy-40)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
+
+  // Factor nodes — use data-nav for click, no inline JS quotes
+  factors.forEach(function(f,i){
+    svg+='<circle cx="486" cy="'+fy[i]+'" r="42" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+    svg+='<text x="486" y="'+(fy[i]-7)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
+    svg+='<text x="486" y="'+(fy[i]+13)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+  });
+
+  // Remediate goal
+  svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
+  svg+='<text x="730" y="'+(cy-10)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
+  svg+='<text x="730" y="'+(cy+6)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
+  svg+='<text x="730" y="'+(cy+20)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
+  svg+='</svg>';
+
+  var remItems=[];
+  if(host.vulns&&host.vulns.length)remItems.push('Patch '+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':''));
+  if(cm>0)remItems.push('Fix '+cm+' misconfiguration'+(cm!==1?'s':''));
+  if(secCnt>0)remItems.push('Remove '+secCnt+' secret'+(secCnt!==1?'s':''));
+
+  var html='<div style="border-bottom:1px solid '+tbd+';padding:8px 20px;background:'+tbg+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(host.name)+'</span>'
+    +'<span style="font-size:9px;font-weight:700;color:'+tc+';letter-spacing:.08em;border:1px solid '+tc+';border-radius:3px;padding:2px 7px">'+tier+'</span>'
+    +(host.publicIP
+      ?'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET &middot; '+e(host.publicIP)+'</span>'
+      :'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET EXPOSED</span>')
+    +'<span style="margin-left:auto;font-size:11px;color:#6b7280">Risk Score: <b style="color:'+tc+'">'+score+'/100</b></span>'
+  +'</div>'
+  +'<div style="padding:8px 0">'+svg+'</div>'
+  +(remItems.length?'<div style="padding:10px 20px;background:#f0fdf4;border-top:1px solid #bbf7d0;font-size:11px;font-weight:600;color:#166534">&#10003; To close this attack path: '+remItems.join(' &nbsp;&middot;&nbsp; ')+'</div>':'');
+
+  document.getElementById('host-graph-title').textContent='Attack Path — '+hostName;
+  document.getElementById('host-graph-body').innerHTML=html;
+  // Wire factor node clicks inside the freshly rendered SVG
+  document.querySelectorAll('#host-graph-body .hg-nav-node').forEach(function(el){
+    el.addEventListener('click',function(){closeHostGraph();nav(this.dataset.nav);});
+  });
+  const ov=document.getElementById('host-graph-overlay');
+  ov.style.display='flex';
 }
 
 async function load(){
@@ -3637,6 +3788,13 @@ function updateGraphEdges(rolePid,principals){
 function svgEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function closeMachPanel(){document.getElementById('mach-overlay').style.display='none';}
+
+// ── Host Attack Path modal ─────────────────────────────────────────────────────
+document.getElementById('host-graph-overlay').addEventListener('click',function(ev){if(ev.target===this)closeHostGraph();});
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest('.host-graph-btn');
+  if(btn)openHostGraph(btn.dataset.hostname);
+});
 
 // ── GeoIP panel ───────────────────────────────────────────────────────────────
 function closeGeoPanel(){document.getElementById('geo-overlay').style.display='none';}
