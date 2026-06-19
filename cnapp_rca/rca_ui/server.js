@@ -2459,11 +2459,19 @@ function renderAssetRisk(d){
   // Scan machineTags for public IP / internet-exposure indicators
   // Returns { exposed: bool|null, ip: string|null }
   const getNetInfo=r=>{
+    const IP_RE=/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    // Primary: top-level machineTags object (actual Lacework API format)
+    const mt=r.machineTags;
+    if(mt&&typeof mt==='object'&&!Array.isArray(mt)){
+      const lwExp=mt.lw_InternetExposure;
+      const ip=mt.ExternalIp||mt.PublicIpAddress||mt.public_ip||mt.externalIp||null;
+      if(lwExp!==undefined)return{exposed:lwExp==='Yes',ip:ip||null};
+      if(ip&&IP_RE.test(ip))return{exposed:true,ip};
+    }
+    // Fallback: evalCtx.machineTags array format (some cloud providers)
     const tags=r.evalCtx?.machineTags;
     const INET_KEY=/public.?ip|external.?ip|internet.?exp|public.?dns|public.?host/i;
-    const IP_RE=/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
     let ip=null;
-    // Also check evalCtx top-level fields some providers populate
     for(const f of['externalIp','publicIp','public_ip','externalIP','publicIP']){
       const v=(r.evalCtx?.[f]||'').trim();
       if(IP_RE.test(v)){ip=v;break;}
@@ -2483,7 +2491,7 @@ function renderAssetRisk(d){
 
   // Factor 3 — CVE Host Exposure (per host, Medium weight: riskScore×10)
   (d.vulns||[]).forEach(r=>{
-    const host=r.evalCtx?.hostname||r.evalCtx?.mid||'';
+    const host=r.evalCtx?.hostname||r.machineTags?.Hostname||r.evalCtx?.mid||r.mid||'';
     if(!host)return;
     const w=Math.min(100,parseFloat(r.riskScore||0)*10);
     const a=get(host,r.evalCtx?.mid||'');
