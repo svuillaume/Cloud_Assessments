@@ -4,7 +4,7 @@
 #   SELF_SIGNED=true  — generate a self-signed cert, skip certbot
 #   DOMAIN + LE_EMAIL — obtain a Let's Encrypt cert via certbot (port 80 must be open)
 #   TLS_CERT + TLS_KEY — use an existing certificate (skips everything above)
-#   (none)            — plain HTTP on PORT (default 8080)
+#   (none)            — plain HTTP on PORT (default 8888)
 
 SS_DIR="/tmp/selfsigned"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
@@ -53,7 +53,7 @@ fi
 if [ -n "$TLS_CERT" ] && [ -n "$TLS_KEY" ]; then
   echo "[tls] HTTPS mode — cert: $TLS_CERT"
 else
-  echo "[tls] No cert — running HTTP only on port ${PORT:-8080}"
+  echo "[tls] No cert — running HTTP only on port ${PORT:-8888}"
 fi
 
 exec node /app/server.js

@@ -181,13 +181,14 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 
 | Finding Type | Severities Fetched | Look-back Window | Notes |
 |---|---|---|---|
-| High-Fidelity Alerts | Critical, High | **21 days** | Anomaly + Composite; chunked into 7-day API calls |
-| Compliance | Critical, High | **21 days** | Sequential fetch to avoid rate-limit collisions |
-| Identities | Critical + 75%+ unused + Full Admin | **21 days** | AWS / Azure / GCP roles, users, service accounts |
-| Secrets | All | **21 days** | |
+| High-Fidelity Alerts | Critical, High | **14 days** | Policy + Anomaly + Composite; chunked into 7-day API calls |
+| Compliance | Critical, High | **14 days** | Sequential fetch to avoid rate-limit collisions |
+| Identities | Critical + 75%+ unused + Full Admin | **7 days** | AWS / Azure / GCP roles, users, service accounts; hard-capped at 7d (LQL limit) |
+| Secrets (SSH keys) | All | **7 days** | Hard-capped at 7d (LQL limit) |
+| Secrets All | All | **7 days** | Hard-capped at 7d (LQL limit) |
 | CVEs / Vulnerabilities | Critical, High · riskScore ≥ 8 · Unpatched · Internet-exposed hosts | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged |
 
-The default window is **21 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs always remain at 7 days.
+The default window is **14 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs, Identities, and Secrets always remain at 7 days due to API/LQL limits.
 
 ---
 
@@ -221,7 +222,7 @@ cd rca_ui
 node server.js
 ```
 
-Open `http://localhost:8080`. For production HTTPS, follow the full setup below.
+Open `http://localhost:8888`. For production HTTPS, follow the full setup below.
 
 ---
 
@@ -371,7 +372,7 @@ docker cp rca:/app/contacts.csv ./contacts.csv  # visitor registrations
 docker logs -f rca
 ```
 
-Phase 2 (compliance) can take 30–60 s. Wait for the live indicator to turn green.
+Phase 2 (compliance then secretsAll) runs sequentially after Phase 1 and can take 60–120 s. Wait for the live indicator to turn green.
 
 ### HTTPS Certificate Not Issued
 

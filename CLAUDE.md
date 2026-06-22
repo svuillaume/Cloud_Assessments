@@ -25,7 +25,7 @@ cd cnapp_rca/rca_ui
 LW_ACCOUNT=your-tenant.lacework.net \
 LW_KEY_ID=FORTINET_XXXXXXXX \
 LW_SECRET=_xxxxxxxx \
-PORT=8080 \
+PORT=8888 \
 node server.js
 
 # Hot-deploy after editing server.js (running container named 'rca'):

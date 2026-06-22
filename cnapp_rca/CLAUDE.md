@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cd rca_ui
 
-# Plain HTTP on :8080 (no creds needed — data will be empty/error but server starts)
+# Plain HTTP on :8888 (no creds needed — data will be empty/error but server starts)
 node server.js
 
 # With real API credentials
