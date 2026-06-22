@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Fortinet Rapid Cloud Assessment empowered by FortiCNAPP — Live Dashboard
-// Usage:  node server.js   |   open http://localhost:8080
+// Usage:  node server.js   |   open http://localhost:8888
 // No npm packages required.
 
 'use strict';
@@ -28,7 +28,7 @@ const LW_ACCOUNT    = process.env.LW_ACCOUNT    || 'partner-demo.lacework.net';
 const LW_KEY_ID     = process.env.LW_KEY_ID     || _keyFileData.keyId    || 'YOUR_KEY_ID';
 const LW_SECRET     = process.env.LW_SECRET     || _keyFileData.secret   || 'YOUR_SECRET_KEY';
 const LW_SUBACCOUNT = process.env.LW_SUBACCOUNT || _keyFileData.subAccount || _keyFileData.sub_account || '';
-const PORT       = Number(process.env.PORT)     || 8080;
+const PORT       = Number(process.env.PORT)     || 8888;
 const PORT_TLS   = Number(process.env.PORT_TLS) || 8443;
 const TLS_CERT   = process.env.TLS_CERT || '';  // path to fullchain.pem
 const TLS_KEY    = process.env.TLS_KEY  || '';  // path to privkey.pem
@@ -39,7 +39,7 @@ function startRefreshTimer() {
   if (_refreshTimer) clearInterval(_refreshTimer);
   _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
 }
-const DAYS_BACK  = 28;   // look-back window default
+const DAYS_BACK  = 14;   // look-back window default
 let dynamicDaysBack = DAYS_BACK;
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ function request(method, hostname, path, headers, body, timeoutMs = 30000) {
     const resolvedIP = hostname === LW_ACCOUNT ? accountIP : null;
     const opts = {
       hostname, port: 443, path, method,
-      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, resolvedIP, 4) } : {}),
+      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, [{ address: resolvedIP, family: 4 }]) } : {}),
       headers: {
         'Content-Type': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
@@ -198,17 +198,24 @@ async function withRetry(fn, label, retries = 3) {
       console.log(`  [retry] ${label} got ${result.status}, attempt ${i + 1}/${retries}`);
     } catch (e) {
       console.log(`  [retry] ${label} error: ${e.message}, attempt ${i + 1}/${retries}`);
-      if (i === retries - 1) throw e;
+      if (i === retries - 1 || e.message.includes('timed out')) throw e;
     }
     await new Promise(r => setTimeout(r, 2000 * (i + 1)));
   }
   return fn();
 }
 
-async function post(path, body) {
+function subAccountHeaders(tok) {
+  return {
+    Authorization: `Bearer ${tok}`,
+    ...(LW_SUBACCOUNT ? { 'Account-Name': LW_SUBACCOUNT } : {}),
+  };
+}
+
+async function post(path, body, timeoutMs = 30000) {
   const tok = await ensureToken();
   const { status, body: resp } = await withRetry(
-    () => request('POST', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body),
+    () => request('POST', LW_ACCOUNT, `/api/v2/${path}`, subAccountHeaders(tok), body, timeoutMs),
     path,
   );
   if (status === 204) return [];
@@ -220,7 +227,7 @@ async function post(path, body) {
 async function get(path) {
   const tok = await ensureToken();
   const { status, body: resp } = await withRetry(
-    () => request('GET', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, null),
+    () => request('GET', LW_ACCOUNT, `/api/v2/${path}`, subAccountHeaders(tok), null),
     path,
   );
   if (status === 204) return null;
@@ -231,13 +238,13 @@ async function get(path) {
 
 async function postRaw(path, body, timeoutMs = 30000) {
   const tok = await ensureToken();
-  const { status, body: resp } = await request('POST', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body, timeoutMs);
+  const { status, body: resp } = await request('POST', LW_ACCOUNT, `/api/v2/${path}`, subAccountHeaders(tok), body, timeoutMs);
   return { status, resp };
 }
 
 async function putRaw(path, body, timeoutMs = 30000) {
   const tok = await ensureToken();
-  const { status, body: resp } = await request('PUT', LW_ACCOUNT, `/api/v2/${path}`, { Authorization: `Bearer ${tok}` }, body, timeoutMs);
+  const { status, body: resp } = await request('PUT', LW_ACCOUNT, `/api/v2/${path}`, subAccountHeaders(tok), body, timeoutMs);
   return { status, resp };
 }
 
@@ -273,10 +280,10 @@ async function fetchAlerts() {
     post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], paging: { rows: 500 } }),
   ]));
   const rows = batches.flat();
-  const CATS = new Set(['anomaly', 'composite']);
+  const CATS = new Set(['anomaly', 'composite', 'policy', 'compliance', 'app']);
   const filtered = rows
     .filter(r => { const s = (r.status || '').toLowerCase(); return s === 'open' || s === 'in progress'; })
-    .filter(r => CATS.has((r.derivedFields?.category || '').toLowerCase()));
+    .filter(r => { const c = (r.derivedFields?.category || '').toLowerCase(); return CATS.has(c) || c === ''; });
   console.log('[alerts] raw:',rows.length,'after hf filter:',filtered.length);
   return filtered
     .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
@@ -306,7 +313,7 @@ async function fetchVulns() {
         'hostRiskInfo', 'startTime',
       ],
       paging: { rows: 5000 },
-    });
+    }, 60000);
   }
 
   const [crits, highs] = await Promise.all([
@@ -336,12 +343,10 @@ async function fetchVulns() {
     const hs = parseFloat(r.hostRiskScore ?? r.riskScore ?? r.cveRiskScore ?? 0);
     if (hs < 8) return false;
 
-    // Internet exposure: machineTags.lw_InternetExposure === "Yes" only
-    const lwInet = mtObj ? (mtObj.lw_InternetExposure || '') : (mtArr?.find(t => t.key === 'lw_InternetExposure')?.value || '');
-    return lwInet === 'Yes';
+    return true;
   });
 
-  console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → hostRisk>=8 & internet-exposed: ${filtered.length}`);
+  console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → hostRisk>=8: ${filtered.length}`);
   return filtered
     .sort((a, b) => parseFloat(b.cveRiskScore ?? b.hostRiskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.hostRiskScore ?? 0))
     .slice(0, 500);
@@ -392,7 +397,7 @@ async function fetchCompliance() {
           { name: 'StartTimeRange', value: tf2.startTime },
           { name: 'EndTimeRange',   value: tf2.endTime   },
         ],
-      });
+      }, 60000);
       console.log(`  [compliance] ${p.policyId} → ${rows.length} rows`);
       if (rows.length) return {
         alertId:     p.policyId,
@@ -431,7 +436,7 @@ async function fetchCompliance() {
 // LW_CE_IDENTITIES — main identity data, with optional TRUST_POLICY enrichment
 
 async function fetchIdentities() {
-  const tf = timeFilter();
+  const tf = timeFilter(7); // hard-cap at 7 days
 
   const mainQuery = `{
     source { LW_CE_IDENTITIES }
@@ -460,11 +465,11 @@ async function fetchIdentities() {
     post('Queries/execute', {
       query: { queryText: mainQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
-    }).catch(() => []),
+    }, 60000).catch(() => []),
     post('Queries/execute', {
       query: { queryText: trustQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
-    }).catch(() => []),
+    }, 60000).catch(() => []),
   ]);
 
   // Build trust map: PRINCIPAL_ID → TRUST_POLICY
@@ -546,7 +551,7 @@ async function fetchIdentities() {
 // LW_HE_SECRETS_ALL dataset — all discovered secrets across hosts
 
 async function fetchSecretsAll() {
-  const tf = timeFilter();
+  const tf = timeFilter(7); // hard-cap at 7 days — larger windows time out
   const tok = await ensureToken();
   const timeArgs = [
     { name: 'StartTimeRange', value: tf.startTime },
@@ -554,16 +559,16 @@ async function fetchSecretsAll() {
   ];
 
   // Run secrets fetch + machine state query in parallel
-  const secretsQueryText = `{source { LW_HE_SECRETS_ALL } return distinct {BATCH_START_TIME, BATCH_END_TIME, BATCH_ID, RECORD_CREATED_TIME, MID, HOSTNAME, IS_IN_CONTAINER, CONTAINER_KEY, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
+  const secretsQueryText = `{source { LW_HE_SECRETS_ALL } return {RECORD_CREATED_TIME, MID, HOSTNAME, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
   const machQueryText    = `{source { LW_HE_MACHINES } return { MID, HOSTNAME, TAGS }}`;
 
   const [r1resp, machResp] = await Promise.all([
     request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
-      { Authorization: `Bearer ${tok}` },
-      { query: { queryText: secretsQueryText }, arguments: timeArgs }),
+      subAccountHeaders(tok),
+      { query: { queryText: secretsQueryText }, arguments: timeArgs }, 60000),
     request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
-      { Authorization: `Bearer ${tok}` },
-      { query: { queryText: machQueryText }, arguments: timeArgs })
+      subAccountHeaders(tok),
+      { query: { queryText: machQueryText }, arguments: timeArgs }, 60000)
       .catch(() => ({ status: 0, body: null })),
   ]);
 
@@ -634,7 +639,7 @@ async function fetchSecretsAll() {
 // LW_HE_SECRETS_SSH_PRIVATE_KEYS dataset — SSH private keys detected on hosts
 
 async function fetchSecrets() {
-  const tf = timeFilter();
+  const tf = timeFilter(7); // hard-cap at 7 days
   // FILE_PERMISSIONS is a top-level Number (Unix mode including file type bits).
   // Regular file + chmod 400 = 0o100400 = 33024.
   // Filter: > 33024 means at least one permission bit beyond owner-read is set.
@@ -646,7 +651,7 @@ async function fetchSecrets() {
       { name: 'StartTimeRange', value: tf.startTime },
       { name: 'EndTimeRange',   value: tf.endTime   },
     ],
-  });
+  }, 60000);
   console.log(`  [secrets-ssh] total permissive (>chmod 400): ${rows.length}`);
   return rows;
 }
@@ -665,12 +670,11 @@ async function refreshData() {
   const errors = {};
 
   // Phase 1: fast parallel fetch — update cache immediately so UI is responsive
-  const [a, v, i, s, sa] = await Promise.allSettled([
+  const [a, v, i, s] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
     fetchSecrets(),
-    fetchSecretsAll(),
   ]);
 
   function unwrap(res, key) {
@@ -684,30 +688,36 @@ async function refreshData() {
   const vulns      = unwrap(v,  'vulns');
   const identities = unwrap(i,  'identities');
   const secrets    = unwrap(s,  'secrets');
-  const secretsAll = unwrap(sa, 'secretsAll');
 
-  // Publish fast data right away; compliance will update the cache when ready
+  // Publish fast data right away; compliance + secretsAll will update the cache when ready
   cache = {
     ...cache,
-    alerts, vulns, identities, secrets, secretsAll,
+    alerts, vulns, identities, secrets,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
     daysBack: dynamicDaysBack,
     riskScore: calcRiskScore(alerts, vulns, identities),
-    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: secretsAll.length },
+    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: cache.secretsAll?.length ?? 0 },
   };
 
-  // Phase 2: compliance runs after (avoids rate-limit collision with identities LQL)
+  // Phase 2: compliance then secretsAll — sequential to avoid rate-limit and contention
   const c = await fetchCompliance().then(v => ({ status: 'fulfilled', value: v }))
                                    .catch(e => ({ status: 'rejected', reason: e }));
   const freshComp  = unwrap(c, 'compliance');
   // Retain last good compliance result when rate-limited (429 → empty list)
   const compliance = freshComp.length > 0 ? freshComp : (cache.compliance ?? []);
 
+  cache = { ...cache, compliance, summary: { ...cache.summary, compliance: compliance.length } };
+
+  // Fetch secretsAll last — large LQL query, run alone to avoid contention
+  const sa = await fetchSecretsAll().then(v => ({ status: 'fulfilled', value: v }))
+                                    .catch(e => ({ status: 'rejected', reason: e }));
+  const secretsAll = unwrap(sa, 'secretsAll');
+
   cache = {
     ...cache,
-    compliance,
+    secretsAll,
     summary: {
       alerts:     alerts.length,
       vulns:      vulns.length,
@@ -718,7 +728,7 @@ async function refreshData() {
     },
   };
 
-  console.log(`[done] alerts:${alerts.length} vulns:${vulns.length} compliance:${compliance.length} identities:${identities.length}`);
+  console.log(`[done] alerts:${alerts.length} vulns:${vulns.length} compliance:${compliance.length} identities:${identities.length} secretsAll:${secretsAll.length}`);
   if (Object.keys(errors).length) console.log('[errors]', errors);
 }
 
@@ -1117,10 +1127,6 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
     Host Internet Exposure
   </div>
-  <div class="sb-item" id="nav-asset-risk" onclick="nav('asset-risk')">
-    <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-    Correlated Risk / Exploit
-  </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Identities
@@ -1395,8 +1401,8 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Host Internet Exposure</div>
-      <div class="vh-sub">Internet-exposed hosts · CVE risk ≥ 8 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
+      <div class="vh-title">Host Exposure &amp; Risk</div>
+      <div class="vh-sub">Internet-exposed &amp; Private hosts · CVE risk ≥ 8 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
   </div>
@@ -1540,141 +1546,134 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <button class="lab-tab" id="labtab-gcp" data-csp="gcp" onclick="switchLabTab('gcp')">GCP</button>
   </div>
 
-  <!-- Global — Consequence vs Likelihood risk matrix -->
+  <!-- Global — 5 Layers of Risk Assessment (Exploit Simulation) -->
   <div id="lab-global-panel">
   <div class="jmap-outer">
-  <svg class="jmap-svg" viewBox="0 0 900 380" preserveAspectRatio="xMidYMid meet">
+  <svg class="jmap-svg" viewBox="0 0 900 540" preserveAspectRatio="xMidYMid meet">
     <defs>
       <filter id="jnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
-        <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
+        <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>
       </filter>
     </defs>
 
-    <!-- Chart title -->
-    <text x="502" y="22" text-anchor="middle" font-size="11" font-weight="900" fill="#1e293b" letter-spacing="3" font-family="-apple-system,sans-serif">CONSEQUENCE  VS  LIKELIHOOD</text>
-    <!-- Rotated Y-axis label -->
-    <text transform="rotate(-90)" x="-188" y="14" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="2" font-family="-apple-system,sans-serif">Consequence</text>
+    <!-- Layer bands -->
+    <rect x="4" y="4"   width="892" height="106" rx="10" fill="rgba(239,68,68,.05)"  stroke="rgba(239,68,68,.15)"  stroke-width="1"/>
+    <rect x="4" y="122" width="892" height="128" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>
+    <rect x="4" y="262" width="892" height="148" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>
+    <rect x="4" y="422" width="892" height="114" rx="10" fill="rgba(71,85,105,.04)"  stroke="rgba(71,85,105,.13)"  stroke-width="1"/>
 
-    <!-- Risk matrix background — green base, overlays for yellow/orange/red zones -->
-    <!-- Chart area: x=115..890 (775px wide), y=40..335 (295px tall), 5×5 cells 155×59 -->
-    <rect x="115" y="40" width="775" height="295" fill="#bbf7d0" rx="3" opacity="0.75"/>
-    <!-- Row 0 Catastrophic: yellow@col0, orange@col1, red@col2-4 -->
-    <rect x="115" y="40" width="155" height="59" fill="#fef08a" opacity="0.9"/>
-    <rect x="270" y="40" width="155" height="59" fill="#fed7aa" opacity="0.9"/>
-    <rect x="425" y="40" width="465" height="59" fill="#fecaca" opacity="0.9"/>
-    <!-- Row 1 Major: yellow@col1, orange@col2-3, red@col4 -->
-    <rect x="270" y="99" width="155" height="59" fill="#fef08a" opacity="0.9"/>
-    <rect x="425" y="99" width="310" height="59" fill="#fed7aa" opacity="0.9"/>
-    <rect x="735" y="99" width="155" height="59" fill="#fecaca" opacity="0.9"/>
-    <!-- Row 2 Moderate: yellow@col2, orange@col3-4 -->
-    <rect x="425" y="158" width="155" height="59" fill="#fef08a" opacity="0.9"/>
-    <rect x="580" y="158" width="310" height="59" fill="#fed7aa" opacity="0.9"/>
-    <!-- Row 3 Minor: yellow@col3-4 -->
-    <rect x="580" y="217" width="310" height="59" fill="#fef08a" opacity="0.9"/>
-    <!-- Row 4 Insignificant: yellow@col4 -->
-    <rect x="735" y="276" width="155" height="59" fill="#fef08a" opacity="0.9"/>
+    <!-- Layer number chips (left) -->
+    <circle cx="24" cy="57"  r="12" fill="#ef4444" opacity=".18"/>
+    <text   x="24"  y="61"  text-anchor="middle" font-size="9" font-weight="800" fill="#ef4444" letter-spacing=".5" font-family="-apple-system,sans-serif">01</text>
+    <circle cx="24" cy="187" r="12" fill="#f97316" opacity=".18"/>
+    <text   x="24"  y="191" text-anchor="middle" font-size="9" font-weight="800" fill="#f97316" letter-spacing=".5" font-family="-apple-system,sans-serif">02</text>
+    <circle cx="24" cy="338" r="12" fill="#f59e0b" opacity=".18"/>
+    <text   x="24"  y="342" text-anchor="middle" font-size="9" font-weight="800" fill="#f59e0b" letter-spacing=".5" font-family="-apple-system,sans-serif">03</text>
+    <circle cx="24" cy="469" r="12" fill="#475569" opacity=".18"/>
+    <text   x="24"  y="473" text-anchor="middle" font-size="9" font-weight="800" fill="#475569" letter-spacing=".5" font-family="-apple-system,sans-serif">04</text>
 
-    <!-- Grid lines -->
-    <g stroke="#94a3b8" stroke-width="0.6" fill="none" opacity="0.5">
-      <line x1="115" y1="40"  x2="115" y2="335"/>
-      <line x1="270" y1="40"  x2="270" y2="335"/>
-      <line x1="425" y1="40"  x2="425" y2="335"/>
-      <line x1="580" y1="40"  x2="580" y2="335"/>
-      <line x1="735" y1="40"  x2="735" y2="335"/>
-      <line x1="890" y1="40"  x2="890" y2="335"/>
-      <line x1="115" y1="40"  x2="890" y2="40"/>
-      <line x1="115" y1="99"  x2="890" y2="99"/>
-      <line x1="115" y1="158" x2="890" y2="158"/>
-      <line x1="115" y1="217" x2="890" y2="217"/>
-      <line x1="115" y1="276" x2="890" y2="276"/>
-      <line x1="115" y1="335" x2="890" y2="335"/>
+    <!-- MITRE tactic labels (right) -->
+    <text x="892" y="61"  text-anchor="end" font-size="8" font-weight="700" fill="#ef4444" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Initial Access · <tspan opacity=".55">TA0001</tspan></text>
+    <text x="892" y="191" text-anchor="end" font-size="8" font-weight="700" fill="#6366f1" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Reconnaissance · <tspan opacity=".55">TA0043</tspan></text>
+    <text x="892" y="473" text-anchor="end" font-size="8" font-weight="700" fill="#dc2626" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Impact · <tspan opacity=".55">TA0040</tspan></text>
+
+    <!-- Gray track underlay -->
+    <g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">
+      <line x1="450" y1="93"  x2="450" y2="139"/>
+      <line x1="450" y1="235" x2="94"  y2="300"/>
+      <line x1="450" y1="235" x2="267" y2="300"/>
+      <line x1="450" y1="235" x2="450" y2="300"/>
+      <line x1="450" y1="235" x2="633" y2="300"/>
+      <line x1="450" y1="235" x2="806" y2="300"/>
+      <line x1="94"  y1="376" x2="450" y2="425"/>
+      <line x1="267" y1="376" x2="450" y2="425"/>
+      <line x1="450" y1="376" x2="450" y2="425"/>
+      <line x1="633" y1="376" x2="450" y2="425"/>
+      <line x1="806" y1="376" x2="450" y2="425"/>
     </g>
 
-    <!-- Y-axis labels (consequence rows, top=Catastrophic) -->
-    <text x="112" y="73"  text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">5 (Catastrophic)</text>
-    <text x="112" y="132" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">4 (Major)</text>
-    <text x="112" y="191" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">3 (Moderate)</text>
-    <text x="112" y="250" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">2 (Minor)</text>
-    <text x="112" y="309" text-anchor="end" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">1 (Insignificant)</text>
-
-    <!-- X-axis labels (likelihood columns) -->
-    <text x="192" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Rare</text>
-    <text x="347" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Unlikely</text>
-    <text x="502" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Possible</text>
-    <text x="657" y="350" text-anchor="middle" font-size="8"   fill="#475569" font-family="-apple-system,sans-serif">Probable</text>
-    <text x="812" y="350" text-anchor="middle" font-size="7.5" fill="#475569" font-family="-apple-system,sans-serif">Almost Certain</text>
-    <text x="502" y="370" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="2" font-family="-apple-system,sans-serif">Likelihood</text>
-
-    <!-- Attacker entry node (unchanged icon, left of chart) -->
-    <circle cx="60" cy="188" r="38" fill="#ef4444" filter="url(#jnd-shadow)"/>
-    <ellipse cx="60" cy="180" rx="10" ry="7" fill="white"/>
-    <ellipse cx="60" cy="192" rx="12" ry="9" fill="white"/>
-    <ellipse cx="60" cy="205" rx="9"  ry="7" fill="white"/>
-    <line x1="49" y1="184" x2="40" y2="179" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="49" y1="192" x2="38" y2="192" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="49" y1="200" x2="40" y2="205" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="184" x2="80" y2="179" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="192" x2="82" y2="192" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="71" y1="200" x2="80" y2="205" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="55" y1="161" x2="51" y2="153" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="65" y1="161" x2="69" y2="153" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <text x="60" y="236" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>
-
-    <!-- Animated threat flows: attacker → risk matrix (stroke updated by JS via jsnake) -->
-    <g id="jsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="5 15">
-      <line x1="98" y1="188" x2="115" y2="70"  style="animation:path-flow 1.1s linear infinite 0s"/>
-      <line x1="98" y1="188" x2="115" y2="129" style="animation:path-flow 1.1s linear infinite .18s"/>
+    <!-- Animated attack flow — stroke color driven by JS (jsnake) -->
+    <g id="jsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">
+      <line x1="450" y1="93"  x2="450" y2="139" style="animation:path-flow 1s   linear infinite 0s"/>
+      <line x1="450" y1="235" x2="94"  y2="300" style="animation:path-flow 1.1s linear infinite 0s"/>
+      <line x1="450" y1="235" x2="267" y2="300" style="animation:path-flow 1.1s linear infinite .15s"/>
+      <line x1="450" y1="235" x2="450" y2="300" style="animation:path-flow 1.1s linear infinite .3s"/>
+      <line x1="450" y1="235" x2="633" y2="300" style="animation:path-flow 1.1s linear infinite .45s"/>
+      <line x1="450" y1="235" x2="806" y2="300" style="animation:path-flow 1.1s linear infinite .6s"/>
+      <line x1="94"  y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .1s"/>
+      <line x1="267" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .25s"/>
+      <line x1="450" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .4s"/>
+      <line x1="633" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .55s"/>
+      <line x1="806" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .7s"/>
     </g>
 
-    <!-- Node 1 — Identities: Possible × Catastrophic (col2=502, row0=70) -->
-    <circle id="jnd1" cx="502" cy="70" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-    <text x="502" y="63"  text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-    <text id="jnd1-cnt" x="502" y="84"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="530" cy="42" r="11" fill="#FCD34D"/>
-    <text x="530" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- LAYER 1: Attacker -->
+    <circle cx="450" cy="57" r="36" fill="#ef4444" filter="url(#jnd-shadow)"/>
+    <ellipse cx="450" cy="49" rx="9"  ry="6" fill="white"/>
+    <ellipse cx="450" cy="60" rx="11" ry="8" fill="white"/>
+    <ellipse cx="450" cy="72" rx="8"  ry="6" fill="white"/>
+    <line x1="445" y1="33" x2="441" y2="24" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="455" y1="33" x2="459" y2="24" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="439" y1="55" x2="425" y2="53" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="439" y1="60" x2="425" y2="60" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="439" y1="68" x2="425" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="461" y1="55" x2="475" y2="53" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="461" y1="60" x2="475" y2="60" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <line x1="461" y1="68" x2="475" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    <text x="450" y="107" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5" font-family="-apple-system,sans-serif">ATTACKER</text>
 
-    <!-- Node 2 — Crit. Alerts: Almost Certain × Catastrophic (col4=812, row0=70) -->
-    <circle id="jnd2" cx="812" cy="70" r="40" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-    <text x="812" y="63"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
-    <text id="jnd2-cnt" x="812" y="84"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="840" cy="42" r="11" fill="#FCD34D"/>
-    <text x="840" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- LAYER 2: Internet ingress -->
+    <circle cx="450" cy="187" r="48" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>
+    <text x="450" y="193" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>
 
-    <!-- Node 3 — Exposed Hosts: Probable × Catastrophic (col3=657, row0=70) -->
-    <circle id="jnd3" cx="657" cy="70" r="40" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
-    <text x="657" y="59"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
-    <text x="657" y="72"  text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
-    <text id="jnd3-cnt" x="657" y="92"  text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="685" cy="42" r="11" fill="#FCD34D"/>
-    <text x="685" y="47" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- LAYER 3: 5 attack surface nodes -->
+    <!-- Node 1 — Identities -->
+    <circle id="jnd1" cx="94"  cy="338" r="38" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+    <text   x="94"  y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+    <text id="jnd1-cnt" x="94" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <text x="94" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
+    <circle cx="120" cy="311" r="10" fill="#FCD34D"/>
+    <text   x="120" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 4 — Compliance: Unlikely × Major (col1=347, row1=129) -->
-    <circle id="jnd4" cx="347" cy="129" r="40" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-    <text x="347" y="122" text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-    <text id="jnd4-cnt" x="347" y="143" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="375" cy="101" r="11" fill="#FCD34D"/>
-    <text x="375" y="106" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 2 — Crit. Alerts -->
+    <circle id="jnd2" cx="267" cy="338" r="38" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+    <text   x="267" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
+    <text id="jnd2-cnt" x="267" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <text x="267" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
+    <circle cx="293" cy="311" r="10" fill="#FCD34D"/>
+    <text   x="293" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Node 5 — Secrets: Probable × Major (col3=657, row1=129) -->
-    <circle id="jnd5" cx="657" cy="129" r="40" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
-    <text x="657" y="122" text-anchor="middle" font-size="10"  font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
-    <text id="jnd5-cnt" x="657" y="143" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <circle cx="685" cy="101" r="11" fill="#FCD34D"/>
-    <text x="685" y="106" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+    <!-- Node 3 — Exposed Hosts -->
+    <circle id="jnd3" cx="450" cy="338" r="38" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <text   x="450" y="329" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
+    <text   x="450" y="341" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
+    <text id="jnd3-cnt" x="450" y="357" text-anchor="middle" font-size="18" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <text x="450" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#ef4444" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Initial Access · TA0001</text>
+    <circle cx="476" cy="311" r="10" fill="#FCD34D"/>
+    <text   x="476" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Goal — Proactive Security target in safe zone (Rare × Insignificant = green) -->
-    <circle id="jnd6" cx="192" cy="306" r="28" fill="#22c55e" filter="url(#jnd-shadow)"/>
-    <rect x="181" y="287" width="22" height="27" rx="2" fill="white" opacity="0.9"/>
-    <line x1="185" y1="293" x2="199" y2="293" stroke="#22c55e" stroke-width="1.5"/>
-    <line x1="185" y1="298" x2="199" y2="298" stroke="#22c55e" stroke-width="1.5"/>
-    <line x1="185" y1="303" x2="195" y2="303" stroke="#22c55e" stroke-width="1.5"/>
-    <text x="192" y="317" text-anchor="middle" font-size="7"   font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
-    <text x="192" y="326" text-anchor="middle" font-size="7"   font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
-    <text id="jnd6-cnt" x="192" y="337" text-anchor="middle" font-size="7.5" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+    <!-- Node 4 — Compliance -->
+    <circle id="jnd4" cx="633" cy="338" r="38" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+    <text   x="633" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+    <text id="jnd4-cnt" x="633" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <text x="633" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
+    <circle cx="659" cy="311" r="10" fill="#FCD34D"/>
+    <text   x="659" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-    <!-- Goal status pill -->
-    <rect id="jph3" x="140" y="344" width="104" height="17" rx="8.5" fill="#94a3b8"/>
-    <text id="jph3-txt" x="192" y="356" text-anchor="middle" font-size="7.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
+    <!-- Node 5 — Secrets -->
+    <circle id="jnd5" cx="806" cy="338" r="38" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
+    <text   x="806" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
+    <text id="jnd5-cnt" x="806" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+    <text x="806" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#eab308" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Credential Access · T1552</text>
+    <circle cx="832" cy="311" r="10" fill="#FCD34D"/>
+    <text   x="832" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+
+    <!-- LAYER 4: Cloud environment target / posture score -->
+    <circle id="jnd6" cx="450" cy="469" r="44" fill="#ef4444" filter="url(#jnd-shadow)"/>
+    <text x="450" y="458" text-anchor="middle" font-size="7.5" font-weight="700" fill="rgba(255,255,255,.6)" letter-spacing="2" font-family="-apple-system,sans-serif">YOUR CLOUD</text>
+    <text id="jnd6-cnt" x="450" y="477" text-anchor="middle" font-size="11" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+    <rect id="jph3" x="398" y="519" width="104" height="17" rx="8.5" fill="#94a3b8"/>
+    <text id="jph3-txt" x="450" y="531" text-anchor="middle" font-size="7.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
 
   </svg>
   </div>
@@ -1692,58 +1691,109 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <svg class="cjmap-svg" viewBox="0 0 700 480" preserveAspectRatio="xMidYMid meet">
       <defs>
         <filter id="cjnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="rgba(0,0,0,.22)"/>
-        </filter>
-        <filter id="cjph-shadow" x="-5%" y="-30%" width="115%" height="180%">
-          <feDropShadow dx="1" dy="3" stdDeviation="3" flood-color="rgba(0,0,0,.18)"/>
+          <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>
         </filter>
       </defs>
 
-      <!-- Phase chevron headers -->
-      <polygon id="cjph1" points="0,4 350,4 374,27 350,50 0,50" fill="#ef4444" filter="url(#cjph-shadow)"/>
-      <text x="175" y="32" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+      <!-- Top status banner: CRITICAL (left) | GOAL/score (right) -->
+      <rect id="cjph1" x="0"   y="0" width="350" height="46" fill="#ef4444"/>
+      <text x="175" y="29" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
+      <rect id="cjph2" x="350" y="0" width="350" height="46" fill="#94a3b8"/>
+      <text id="cjph2-txt" x="525" y="29" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
+      <!-- Banner divider chevron -->
+      <polygon points="350,0 374,23 350,46" fill="white" opacity=".18"/>
 
-      <polygon id="cjph2" points="350,4 700,4 700,50 350,50 374,27" fill="#94a3b8" filter="url(#cjph-shadow)"/>
-      <text id="cjph2-txt" x="525" y="32" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
+      <!-- Layer bands -->
+      <rect x="4" y="50"  width="692" height="96"  rx="8" fill="rgba(239,68,68,.05)"  stroke="rgba(239,68,68,.15)"  stroke-width="1"/>
+      <rect x="4" y="156" width="692" height="86"  rx="8" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>
+      <rect x="4" y="252" width="692" height="120" rx="8" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>
+      <rect x="4" y="382" width="692" height="94"  rx="8" fill="rgba(71,85,105,.04)"  stroke="rgba(71,85,105,.13)"  stroke-width="1"/>
 
-      <!-- Background snake (gray dashed) -->
-      <path d="M250,155 L250,365 C250,435 550,435 550,365 L550,155"
-        fill="none" stroke="#e2e8f0" stroke-width="10" stroke-dasharray="16,10" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Layer number chips -->
+      <circle cx="22" cy="98"  r="10" fill="#ef4444" opacity=".2"/>
+      <text   x="22"  y="102" text-anchor="middle" font-size="8" font-weight="800" fill="#ef4444" font-family="-apple-system,sans-serif">01</text>
+      <circle cx="22" cy="199" r="10" fill="#f97316" opacity=".2"/>
+      <text   x="22"  y="203" text-anchor="middle" font-size="8" font-weight="800" fill="#f97316" font-family="-apple-system,sans-serif">02</text>
+      <circle cx="22" cy="312" r="10" fill="#f59e0b" opacity=".2"/>
+      <text   x="22"  y="316" text-anchor="middle" font-size="8" font-weight="800" fill="#f59e0b" font-family="-apple-system,sans-serif">03</text>
+      <circle cx="22" cy="429" r="10" fill="#475569" opacity=".2"/>
+      <text   x="22"  y="433" text-anchor="middle" font-size="8" font-weight="800" fill="#475569" font-family="-apple-system,sans-serif">04</text>
 
-      <!-- Colored animated snake -->
-      <path id="cjsnake" d="M250,155 L250,365 C250,435 550,435 550,365 L550,155"
-        fill="none" stroke="#ef4444" stroke-width="5" stroke-dasharray="14,12" stroke-linecap="round" stroke-linejoin="round"
-        style="animation:snake-flow 1.2s linear infinite"/>
+      <!-- MITRE labels (right) -->
+      <text x="694" y="102" text-anchor="end" font-size="7.5" font-weight="700" fill="#ef4444" opacity=".8" font-family="-apple-system,sans-serif">Initial Access · <tspan opacity=".55">TA0001</tspan></text>
+      <text x="694" y="203" text-anchor="end" font-size="7.5" font-weight="700" fill="#6366f1" opacity=".8" font-family="-apple-system,sans-serif">Reconnaissance · <tspan opacity=".55">TA0043</tspan></text>
+      <text x="694" y="433" text-anchor="end" font-size="7.5" font-weight="700" fill="#dc2626" opacity=".8" font-family="-apple-system,sans-serif">Impact · <tspan opacity=".55">TA0040</tspan></text>
 
-      <!-- Direction arrows -->
-      <polygon points="243,246 257,246 250,262" fill="#cbd5e1"/>
-      <polygon points="388,425 402,431 388,437" fill="#cbd5e1"/>
-      <polygon points="543,264 557,264 550,248" fill="#cbd5e1"/>
+      <!-- Gray tracks -->
+      <g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">
+        <line x1="350" y1="130" x2="350" y2="157"/>
+        <line x1="350" y1="241" x2="112" y2="274"/>
+        <line x1="350" y1="241" x2="350" y2="274"/>
+        <line x1="350" y1="241" x2="588" y2="274"/>
+        <line x1="112" y1="352" x2="350" y2="387"/>
+        <line x1="350" y1="352" x2="350" y2="387"/>
+        <line x1="588" y1="352" x2="350" y2="387"/>
+      </g>
 
+      <!-- Animated attack flow (stroke color set by JS via cjsnake) -->
+      <g id="cjsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">
+        <line x1="350" y1="130" x2="350" y2="157" style="animation:path-flow 1s   linear infinite 0s"/>
+        <line x1="350" y1="241" x2="112" y2="274" style="animation:path-flow 1.1s linear infinite 0s"/>
+        <line x1="350" y1="241" x2="350" y2="274" style="animation:path-flow 1.1s linear infinite .2s"/>
+        <line x1="350" y1="241" x2="588" y2="274" style="animation:path-flow 1.1s linear infinite .4s"/>
+        <line x1="112" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .1s"/>
+        <line x1="350" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .3s"/>
+        <line x1="588" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .5s"/>
+      </g>
+
+      <!-- LAYER 1: Attacker -->
+      <circle cx="350" cy="98" r="30" fill="#ef4444" filter="url(#cjnd-shadow)"/>
+      <ellipse cx="350" cy="91" rx="8"  ry="5.5" fill="white"/>
+      <ellipse cx="350" cy="100" rx="10" ry="7"   fill="white"/>
+      <ellipse cx="350" cy="111" rx="7"  ry="5.5" fill="white"/>
+      <line x1="346" y1="78" x2="343" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
+      <line x1="354" y1="78" x2="357" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
+      <line x1="340" y1="95"  x2="328" y2="93"  stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="340" y1="100" x2="328" y2="100" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="340" y1="107" x2="328" y2="109" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="360" y1="95"  x2="372" y2="93"  stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="360" y1="100" x2="372" y2="100" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="360" y1="107" x2="372" y2="109" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <text x="350" y="143" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1.5" font-family="-apple-system,sans-serif">ATTACKER</text>
+
+      <!-- LAYER 2: Internet bubble -->
+      <circle cx="350" cy="199" r="42" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>
+      <text x="350" y="205" text-anchor="middle" font-size="14" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>
+
+      <!-- LAYER 3: 3 factor nodes -->
       <!-- Node 1 — Identities -->
-      <circle id="cjnd1" cx="250" cy="155" r="58" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-      <text x="250" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 1</text>
-      <text x="250" y="153" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-      <text id="cjnd1-cnt" x="250" y="180" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <circle id="cjnd1" cx="112" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+      <text   x="112" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+      <text id="cjnd1-cnt" x="112" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="112" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
+      <circle cx="136" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="136" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
       <!-- Node 2 — Alerts -->
-      <circle id="cjnd2" cx="250" cy="365" r="58" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-      <text x="250" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 2</text>
-      <text x="250" y="363" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Critical Alerts</text>
-      <text id="cjnd2-cnt" x="250" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <circle id="cjnd2" cx="350" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+      <text   x="350" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
+      <text id="cjnd2-cnt" x="350" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="350" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
+      <circle cx="374" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="374" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
       <!-- Node 3 — Compliance -->
-      <circle id="cjnd3" cx="550" cy="365" r="58" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-      <text x="550" y="345" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif" style="pointer-events:none">STEP 3</text>
-      <text x="550" y="363" text-anchor="middle" font-size="12" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-      <text id="cjnd3-cnt" x="550" y="390" text-anchor="middle" font-size="26" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <circle id="cjnd3" cx="588" cy="313" r="38" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+      <text   x="588" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+      <text id="cjnd3-cnt" x="588" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="588" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
+      <circle cx="612" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="612" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-      <!-- Goal — Proactive Security -->
-      <circle id="cjnd-goal" cx="550" cy="155" r="58" fill="#22c55e" filter="url(#cjnd-shadow)"/>
-      <text x="550" y="135" text-anchor="middle" font-size="8.5" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">GOAL</text>
-      <text x="550" y="153" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Proactive</text>
-      <text x="550" y="167" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Security</text>
-      <text id="cjnd-goal-cnt" x="550" y="192" text-anchor="middle" font-size="24" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
+      <!-- LAYER 4: Cloud posture goal -->
+      <circle id="cjnd-goal" cx="350" cy="429" r="38" fill="#22c55e" filter="url(#cjnd-shadow)"/>
+      <text x="350" y="419" text-anchor="middle" font-size="8" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">YOUR CLOUD</text>
+      <text id="cjnd-goal-cnt" x="350" y="440" text-anchor="middle" font-size="10" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
     </svg>
     </div>
   </div>
@@ -1998,23 +2048,91 @@ function _renderVulns(rows,err){
     host.vulns.push(r);
   });
 
-  var hosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
+  var allHosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
 
-  // ── Summary strip ──────────────────────────────────────────────────────────
-  var totalCrit=rows.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
-  var totalHigh=rows.filter(function(r){return(r.severity||'').toLowerCase()==='high';}).length;
-  var totalFix=rows.filter(function(r){return r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');}).length;
+  // Internet-exposed hosts come from vulns data (all have CVE risk ≥ 8)
+  var inetHosts=allHosts.filter(function(h){return h.reach==='Internet Exposed';});
 
-  var html='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
-    +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+hosts.length+' Hosts</span>'
-    +'<span style="font-size:11px;color:var(--muted)">&middot; '+rows.length+' CVEs</span>'
-    +(totalCrit?'<span class="b b-cr">'+totalCrit+' Critical</span>':'')
-    +(totalHigh?'<span class="b b-hi">'+totalHigh+' High</span>':'')
-    +(totalFix?'<span class="b b-ok">'+totalFix+' fixable</span>':'')
-    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; hostRiskScore ≥ 8 &middot; Unpatched &middot; Online / Launched</span>'
+  // Private hosts: all secret-bearing hosts from secretsAll, grouped by HOSTNAME
+  var _CIEM_TYPES=['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
+    'AWS_SECRET_ACCESS_KEY','AWS_ACCESS_KEY','AWS_CREDENTIALS','AWS_SECRET',
+    'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
+  var _privMap={};
+  (_ld.secretsAll||[]).forEach(function(s){
+    var hn=s.HOSTNAME||'';
+    if(!hn)return;
+    var hnl=hn.toLowerCase();
+    if(!_privMap[hnl])_privMap[hnl]={name:hn,ciemSecrets:[],genericSecrets:[]};
+    var t=(s.SECRET_TYPE||'').toUpperCase();
+    if(_CIEM_TYPES.indexOf(t)>=0)_privMap[hnl].ciemSecrets.push(s.SECRET_TYPE||t);
+    else _privMap[hnl].genericSecrets.push(s.SECRET_TYPE||t);
+  });
+  // Enrich private hosts with CVE data from non-internet-exposed vuln rows
+  allHosts.forEach(function(h){
+    if(h.reach==='Internet Exposed')return;
+    var hnl=h.name.toLowerCase();
+    if(_privMap[hnl]){
+      _privMap[hnl].vulns=h.vulns||[];
+      _privMap[hnl].maxRisk=h.maxRisk||0;
+      _privMap[hnl].crit=h.crit||0;
+      _privMap[hnl].high=h.high||0;
+    }
+  });
+
+  var privHosts=Object.values(_privMap)
+    .filter(function(h){return h.ciemSecrets.length||h.genericSecrets.length;})
+    .sort(function(a,b){return(b.ciemSecrets.length*2+b.genericSecrets.length)-(a.ciemSecrets.length*2+a.genericSecrets.length);});
+
+  function summaryStrip(hostArr,rowsArr,label){
+    var tc=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
+    var th=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='high';}).length;
+    var tf=rowsArr.filter(function(r){return r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');}).length;
+    return'<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
+      +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+hostArr.length+' Hosts</span>'
+      +'<span style="font-size:11px;color:var(--muted)">&middot; '+rowsArr.length+' CVEs</span>'
+      +(tc?'<span class="b b-cr">'+tc+' Critical</span>':'')
+      +(th?'<span class="b b-hi">'+th+' High</span>':'')
+      +(tf?'<span class="b b-ok">'+tf+' fixable</span>':'')
+      +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">'+label+'</span>'
+    +'</div>';
+  }
+
+  // Tab bar
+  var html='<div style="display:flex;gap:0;border-bottom:2px solid var(--border);background:var(--surface)">'
+    +'<button id="vtab-inet" class="lab-tab active" onclick="switchVTab(&apos;inet&apos;)" style="border-radius:0;border-bottom:none;padding:9px 18px;font-size:11px">'
+      +'Internet Exposed <span style="font-size:9px;background:#fee2e2;color:#b91c1c;border-radius:10px;padding:1px 6px;margin-left:5px;font-weight:700">'+inetHosts.length+'</span>'
+    +'</button>'
+    +'<button id="vtab-priv" class="lab-tab" onclick="switchVTab(&apos;priv&apos;)" style="border-radius:0;border-bottom:none;padding:9px 18px;font-size:11px">'
+      +'Private Hosts <span style="font-size:9px;background:#f3f4f6;color:#374151;border-radius:10px;padding:1px 6px;margin-left:5px;font-weight:700">'+privHosts.length+'</span>'
+    +'</button>'
   +'</div>';
 
-  // ── Per-host sections ──────────────────────────────────────────────────────
+  // ── Internet Exposed panel ─────────────────────────────────────────────────
+  html+='<div id="vpanel-inet">';
+  if(!inetHosts.length){
+    html+='<div class="state">No internet-exposed hosts with CVE risk ≥ 8</div>';
+  }else{
+    var inetRows=rows.filter(function(r){
+      var mt2=r.machineTags;
+      var mtObj=mt2&&typeof mt2==='object'&&!Array.isArray(mt2)?mt2:null;
+      return mtObj&&mtObj.lw_InternetExposure==='Yes';
+    });
+    html+=summaryStrip(inetHosts,inetRows,'Internet-exposed &middot; hostRiskScore ≥ 8 &middot; Unpatched');
+  }
+
+  // Pre-compute compliance → host map (JSON.stringify once per policy, not per host)
+  var _compMatch={};
+  inetHosts.forEach(function(h){_compMatch[h.name.toLowerCase()]=[];});
+  ((_ld.compliance)||[]).forEach(function(c){
+    if(!Array.isArray(c.resources)||!c.resources.length)return;
+    var resJson=JSON.stringify(c.resources).toLowerCase();
+    Object.keys(_compMatch).forEach(function(hn){
+      if(resJson.indexOf(hn)>=0)_compMatch[hn].push(c);
+    });
+  });
+
+  // ── Per-host sections (internet exposed) ───────────────────────────────────
+  var hosts=inetHosts;
   hosts.forEach(function(host,idx){
     var rsCol=host.maxRisk>=9.5?'#b91c1c':host.maxRisk>=8.5?'#c2410c':'#92400e';
     var bodyId='cve-body-'+idx;
@@ -2032,22 +2150,15 @@ function _renderVulns(rows,err){
       // ── Host header row ────────────────────────────────────────────────────
       +'<div style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
-        // Hostname + inline hyperlinks
         +'<div style="flex:1;min-width:0">'
           +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
-          +'<span style="display:flex;gap:5px;align-items:center;margin-top:2px">'
+          +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
             +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">Machine Details</button>'
             +'<span style="font-size:9px;color:var(--muted)">|</span>'
             +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
+            +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 9px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap;margin-left:4px">&#9654; CVEs</button>'
           +'</span>'
         +'</div>'
-        +'<span style="display:flex;gap:5px;align-items:center;flex-shrink:0">'
-          +(host.crit?'<span class="b b-cr" style="font-size:9px">'+host.crit+' Crit</span>':'')
-          +(host.high?'<span class="b b-hi" style="font-size:9px">'+host.high+' High</span>':'')
-          +(host.fixable?'<span class="b b-ok" style="font-size:9px">'+host.fixable+' fix</span>':'')
-          +'<span style="font-size:18px;font-weight:800;color:'+rsCol+';font-variant-numeric:tabular-nums;line-height:1;min-width:32px;text-align:right">'+host.maxRisk.toFixed(1)+'</span>'
-          +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 10px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap">&#9654; CVEs</button>'
-        +'</span>'
       +'</div>'
       // Expanded CVE section (action list removed — links are now inline on the hostname)
       +'<div id="'+bodyId+'" style="display:none;margin-top:8px;padding-left:28px">'
@@ -2067,12 +2178,7 @@ function _renderVulns(rows,err){
       // ── Non-Compliance violations matched to this host ──────────────────────
       +(function(){
         var hn=host.name.toLowerCase();
-        var matched=((_ld.compliance)||[]).filter(function(c){
-          if(!Array.isArray(c.resources)||!c.resources.length)return false;
-          return c.resources.some(function(res){
-            return JSON.stringify(res).toLowerCase().indexOf(hn)>=0;
-          });
-        });
+        var matched=_compMatch[hn]||[];
         if(!matched.length)return'';
         return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
           +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
@@ -2141,6 +2247,55 @@ function _renderVulns(rows,err){
     +'</div>';    // closes host row
   });
 
+  html+='</div>'; // closes vpanel-inet
+
+  // ── Private Hosts panel ────────────────────────────────────────────────────
+  html+='<div id="vpanel-priv" style="display:none">';
+  if(!privHosts.length){
+    html+='<div class="state">No private hosts with exposed Secrets found</div>';
+  }else{
+    var privCap=50;
+    // Summary bar for private hosts
+    html+='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
+      +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+privHosts.length+' Private Hosts</span>'
+      +'<span style="font-size:11px;color:var(--muted)">&middot; Exposed Secrets &amp; Credentials</span>'
+      +(_arCritMisc?'<span class="b b-hi" style="font-size:9px">'+_arCritMisc+' Critical Misconfigs</span>':'')
+      +(_critIdents.length?'<span class="b" style="font-size:9px;background:#ede9fe;color:#7c3aed;border:1px solid #ddd6fe">'+_critIdents.length+' Privileged Identities</span>':'')
+      +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Private &middot; Correlated Secrets · Identities &amp; Misconfigs</span>'
+    +'</div>'
+    +(privHosts.length>privCap?'<div style="font-size:10px;color:var(--muted);padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border)">Showing top '+privCap+' of '+privHosts.length+' hosts by secret severity</div>':'');
+    privHosts.slice(0,privCap).forEach(function(host,pidx){
+      var hasCiem=host.ciemSecrets.length>0;
+      var secCol=hasCiem?'#b91c1c':'#92400e';
+      var secBg=hasCiem?'#fee2e2':'#fffbeb';
+      html+='<div style="padding:10px 16px 9px;border-bottom:1px solid var(--border)">'
+        +'<div style="display:flex;align-items:center;gap:10px">'
+          +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(pidx+1)+'</span>'
+          +'<div style="flex:1;min-width:0">'
+            +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:700;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+            +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
+              +(hasCiem?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+host.ciemSecrets.length+' credential'+(host.ciemSecrets.length!==1?'s':'')+'</span>':'')
+              +(host.genericSecrets.length?'<span style="font-size:9px;font-weight:600;color:#92400e;background:#fffbeb;border-radius:3px;padding:1px 6px">'+host.genericSecrets.length+' secret'+(host.genericSecrets.length!==1?'s':'')+'</span>':'')
+              +(host.vulns&&host.vulns.length?'<span style="font-size:9px;font-weight:600;color:#c2410c;background:#fff7ed;border-radius:3px;padding:1px 6px">'+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':'')+(host.crit?' &middot; '+host.crit+' crit':'')+'</span>':'')
+              +(_arCritMisc?'<span style="font-size:9px;color:#4b5563">Misconfigs &middot; '+_arCritMisc+'</span>':'')
+              +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px;margin-left:4px">Machine Details</button>'
+              +'<span style="font-size:9px;color:var(--muted)">|</span>'
+              +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
+            +'</span>'
+          +'</div>'
+          // Secret type chips on right
+          +'<div style="display:flex;gap:3px;flex-wrap:wrap;max-width:200px;justify-content:flex-end">'
+            +host.ciemSecrets.slice(0,3).map(function(t){return'<span style="font-size:8px;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(t)+'</span>';}).join('')
+            +host.genericSecrets.slice(0,2).map(function(t){return'<span style="font-size:8px;background:#fffbeb;color:#92400e;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(t)+'</span>';}).join('')
+            +((host.ciemSecrets.length+host.genericSecrets.length)>5?'<span style="font-size:8px;color:var(--muted)">+'+(host.ciemSecrets.length+host.genericSecrets.length-5)+' more</span>':'')
+          +'</div>'
+        +'</div>'
+      +'</div>';
+    });
+  }
+  html+='</div>'; // closes vpanel-priv
+
+  _renderedPrivMap=_privMap;
   setBody('body-v',html);
 }
 
@@ -2585,8 +2740,7 @@ function renderAssetRisk(d){
   }
   // Store for openHostGraph — same map, same keys, same critMisconfig
   _renderedAssetMap={map:map,maxRisk:maxRisk,critMisc:critMisconfig};
-
-  if(!sorted.length){state('body-ar','','No significant host-level risk detected');return;}
+  return; // view removed from nav — skip all HTML rendering below
 
   // Tier definitions (console palette)
   const TIERS={
@@ -2675,7 +2829,7 @@ function renderAssetRisk(d){
             ?'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:700;color:#b91c1c;word-break:break-all;text-decoration:underline;text-underline-offset:2px">'+e(a.name)+'</span>'
             +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
             +inetHtml
-            +'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px;letter-spacing:.04em">&#9650; Exploit Graph</span>'
+            +'<button class="goto-host-card-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border:none;border-radius:3px;padding:2px 7px;letter-spacing:.04em;cursor:pointer">&#9650; Exploit Graph</button>'
             :'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:600;color:#111827;word-break:break-all">'+e(a.name)+'</span>'
             +'<span style="font-size:9px;font-weight:700;color:'+t.col+';letter-spacing:.08em;text-transform:uppercase">'+t.label+'</span>'
           )
@@ -2686,6 +2840,7 @@ function renderAssetRisk(d){
           +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center" onclick="event.stopPropagation()">'
             +'<button class="mach-inv-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #d1d5db;cursor:pointer;background:#f9fafb;color:#374151;font-weight:600">Details</button>'
             +(a.publicIP?'<button class="geo-btn" data-ip="'+e(a.publicIP)+'" data-host="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #bfdbfe;cursor:pointer;background:#eff6ff;color:#1d4ed8;font-weight:600">GeoIP</button>':'')
+            +(isExposed?'<button class="goto-host-card-btn" data-hostname="'+e(a.name)+'" style="font-size:9px;padding:1px 7px;border-radius:3px;border:1px solid #fca5a5;cursor:pointer;background:#fff1f2;color:#b91c1c;font-weight:600">&#9651; Exploit Graph</button>':'')
             +'<button class="cp-btn" data-cp="'+e(a.name)+'" title="Copy">'+cpIcon+'</button>'
           +'</span>'
         +'</div>'
@@ -2730,81 +2885,98 @@ function renderAssetRisk(d){
       if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
 
       var n=factors.length;
-      var H=n===1?140:n===2?210:280;
-      var cy=H/2;
-      var fy=n===1?[cy]:n===2?[cy-50,cy+50]:[cy-70,cy,cy+70];
-      var sid='hpi'+a.name.replace(/[^a-zA-Z0-9]/g,'_');
+      var W=860,CX=430,H=526;
+      var L1Y=57,L2Y=185,L3Y=330,L4Y=467;
+      var rT=36,rN=50,rF=42,rH=52;
+      var sid='hpi_'+a.name.replace(/[^a-zA-Z0-9]/g,'_');
+      var fx=n===1?[CX]:n===2?[CX-145,CX+145]:[CX-190,CX,CX+190];
 
-      var svg='<svg viewBox="0 0 900 '+H+'" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block">'
-        +'<defs><filter id="'+sid+'" x="-30%" y="-30%" width="160%" height="160%">'
+      // MITRE tactic per factor
+      var mFact=factors.map(function(f){
+        if(f.label==='CVEs')return{t:'Exploitation',id:'T1203',c:'#f97316'};
+        if(f.label==='Secrets')return{t:'Credential Access',id:'T1552',c:'#eab308'};
+        if(f.label==='Non-Compliance')return{t:'Priv. Escalation',id:'T1078',c:'#8b5cf6'};
+        return{t:'Persistence',id:'TA0003',c:'#6b7280'};
+      });
+
+      // Top-down layered kill chain SVG
+      var svg='<svg viewBox="0 0 860 526" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
+        +'<defs><filter id="'+sid+'d" x="-30%" y="-30%" width="160%" height="160%">'
         +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
         +'</filter></defs>';
 
-      // Gray tracks (attacker→host: 100→200, host→factors: 280→446, factors→goal: 526→680)
-      svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">'
-        +'<line x1="100" y1="'+cy+'" x2="200" y2="'+cy+'"/>';
+      // Layer bands
+      svg+='<rect x="4" y="4" width="852" height="106" rx="10" fill="rgba(239,68,68,.05)" stroke="rgba(239,68,68,.15)" stroke-width="1"/>';
+      svg+='<rect x="4" y="122" width="852" height="126" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>';
+      svg+='<rect x="4" y="260" width="852" height="140" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>';
+      svg+='<rect x="4" y="412" width="852" height="110" rx="10" fill="rgba(71,85,105,.04)" stroke="rgba(71,85,105,.13)" stroke-width="1"/>';
+
+      // Layer number chips (left side)
+      [[L1Y,'01','#ef4444'],[L2Y,'02','#f97316'],[L3Y,'03','#f59e0b'],[L4Y,'04','#475569']].forEach(function(l){
+        svg+='<circle cx="24" cy="'+l[0]+'" r="12" fill="'+l[2]+'" opacity=".18"/>';
+        svg+='<text x="24" y="'+(l[0]+4)+'" text-anchor="middle" font-size="9" font-weight="800" fill="'+l[2]+'" letter-spacing=".5">'+l[1]+'</text>';
+      });
+
+      // MITRE tactic labels (right side)
+      [[L1Y,{t:'Initial Access',id:'TA0001',c:'#ef4444'}],[L2Y,{t:'Reconnaissance',id:'TA0043',c:'#6366f1'}],[L4Y,{t:'Impact',id:'TA0040',c:'#dc2626'}]].forEach(function(m){
+        var mi=m[1];
+        svg+='<text x="851" y="'+(m[0]+4)+'" text-anchor="end" font-size="8" font-weight="700" fill="'+mi.c+'" opacity=".8" letter-spacing=".06em">'+mi.t+' · <tspan opacity=".55">'+mi.id+'</tspan></text>';
+      });
+
+      // Gray tracks (underlay)
+      svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">';
+      svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'"/>';
       factors.forEach(function(f,i){
-        svg+='<line x1="280" y1="'+cy+'" x2="446" y2="'+fy[i]+'"/>';
-        svg+='<line x1="526" y1="'+fy[i]+'" x2="680" y2="'+cy+'"/>';
+        svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'"/>';
+        svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'"/>';
       });
       svg+='</g>';
 
-      // Red attack flow
-      svg+='<g stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
-        +'<line x1="100" y1="'+cy+'" x2="200" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite"/>';
+      // Animated attack flow
+      svg+='<g stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">';
+      svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'" style="animation:path-flow 1s linear infinite 0s"/>';
       factors.forEach(function(f,i){
-        svg+='<line x1="280" y1="'+cy+'" x2="446" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
+        svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i)+'s"/>';
+        svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i+0.35)+'s"/>';
       });
       svg+='</g>';
 
-      // Green remediation flow
-      svg+='<g stroke="#22c55e" stroke-width="2" stroke-linecap="round" fill="none" stroke-dasharray="4 12">';
-      factors.forEach(function(f,i){
-        svg+='<line x1="526" y1="'+fy[i]+'" x2="680" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
+      // LAYER 1: Attacker bug icon
+      svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#ef4444" filter="url(#'+sid+'d)"/>';
+      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y-8)+'" rx="9" ry="6" fill="white"/>';
+      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+3)+'" rx="11" ry="8" fill="white"/>';
+      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+15)+'" rx="8" ry="6" fill="white"/>';
+      svg+='<line x1="'+(CX-5)+'" y1="'+(L1Y-24)+'" x2="'+(CX-9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="'+(CX+5)+'" y1="'+(L1Y-24)+'" x2="'+(CX+9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      [[-4,-2],[3,3],[10,13]].forEach(function(lo){
+        svg+='<line x1="'+(CX-11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX-25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+        svg+='<line x1="'+(CX+11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX+25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
       });
-      svg+='</g>';
+      svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5">ATTACKER</text>';
 
-      // Attacker node — exact icon from global Exploit Simulation Layer
-      svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
-      svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+4)+'" rx="12" ry="9" fill="white"/>';
-      svg+='<ellipse cx="60" cy="'+(cy+17)+'" rx="9" ry="7" fill="white"/>';
-      svg+='<line x1="49" y1="'+(cy-4)+'" x2="40" y2="'+(cy-9)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="49" y1="'+(cy+4)+'" x2="38" y2="'+(cy+4)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="49" y1="'+(cy+12)+'" x2="40" y2="'+(cy+17)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="71" y1="'+(cy-4)+'" x2="80" y2="'+(cy-9)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="71" y1="'+(cy+4)+'" x2="82" y2="'+(cy+4)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="71" y1="'+(cy+12)+'" x2="80" y2="'+(cy+17)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="55" y1="'+(cy-27)+'" x2="51" y2="'+(cy-35)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="65" y1="'+(cy-27)+'" x2="69" y2="'+(cy-35)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<text x="60" y="'+(cy+48)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
+      // LAYER 2: Internet bubble
+      svg+='<circle cx="'+CX+'" cy="'+L2Y+'" r="'+rN+'" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>';
+      svg+='<text x="'+CX+'" y="'+(L2Y+6)+'" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>';
 
-      // Host node — r=40 matching global, text sized like global node labels
-      var hn=a.name.length>16?a.name.substring(0,15)+'…':a.name;
-      svg+='<circle cx="240" cy="'+cy+'" r="40" fill="'+tc+'" filter="url(#'+sid+')"/>';
-      svg+='<text x="240" y="'+(cy-12)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.7)" letter-spacing="1" font-family="-apple-system,sans-serif">EXPOSED</text>';
-      svg+='<text x="240" y="'+(cy+3)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
-      if(a.publicIP)svg+='<text x="240" y="'+(cy+16)+'" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,.75)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
-      svg+='<circle cx="268" cy="'+(cy-32)+'" r="11" fill="#FCD34D"/>';
-      svg+='<text x="268" y="'+(cy-27)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
-
-      // Factor nodes — r=40, matching global node size exactly
+      // LAYER 3: Attack surface factor nodes
+      var hn=a.name.length>20?a.name.substring(0,19)+'…':a.name;
       factors.forEach(function(f,i){
-        svg+='<circle cx="486" cy="'+fy[i]+'" r="40" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-        svg+='<text x="486" y="'+(fy[i]-6)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
-        svg+='<text x="486" y="'+(fy[i]+14)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
-        svg+='<circle cx="514" cy="'+(fy[i]-32)+'" r="11" fill="#FCD34D"/>';
-        svg+='<text x="514" y="'+(fy[i]-27)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>';
+        var mf=mFact[i];
+        svg+='<circle cx="'+fx[i]+'" cy="'+L3Y+'" r="'+rF+'" fill="'+f.color+'" filter="url(#'+sid+'d)" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+        svg+='<text x="'+fx[i]+'" y="'+(L3Y-9)+'" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">'+e(f.label)+'</text>';
+        svg+='<text x="'+fx[i]+'" y="'+(L3Y+15)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">'+f.count+'</text>';
+        svg+='<text x="'+fx[i]+'" y="'+(L3Y+rF+15)+'" text-anchor="middle" font-size="7.5" font-weight="700" fill="'+mf.c+'" opacity=".85" letter-spacing=".04em">'+mf.t+' · '+mf.id+'</text>';
+        svg+='<circle cx="'+fx[i]+'" cy="'+(L3Y+rF)+'" r="4" fill="#22c55e" stroke="white" stroke-width="1" style="pointer-events:none"/>';
       });
 
-      // Remediate goal — r=50, text matching global "Proactive Security" style
-      svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
-      svg+='<rect x="717" y="'+(cy-20)+'" width="26" height="32" rx="3" fill="white" opacity="0.9"/>';
-      svg+='<line x1="722" y1="'+(cy-12)+'" x2="738" y2="'+(cy-12)+'" stroke="#22c55e" stroke-width="1.5"/>';
-      svg+='<line x1="722" y1="'+(cy-6)+'"  x2="738" y2="'+(cy-6)+'"  stroke="#22c55e" stroke-width="1.5"/>';
-      svg+='<line x1="722" y1="'+cy+'"       x2="733" y2="'+cy+'"       stroke="#22c55e" stroke-width="1.5"/>';
-      svg+='<text x="730" y="'+(cy+22)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">Remediate</text>';
-      svg+='<text x="730" y="'+(cy+34)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif">to Close</text>';
+      // LAYER 4: Target host node
+      svg+='<circle cx="'+CX+'" cy="'+L4Y+'" r="'+rH+'" fill="'+tc+'" filter="url(#'+sid+'d)"/>';
+      svg+='<text x="'+CX+'" y="'+(L4Y-18)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.6)" letter-spacing="1.5">EXPOSED TO INTERNET</text>';
+      svg+='<text x="'+CX+'" y="'+(L4Y-3)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white">'+e(hn)+'</text>';
+      if(a.publicIP)svg+='<text x="'+CX+'" y="'+(L4Y+12)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
+      svg+='<text x="'+CX+'" y="'+(L4Y+27)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">'+tier+'</text>';
+      svg+='<circle cx="'+(CX+rH-6)+'" cy="'+(L4Y-rH+6)+'" r="11" fill="#FCD34D"/>';
+      svg+='<text x="'+(CX+rH-6)+'" y="'+(L4Y-rH+11)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
       svg+='</svg>';
 
       // Risk findings list
@@ -2857,8 +3029,9 @@ function renderAssetRisk(d){
     html+='</div>';
   }
 
-  setBody('body-ar',html);
+  // View removed from nav — skip DOM render, map is built above for openHostGraph
 }
+
 
 function nav(name){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -2870,6 +3043,7 @@ function nav(name){
 
 let _lastData=null;
 let _renderedAssetMap=null;  // set by renderAssetRisk, read by openHostGraph
+let _renderedPrivMap=null;   // set by _renderVulns, read by openHostGraph for private hosts
 let _currentLabTab='global';
 // Identity graph state
 var _igNodePos={};var _igNW=185;var _igNH=38;var _igTrustMap={};
@@ -3009,6 +3183,15 @@ function renderCspLab(d,csp){
   if(snake)snake.setAttribute('stroke',color);
 }
 
+function switchVTab(tab){
+  ['inet','priv'].forEach(function(t){
+    const btn=document.getElementById('vtab-'+t);
+    if(btn)btn.classList.toggle('active',t===tab);
+    const panel=document.getElementById('vpanel-'+t);
+    if(panel)panel.style.display=(t===tab)?'':'none';
+  });
+}
+
 function switchIdentTab(tab){
   ['nomfa','roles','corr'].forEach(function(t){
     const btn=document.getElementById('itab-'+t);
@@ -3090,118 +3273,222 @@ function closeHostGraph(){
 }
 
 function openHostGraph(hostName){
-  if(!_renderedAssetMap)return;
-  const {map:hmap,maxRisk:maxR,critMisc:cm}=_renderedAssetMap;
-  const allH=Object.values(hmap);
-  allH.forEach(function(a){a.normalizedScore=Math.round(a.risk/maxR*100);});
-  const host=allH.find(function(h){return h.name===hostName;});
-  if(!host)return;
+  // ── Determine if this is a private host (from secretsAll) or internet-exposed ──
+  var privHost=_renderedPrivMap&&(_renderedPrivMap[hostName.toLowerCase()]||_renderedPrivMap[hostName]);
+  var isPrivate=!!privHost;
 
-  const TIER_COL={CRITICAL:'#b91c1c',HIGH:'#c2410c',MEDIUM:'#92400e',LOW:'#4b5563'};
-  const TIER_BD ={CRITICAL:'#fca5a5',HIGH:'#fdba74',MEDIUM:'#fcd34d',LOW:'#d1d5db'};
-  const TIER_BG ={CRITICAL:'#fff7f7',HIGH:'#fff7ed',MEDIUM:'#fffbeb',LOW:'#f9fafb'};
-  const tierOf=function(s,ex){
-    if(s>=75)return ex?'CRITICAL':'MEDIUM';
-    if(s>=50)return ex?'HIGH':'LOW';
-    if(s>=30)return'MEDIUM';
-    return'LOW';
-  };
+  // Internet-exposed path
+  var host=null,score=0,tier='LOW',tc='#4b5563',tbd='#d1d5db',tbg='#f9fafb',cm=0,secCnt=0;
+  if(!isPrivate){
+    if(!_renderedAssetMap)return;
+    const {map:hmap,maxRisk:maxR,critMisc:_cm}=_renderedAssetMap;
+    const allH=Object.values(hmap);
+    allH.forEach(function(a){a.normalizedScore=Math.round(a.risk/maxR*100);});
+    host=allH.find(function(h){return h.name===hostName;});
+    if(!host)return;
+    cm=_cm;
+    const TIER_COL={CRITICAL:'#b91c1c',HIGH:'#c2410c',MEDIUM:'#92400e',LOW:'#4b5563'};
+    const TIER_BD ={CRITICAL:'#fca5a5',HIGH:'#fdba74',MEDIUM:'#fcd34d',LOW:'#d1d5db'};
+    const TIER_BG ={CRITICAL:'#fff7f7',HIGH:'#fff7ed',MEDIUM:'#fffbeb',LOW:'#f9fafb'};
+    score=host.normalizedScore||0;
+    const _tier=(function(s,ex){if(s>=75)return ex?'CRITICAL':'MEDIUM';if(s>=50)return ex?'HIGH':'LOW';if(s>=30)return'MEDIUM';return'LOW';})(score,host.internetExposed);
+    tier=_tier; tc=TIER_COL[tier]; tbd=TIER_BD[tier]; tbg=TIER_BG[tier];
+    secCnt=(host.ciemSecrets||[]).length+(host.genericSecrets||[]).length;
+  }
 
-  var score=host.normalizedScore||0;
-  var tier=tierOf(score,host.internetExposed);
-  var tc=TIER_COL[tier],tbd=TIER_BD[tier],tbg=TIER_BG[tier];
-
+  // ── Build factors list ─────────────────────────────────────────────────────
   var factors=[];
-  if(host.vulns&&host.vulns.length)
-    factors.push({label:'CVEs',count:host.vulns.length,color:'#f97316',nav:'vulns'});
-  if(cm>0)
-    factors.push({label:'Non-Compliance',count:cm,color:'#f59e0b',nav:'compliance'});
-  var secCnt=(host.ciemSecrets||[]).length+(host.genericSecrets||[]).length;
-  if(secCnt>0)
-    factors.push({label:'Secrets',count:secCnt,color:'#eab308',nav:'secrets-all'});
+  if(!isPrivate){
+    if(host.vulns&&host.vulns.length)factors.push({label:'CVEs',count:host.vulns.length,color:'#f97316',nav:'vulns'});
+    if(cm>0)factors.push({label:'Non-Compliance',count:cm,color:'#f59e0b',nav:'compliance'});
+    if(secCnt>0)factors.push({label:'Secrets',count:secCnt,color:'#eab308',nav:'secrets-all'});
+  } else {
+    var ph=privHost;
+    if(ph.vulns&&ph.vulns.length)factors.push({label:'CVEs',count:ph.vulns.length,color:'#f97316',nav:'vulns'});
+    if(ph.ciemSecrets&&ph.ciemSecrets.length)factors.push({label:'CIEM Creds',count:ph.ciemSecrets.length,color:'#b91c1c',nav:'secrets-all'});
+    if(ph.genericSecrets&&ph.genericSecrets.length)factors.push({label:'Secrets',count:ph.genericSecrets.length,color:'#92400e',nav:'secrets-all'});
+    secCnt=(ph.ciemSecrets||[]).length+(ph.genericSecrets||[]).length;
+    tc='#7c3aed'; tbd='#ddd6fe'; tbg='#f5f3ff'; tier='PRIVATE';
+  }
+  if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
 
-  var n=factors.length||1;
-  var H=n===1?180:n===2?240:300;
-  var cy=H/2;
-  var fy=n===1?[cy]:n===2?[cy-58,cy+58]:[cy-76,cy,cy+76];
-  var sid='hfm'+host.name.replace(/[^a-zA-Z0-9]/g,'_');
+  // ── SVG: top-down layered kill chain ──────────────────────────────────────
+  var n=factors.length;
+  var W=860,CX=430,H=526;
+  var L1Y=57,L2Y=185,L3Y=330,L4Y=467;
+  var rT=36,rN=50,rF=42,rH=52;
+  var sid='hgl_'+hostName.replace(/[^a-zA-Z0-9]/g,'_');
+  var aC=isPrivate?'#f97316':'#ef4444';
+  var nCol=isPrivate?'#ea580c':'#ef4444';
+  var nFill=isPrivate?'rgba(234,88,12,.07)':'rgba(239,68,68,.07)';
+  var fx=n===1?[CX]:n===2?[CX-145,CX+145]:[CX-190,CX,CX+190];
 
-  var svg='<svg viewBox="0 0 900 '+H+'" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block">'
-    +'<defs><filter id="'+sid+'" x="-30%" y="-30%" width="160%" height="160%">'
+  // MITRE tactic labels per layer
+  var mL1=isPrivate?{t:'Lateral Movement',id:'TA0008',c:'#f97316'}:{t:'Initial Access',id:'TA0001',c:'#ef4444'};
+  var mL2=isPrivate?{t:'Discovery',id:'TA0007',c:'#f59e0b'}:{t:'Reconnaissance',id:'TA0043',c:'#6366f1'};
+  var mL4=isPrivate?{t:'Collection',id:'TA0009',c:'#475569'}:{t:'Impact',id:'TA0040',c:'#dc2626'};
+  var mFact=factors.map(function(f){
+    if(f.label==='CVEs')return{t:'Exploitation',id:'T1203',c:'#f97316'};
+    if(f.label.indexOf('Cred')>=0)return{t:'Credential Access',id:'T1552',c:'#eab308'};
+    if(f.label==='Secrets')return{t:'Credential Access',id:'T1552',c:'#eab308'};
+    if(f.label==='Non-Compliance')return{t:'Priv. Escalation',id:'T1078',c:'#8b5cf6'};
+    return{t:'Persistence',id:'TA0003',c:'#6b7280'};
+  });
+
+  var svg='<svg viewBox="0 0 860 526" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
+    +'<defs><filter id="'+sid+'d" x="-30%" y="-30%" width="160%" height="160%">'
     +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
     +'</filter></defs>';
 
-  svg+='<g stroke="#e2e8f0" stroke-width="2.5" stroke-linecap="round" fill="none">'
-    +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'"/>';
+  // Layer bands
+  svg+='<rect x="4" y="4" width="852" height="106" rx="10" fill="rgba(239,68,68,.05)" stroke="rgba(239,68,68,.15)" stroke-width="1"/>';
+  svg+='<rect x="4" y="122" width="852" height="126" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>';
+  svg+='<rect x="4" y="260" width="852" height="140" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>';
+  svg+='<rect x="4" y="412" width="852" height="110" rx="10" fill="rgba(71,85,105,.04)" stroke="rgba(71,85,105,.13)" stroke-width="1"/>';
+
+  // Layer number chips (left side)
+  [[L1Y,'01','#ef4444'],[L2Y,'02','#f97316'],[L3Y,'03','#f59e0b'],[L4Y,'04','#475569']].forEach(function(l){
+    svg+='<circle cx="24" cy="'+l[0]+'" r="12" fill="'+l[2]+'" opacity=".18"/>';
+    svg+='<text x="24" y="'+(l[0]+4)+'" text-anchor="middle" font-size="9" font-weight="800" fill="'+l[2]+'" letter-spacing=".5">'+l[1]+'</text>';
+  });
+
+  // MITRE tactic labels (right side)
+  [[L1Y,mL1],[L2Y,mL2],[L4Y,mL4]].forEach(function(m){
+    var mi=m[1];
+    svg+='<text x="851" y="'+(m[0]+4)+'" text-anchor="end" font-size="8" font-weight="700" fill="'+mi.c+'" opacity=".8" letter-spacing=".06em">'+mi.t+' · <tspan opacity=".55">'+mi.id+'</tspan></text>';
+  });
+
+  // Gray tracks (underlay, drawn before animated lines)
+  svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">';
+  svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'"/>';
   factors.forEach(function(f,i){
-    svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'"/>';
-    svg+='<line x1="527" y1="'+fy[i]+'" x2="665" y2="'+cy+'"/>';
+    svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'"/>';
+    svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'"/>';
   });
   svg+='</g>';
 
-  svg+='<g stroke="#ef4444" stroke-width="3" stroke-linecap="round" fill="none" stroke-dasharray="5 15">'
-    +'<line x1="100" y1="'+cy+'" x2="183" y2="'+cy+'" style="animation:path-flow 1.1s linear infinite 0s"/>';
+  // Animated attack flow
+  svg+='<g stroke="'+aC+'" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">';
+  svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'" style="animation:path-flow 1s linear infinite 0s"/>';
   factors.forEach(function(f,i){
-    svg+='<line x1="297" y1="'+cy+'" x2="445" y2="'+fy[i]+'" style="animation:path-flow 1.1s linear infinite '+(0.12*i)+'s"/>';
+    svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i)+'s"/>';
+    svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i+0.35)+'s"/>';
   });
   svg+='</g>';
 
-  svg+='<g stroke="#22c55e" stroke-width="2" stroke-linecap="round" fill="none" stroke-dasharray="4 12">';
+  // LAYER 1: Threat source node
+  if(!isPrivate){
+    // Bug icon — internet attacker
+    svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#ef4444" filter="url(#'+sid+'d)"/>';
+    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y-8)+'" rx="9" ry="6" fill="white"/>';
+    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+3)+'" rx="11" ry="8" fill="white"/>';
+    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+15)+'" rx="8" ry="6" fill="white"/>';
+    svg+='<line x1="'+(CX-5)+'" y1="'+(L1Y-24)+'" x2="'+(CX-9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+    svg+='<line x1="'+(CX+5)+'" y1="'+(L1Y-24)+'" x2="'+(CX+9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+    [[-4,-2],[3,3],[10,13]].forEach(function(lo){
+      svg+='<line x1="'+(CX-11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX-25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+      svg+='<line x1="'+(CX+11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX+25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+    });
+    svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5">ATTACKER</text>';
+  } else {
+    // Lateral movement — two servers + arrow
+    svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#f97316" filter="url(#'+sid+'d)"/>';
+    svg+='<rect x="'+(CX-21)+'" y="'+(L1Y-14)+'" width="13" height="17" rx="2" fill="white" opacity=".9"/>';
+    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-10)+'" x2="'+(CX-10)+'" y2="'+(L1Y-10)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-6)+'" x2="'+(CX-10)+'" y2="'+(L1Y-6)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-2)+'" x2="'+(CX-10)+'" y2="'+(L1Y-2)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<line x1="'+(CX-6)+'" y1="'+L1Y+'" x2="'+(CX+6)+'" y2="'+L1Y+'" stroke="white" stroke-width="2.5" stroke-linecap="round"/>';
+    svg+='<polyline points="'+(CX+2)+','+(L1Y-5)+' '+(CX+6)+','+L1Y+' '+(CX+2)+','+(L1Y+5)+'" stroke="white" stroke-width="2.5" stroke-linejoin="round" fill="none" stroke-linecap="round"/>';
+    svg+='<rect x="'+(CX+8)+'" y="'+(L1Y-14)+'" width="13" height="17" rx="2" fill="white" opacity=".9"/>';
+    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-10)+'" x2="'+(CX+19)+'" y2="'+(L1Y-10)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-6)+'" x2="'+(CX+19)+'" y2="'+(L1Y-6)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-2)+'" x2="'+(CX+19)+'" y2="'+(L1Y-2)+'" stroke="#f97316" stroke-width="1.5"/>';
+    svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1">LATERAL ATTACK</text>';
+  }
+
+  // LAYER 2: Network ingress bubble
+  svg+='<circle cx="'+CX+'" cy="'+L2Y+'" r="'+rN+'" fill="'+nFill+'" stroke="'+nCol+'" stroke-width="2" stroke-dasharray="9 5"/>';
+  if(!isPrivate){
+    svg+='<text x="'+CX+'" y="'+(L2Y+6)+'" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>';
+  } else {
+    svg+='<text x="'+CX+'" y="'+(L2Y-2)+'" text-anchor="middle" font-size="13" fill="#ea580c" font-style="italic" font-family="Georgia,serif">Private</text>';
+    svg+='<text x="'+CX+'" y="'+(L2Y+15)+'" text-anchor="middle" font-size="13" fill="#ea580c" font-style="italic" font-family="Georgia,serif">Network</text>';
+  }
+
+  // LAYER 3: Attack surface factor nodes
   factors.forEach(function(f,i){
-    svg+='<line x1="527" y1="'+fy[i]+'" x2="665" y2="'+cy+'" style="animation:path-flow 1.4s linear infinite '+(0.15*i)+'s"/>';
-  });
-  svg+='</g>';
-
-  // Attacker
-  svg+='<circle cx="60" cy="'+cy+'" r="38" fill="#ef4444" filter="url(#'+sid+')"/>';
-  svg+='<ellipse cx="60" cy="'+(cy-8)+'" rx="10" ry="7" fill="white"/>';
-  svg+='<ellipse cx="60" cy="'+(cy+2)+'" rx="12" ry="9" fill="white"/>';
-  svg+='<ellipse cx="60" cy="'+(cy+14)+'" rx="9" ry="7" fill="white"/>';
-  svg+='<text x="60" y="'+(cy+33)+'" text-anchor="middle" font-size="8" font-weight="700" fill="#64748b" letter-spacing="1" font-family="-apple-system,sans-serif">Attacker</text>';
-
-  // Host node
-  var hn=host.name.length>18?host.name.substring(0,17)+'…':host.name;
-  svg+='<circle cx="240" cy="'+cy+'" r="55" fill="'+tc+'" filter="url(#'+sid+')"/>';
-  svg+='<text x="240" y="'+(cy-20)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">INTERNET EXPOSED</text>';
-  svg+='<text x="240" y="'+(cy-4)+'" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="-apple-system,sans-serif">'+e(hn)+'</text>';
-  if(host.publicIP)svg+='<text x="240" y="'+(cy+11)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(host.publicIP)+'</text>';
-  svg+='<text x="240" y="'+(cy+26)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.85)" letter-spacing="1.5" font-family="-apple-system,sans-serif">'+tier+'</text>';
-  svg+='<circle cx="268" cy="'+(cy-45)+'" r="11" fill="#FCD34D"/>';
-  svg+='<text x="268" y="'+(cy-40)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
-
-  // Factor nodes — use data-nav for click, no inline JS quotes
-  factors.forEach(function(f,i){
-    svg+='<circle cx="486" cy="'+fy[i]+'" r="42" fill="'+f.color+'" filter="url(#'+sid+')" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-    svg+='<text x="486" y="'+(fy[i]-7)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">'+e(f.label)+'</text>';
-    svg+='<text x="486" y="'+(fy[i]+13)+'" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">'+f.count+'</text>';
+    var mf=mFact[i];
+    svg+='<circle cx="'+fx[i]+'" cy="'+L3Y+'" r="'+rF+'" fill="'+f.color+'" filter="url(#'+sid+'d)" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
+    svg+='<text x="'+fx[i]+'" y="'+(L3Y-9)+'" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">'+e(f.label)+'</text>';
+    svg+='<text x="'+fx[i]+'" y="'+(L3Y+15)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">'+f.count+'</text>';
+    svg+='<text x="'+fx[i]+'" y="'+(L3Y+rF+15)+'" text-anchor="middle" font-size="7.5" font-weight="700" fill="'+mf.c+'" opacity=".85" letter-spacing=".04em">'+mf.t+' · '+mf.id+'</text>';
+    svg+='<circle cx="'+fx[i]+'" cy="'+(L3Y+rF)+'" r="4" fill="#22c55e" stroke="white" stroke-width="1" style="pointer-events:none"/>';
   });
 
-  // Remediate goal
-  svg+='<circle cx="730" cy="'+cy+'" r="50" fill="#22c55e" filter="url(#'+sid+')"/>';
-  svg+='<text x="730" y="'+(cy-10)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">REMEDIATE</text>';
-  svg+='<text x="730" y="'+(cy+6)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white" font-family="-apple-system,sans-serif">TO CLOSE</text>';
-  svg+='<text x="730" y="'+(cy+20)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-family="-apple-system,sans-serif">ATTACK PATH</text>';
+  // LAYER 4: Target host node
+  var hn=hostName.length>20?hostName.substring(0,19)+'…':hostName;
+  svg+='<circle cx="'+CX+'" cy="'+L4Y+'" r="'+rH+'" fill="'+tc+'" filter="url(#'+sid+'d)"/>';
+  svg+='<text x="'+CX+'" y="'+(L4Y-22)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white">'+e(hn)+'</text>';
+  if(!isPrivate){
+    svg+='<text id="hg-geo-txt" x="'+CX+'" y="'+(L4Y-7)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.8)" font-style="italic">'+(host.publicIP?'…':'—')+'</text>';
+    svg+='<text x="'+CX+'" y="'+(L4Y+8)+'" text-anchor="middle" font-size="6" font-weight="700" fill="rgba(255,255,255,.55)" letter-spacing="1.5">EXPOSED TO INTERNET</text>';
+  } else {
+    svg+='<text x="'+CX+'" y="'+(L4Y-4)+'" text-anchor="middle" font-size="7" fill="rgba(255,255,255,.65)">private host</text>';
+    svg+='<text x="'+CX+'" y="'+(L4Y+8)+'" text-anchor="middle" font-size="6" font-weight="700" fill="rgba(255,255,255,.55)" letter-spacing="1.5">PRIVATE NETWORK</text>';
+  }
+  svg+='<text x="'+CX+'" y="'+(L4Y+24)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">'+tier+'</text>';
+  svg+='<circle cx="'+(CX+rH-6)+'" cy="'+(L4Y-rH+6)+'" r="11" fill="#FCD34D"/>';
+  svg+='<text x="'+(CX+rH-6)+'" y="'+(L4Y-rH+11)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
   svg+='</svg>';
 
+  // ── Remediation footer ─────────────────────────────────────────────────────
   var remItems=[];
-  if(host.vulns&&host.vulns.length)remItems.push('Patch '+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':''));
-  if(cm>0)remItems.push('Fix '+cm+' misconfiguration'+(cm!==1?'s':''));
-  if(secCnt>0)remItems.push('Remove '+secCnt+' secret'+(secCnt!==1?'s':''));
+  if(!isPrivate){
+    if(host.vulns&&host.vulns.length)remItems.push('Patch '+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':''));
+    if(cm>0)remItems.push('Fix '+cm+' misconfiguration'+(cm!==1?'s':''));
+  }
+  if(secCnt>0)remItems.push('Remove '+secCnt+' exposed secret'+(secCnt!==1?'s':''));
 
   var html='<div style="border-bottom:1px solid '+tbd+';padding:8px 20px;background:'+tbg+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-    +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(host.name)+'</span>'
-    +'<span style="font-size:9px;font-weight:700;color:'+tc+';letter-spacing:.08em;border:1px solid '+tc+';border-radius:3px;padding:2px 7px">'+tier+'</span>'
-    +(host.publicIP
-      ?'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET &middot; '+e(host.publicIP)+'</span>'
-      :'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">INTERNET EXPOSED</span>')
-    +'<span style="margin-left:auto;font-size:11px;color:#6b7280">Risk Score: <b style="color:'+tc+'">'+score+'/100</b></span>'
+    +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(hostName)+'</span>'
+    +'<span style="font-size:9px;font-weight:700;color:'+tc+';letter-spacing:.08em;border:1px solid '+tbd+';border-radius:3px;padding:2px 7px">'+tier+'</span>'
+    +(!isPrivate&&host.publicIP?'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">'+e(host.publicIP)+'</span>':'')
+    +(isPrivate?'<span style="font-size:9px;color:#6b7280">Lateral movement risk &middot; '+secCnt+' exposed credential'+(secCnt!==1?'s':'')+'</span>':'')
+    +(isPrivate?'':'<span style="margin-left:auto;font-size:11px;color:#6b7280">Risk Score: <b style="color:'+tc+'">'+score+'/100</b></span>')
   +'</div>'
+  +(!isPrivate&&host.publicIP?'<div id="hg-geo-bar" style="padding:5px 20px;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:10px;color:#64748b;display:flex;align-items:center;gap:6px"><span style="color:#94a3b8;font-style:italic">Looking up GeoIP location…</span></div>':'')
   +'<div style="padding:8px 0">'+svg+'</div>'
   +(remItems.length?'<div style="padding:10px 20px;background:#f0fdf4;border-top:1px solid #bbf7d0;font-size:11px;font-weight:600;color:#166534">&#10003; To close this attack path: '+remItems.join(' &nbsp;&middot;&nbsp; ')+'</div>':'');
 
-  document.getElementById('host-graph-title').textContent='Attack Path — '+hostName;
+  document.getElementById('host-graph-title').textContent=(isPrivate?'Lateral Attack Path — ':'Attack Path — ')+hostName;
   document.getElementById('host-graph-body').innerHTML=html;
   document.getElementById('host-graph-overlay').style.display='flex';
+
+  // GeoIP only for internet-exposed hosts
+  if(!isPrivate&&host.publicIP){
+    (async function(){
+      var ip=host.publicIP;
+      try{
+        if(!_geoCache[ip]){
+          var r=await fetch('/api/geoip?ip='+encodeURIComponent(ip));
+          _geoCache[ip]=await r.json();
+        }
+        var d=_geoCache[ip];
+        if(d&&!d.error&&!d.status){
+          var loc=(d.city||'')+(d.city&&d.country?', ':'')+( d.country||'');
+          var geoEl=document.getElementById('hg-geo-txt');
+          if(geoEl)geoEl.textContent=loc||ip;
+          var bar=document.getElementById('hg-geo-bar');
+          if(bar){
+            var flag=d.country?'<img src="https://flagcdn.com/16x12/'+d.country.toLowerCase()+'.png" style="vertical-align:middle;border-radius:1px" width="16" height="12" alt="'+e(d.country)+'"/> ':'';
+            bar.innerHTML=flag+'<b style="color:#1e293b">'+e(loc||ip)+'</b>'
+              +(d.org?'&nbsp;&middot;&nbsp;<span style="color:#64748b">'+e(d.org)+'</span>':'')
+              +'&nbsp;&middot;&nbsp;<span style="color:#ef4444;font-weight:600">Exposed to Internet</span>';
+          }
+        }
+      }catch(ex){}
+    })();
+  }
 }
 
 async function load(){
@@ -3824,7 +4111,7 @@ document.addEventListener('click',function(ev){
     if(bd){
       var open=bd.style.display!=='none';
       bd.style.display=open?'none':'block';
-      xb.innerHTML=(open?'&#9654; ':'&#9660; ')+'Details';
+      xb.innerHTML=(open?'&#9654; ':'&#9660; ')+'CVEs';
     }
   }
 });
@@ -4006,13 +4293,7 @@ function closeMachPanel(){document.getElementById('mach-overlay').style.display=
 document.addEventListener('click',function(ev){
   var btn=ev.target.closest('.goto-host-card-btn');
   if(!btn)return;
-  var name=btn.dataset.hostname||'';
-  var safeId=name.replace(/[^a-zA-Z0-9]/g,'-');
-  nav('asset-risk');
-  setTimeout(function(){
-    var el=document.getElementById('ar-host-'+safeId);
-    if(el)el.scrollIntoView({behavior:'smooth',block:'start'});
-  },120);
+  openHostGraph(btn.dataset.hostname||'');
 });
 
 // ── Host Attack Path modal ─────────────────────────────────────────────────────
@@ -4026,7 +4307,7 @@ document.addEventListener('click',function(ev){
     return;
   }
   var btn=ev.target.closest('.ar-exposed-row');
-  if(btn&&!ev.target.closest('.mach-inv-btn,.geo-btn,.cp-btn'))openHostGraph(btn.dataset.hostname);
+  if(btn&&!ev.target.closest('.mach-inv-btn,.geo-btn,.cp-btn,.goto-host-card-btn'))openHostGraph(btn.dataset.hostname);
 });
 
 // ── GeoIP panel ───────────────────────────────────────────────────────────────
@@ -5747,7 +6028,8 @@ function requestHandler(req, res) {
         res.end(JSON.stringify(geoIpCache[clean])); return;
       }
       try {
-        const data = await get(`https://ipinfo.io/${clean}/json`);
+        const { status: gst, body: data } = await request('GET', 'ipinfo.io', `/${clean}/json`, { Accept: 'application/json', 'User-Agent': 'FortiCNAPP-RCA/1.0' }, null, 8000);
+        if (gst !== 200) throw new Error(`ipinfo HTTP ${gst}`);
         geoIpCache[clean] = data;
         res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
         res.end(JSON.stringify(data));
