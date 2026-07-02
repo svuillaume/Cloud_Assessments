@@ -39,7 +39,8 @@ function startRefreshTimer() {
   if (_refreshTimer) clearInterval(_refreshTimer);
   _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
 }
-const DAYS_BACK  = 14;   // look-back window default
+const DAYS_BACK        = 30;   // look-back window default
+const ALERT_DAYS_BACK  = 14;   // High Fidelity Alerts fixed window
 let dynamicDaysBack = DAYS_BACK;
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ function request(method, hostname, path, headers, body, timeoutMs = 30000) {
     const resolvedIP = hostname === LW_ACCOUNT ? accountIP : null;
     const opts = {
       hostname, port: 443, path, method,
-      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, [{ address: resolvedIP, family: 4 }]) } : {}),
+      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, resolvedIP, 4) } : {}),
       headers: {
         'Content-Type': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
@@ -261,8 +262,8 @@ function timeFilter(days) {
 // ── 1. Alerts — POST /api/v2/Alerts/search ───────────────────────────────────
 
 // Alerts API caps at 7 days per request — split into chunks if window > 7
-function alertTimeWindows() {
-  const total = dynamicDaysBack;
+function alertTimeWindows(daysOverride) {
+  const total = daysOverride || dynamicDaysBack;
   const chunkDays = 7;
   const windows = [];
   for (let offset = 0; offset < total; offset += chunkDays) {
@@ -274,20 +275,23 @@ function alertTimeWindows() {
 }
 
 async function fetchAlerts() {
-  const windows = alertTimeWindows();
+  const windows = alertTimeWindows(ALERT_DAYS_BACK);
+  const RETURNS = ['alertId', 'alertName', 'alertType', 'severity', 'status', 'startTime', 'endTime', 'derivedFields', 'alertInfo'];
   const batches = await Promise.all(windows.flatMap(tf => [
-    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }], paging: { rows: 500 } }),
-    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], paging: { rows: 500 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Critical' }], returns: RETURNS, paging: { rows: 500 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'High'     }], returns: RETURNS, paging: { rows: 500 } }),
+    post('Alerts/search', { timeFilter: tf, filters: [{ field: 'severity', expression: 'eq', value: 'Medium'   }], returns: RETURNS, paging: { rows: 500 } }),
   ]));
   const rows = batches.flat();
-  const CATS = new Set(['anomaly', 'composite', 'policy', 'compliance', 'app']);
+  // High Fidelity filter: open/in-progress status + anomaly/composite categories only
+  const CATS = new Set(['anomaly', 'composite']);
   const filtered = rows
     .filter(r => { const s = (r.status || '').toLowerCase(); return s === 'open' || s === 'in progress'; })
-    .filter(r => { const c = (r.derivedFields?.category || '').toLowerCase(); return CATS.has(c) || c === ''; });
+    .filter(r => { const c = (r.derivedFields?.category || '').toLowerCase(); return CATS.has(c); });
   console.log('[alerts] raw:',rows.length,'after hf filter:',filtered.length);
   return filtered
     .sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
-    .slice(0, 50);
+    .slice(0, 500);
 }
 
 // ── 2. Vulns — POST /api/v2/Vulnerabilities/Hosts/search ─────────────────────
@@ -1046,7 +1050,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 .ai-fb-btn.voted-neg{border-color:var(--cr-bd);background:var(--cr-bg);color:var(--cr)}
 .ai-fb-note{font-size:10px;color:var(--muted);margin-left:2px}
 .fg-arrow{display:inline-block;animation:fg-arrow 0.9s ease-in-out infinite;color:var(--accent);font-style:normal;margin-right:3px;font-size:12px}
-#fg-inline{width:100%;max-width:clamp(340px,52vw,600px);margin-top:14px;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;pointer-events:none;position:relative}
+#fg-inline{width:100%;max-width:clamp(340px,52vw,600px);margin-top:14px;margin-right:4.5%;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;pointer-events:none;position:relative}
 #fg-inline.show{opacity:1;transform:translateY(0);pointer-events:auto}
 .fg-bubble{background:var(--surface);border:1px solid var(--accent);border-top:3px solid var(--accent);border-radius:6px;padding:14px 18px 12px;box-shadow:0 4px 20px rgba(218,41,28,.1);position:relative}
 .fg-bubble-header{display:flex;align-items:center;gap:7px;margin-bottom:8px}
@@ -1259,7 +1263,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <text x="200" y="248" text-anchor="middle" font-size="9.5" font-weight="600"
             letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
             fill="#64748b" text-transform="uppercase">
-        <tspan>THE OBJECTIVE IS TO </tspan><tspan fill="#15803d" font-weight="800">CLOSE ALL RISK FINDINGS AS FAST AS POSSIBLE</tspan><tspan> TO REDUCE MTTR</tspan>
+        <tspan>THE HIGHER THE RISK SCORE, THE HIGHER THE REMEDIATION PRIORITY — </tspan><tspan fill="#15803d" font-weight="800">ACCELERATING RISK REDUCTION</tspan><tspan> WHILE STRENGTHENING CLOUD SECURITY POSTURE, IMPROVING CONFIGURATION HYGIENE, AND ENHANCING DETECTION AND MITIGATION OF RUNTIME THREATS</tspan>
       </text>
     </svg>
 
@@ -1389,7 +1393,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">High Fidelity Alerts</div>
-      <div class="vh-sub" id="sub-alerts">Active threats &amp; policy violations · last ${DAYS_BACK} days</div>
+      <div class="vh-sub" id="sub-alerts">Active threats &amp; policy violations · last ${ALERT_DAYS_BACK} days</div>
     </div>
     <span class="vh-badge" id="cnt-a">—</span>
   </div>
@@ -2460,7 +2464,7 @@ function renderIdentities(rows,err){
   });
   setTab('ibody-roles',identTable(roleRows));
 
-  // ── Tab 3: Correlated — grouped table by identity type ────────────────────
+  // ── Tab 3: Correlated — role↔user/SVC assignment view ────────────────────
   const byType={roles:[],users:[],svcAccounts:[],other:[]};
   rows.forEach(function(r){
     var t=identType(r);
@@ -2470,17 +2474,143 @@ function renderIdentities(rows,err){
     else byType.other.push(r);
   });
 
-  function corrSection(title,items,col){
+  // Build reverse map: principal ARN → list of roles that trust it
+  var principalToRoles={};
+  byType.roles.forEach(function(role){
+    var tp=role._trustPrincipals||[];
+    tp.forEach(function(p){
+      var key=(p.principal||'').toLowerCase();
+      if(!key)return;
+      if(!principalToRoles[key])principalToRoles[key]=[];
+      principalToRoles[key].push(role);
+    });
+  });
+
+  function pTypeColor(t){
+    return t==='AWS'?'#d97706':t==='Service'?'#7c3aed':t==='Federated'?'#0e7490':'#4b5563';
+  }
+  function pTypeBg(t){
+    return t==='AWS'?'#fffbeb':t==='Service'?'#f5f3ff':t==='Federated'?'#ecfeff':'#f9fafb';
+  }
+
+  function trustPillsHtml(principals){
+    if(!principals||!principals.length)return'<span style="font-size:9px;color:#9ca3af;font-style:italic">No trust data</span>';
+    return principals.map(function(p){
+      var col=pTypeColor(p.type),bg=pTypeBg(p.type);
+      var label=p.principal||'—';
+      // shorten long ARNs: keep last two segments
+      var parts=label.split('/');
+      var short=parts.length>2?'…/'+parts.slice(-2).join('/'):label;
+      return'<span title="'+e(label)+'" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;background:'+bg+';color:'+col+';border:1px solid '+col+'44;border-radius:4px;padding:1px 7px;font-family:monospace;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis">'
+        +'<span style="font-weight:700;font-size:8px;letter-spacing:.06em">'+e(p.type||'?')+'</span>'
+        +' '+e(short)+'</span>';
+    }).join(' ');
+  }
+
+  function roleAssignmentsForPrincipal(r){
+    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    var nm=(r.NAME||'').toLowerCase();
+    var matched=[];
+    byType.roles.forEach(function(role){
+      var tp=role._trustPrincipals||[];
+      var found=tp.some(function(p){
+        var pv=(p.principal||'').toLowerCase();
+        return pv&&(pv===pid||pv.includes(pid)||pv.includes(nm)||(nm&&pid&&pid.includes(nm)));
+      });
+      if(found)matched.push(role);
+    });
+    return matched;
+  }
+
+  // ── Role cards: each role with its trusted principals ──
+  function roleCard(role,idx){
+    var sName=shortName(role);
+    var pid=role.PRINCIPAL_ID||'';
+    var type=identType(role);
+    var risks=(role.METRICS&&role.METRICS.risks)?role.METRICS.risks:[];
+    var sev=(role.METRICS&&role.METRICS.risk_severity)||'';
+    var tp=role._trustPrincipals||[];
+    var sevBadge_=function(s){var sl=(s||'').toLowerCase();
+      if(sl==='critical')return'<span class="b b-cr">Critical</span>';
+      if(sl==='high')return'<span class="b b-hi">High</span>';
+      if(sl==='medium')return'<span class="b b-me">Medium</span>';
+      if(s)return'<span class="b b-nt">'+e(s)+'</span>';
+      return'';};
+    return'<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #0369a1;border-radius:8px;padding:12px 14px;margin:6px 0">'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="font-weight:700;font-size:12.5px;color:#0f172a;word-break:break-word">'+e(sName)+'</div>'
+          +(pid&&pid!==sName?'<div style="font-size:9px;color:#9ca3af;font-family:monospace;word-break:break-all;margin-top:1px">'+e(pid)+'</div>':'')
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">'
+          +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
+          +sevBadge_(sev)
+        +'</div>'
+      +'</div>'
+      +'<div style="margin-top:8px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;margin-bottom:4px">&#x1F512; Who can assume this role</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+        +(tp.length?trustPillsHtml(tp):'<span style="font-size:9px;color:#9ca3af;font-style:italic">No trust policy data available</span>')
+      +'</div>'
+      +(risks.length?'<div style="margin-top:8px;display:flex;gap:3px;flex-wrap:wrap">'+riskDots(risks)+'</div>':'')
+    +'</div>';
+  }
+
+  // ── User / SVC card: identity with roles it can assume ──
+  function principalCard(r,col,idx){
+    var sName=shortName(r);
+    var pid=r.PRINCIPAL_ID||'';
+    var type=identType(r);
+    var sev=(r.METRICS&&r.METRICS.risk_severity)||'';
+    var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
+    var assignedRoles=roleAssignmentsForPrincipal(r);
+    var sevBadge_=function(s){var sl=(s||'').toLowerCase();
+      if(sl==='critical')return'<span class="b b-cr">Critical</span>';
+      if(sl==='high')return'<span class="b b-hi">High</span>';
+      if(sl==='medium')return'<span class="b b-me">Medium</span>';
+      if(s)return'<span class="b b-nt">'+e(s)+'</span>';
+      return'';};
+    return'<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid '+col+';border-radius:8px;padding:12px 14px;margin:6px 0">'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:0">'
+          +'<div style="font-weight:700;font-size:12.5px;color:#0f172a;word-break:break-word">'+e(sName)+'</div>'
+          +(pid&&pid!==sName?'<div style="font-size:9px;color:#9ca3af;font-family:monospace;word-break:break-all;margin-top:1px">'+e(pid)+'</div>':'')
+        +'</div>'
+        +'<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">'
+          +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
+          +sevBadge_(sev)
+        +'</div>'
+      +'</div>'
+      +'<div style="margin-top:8px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;margin-bottom:4px">&#x1F517; IAM Roles assigned (can assume)</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+        +(assignedRoles.length
+          ?assignedRoles.map(function(role){
+            var rn=shortName(role);
+            var rt=identType(role);
+            return'<span title="'+e(role.PRINCIPAL_ID||'')+'" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;background:'+rt.bg+';color:'+rt.color+';border:1px solid '+rt.border+';border-radius:4px;padding:1px 7px;font-family:monospace;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis">'+e(rn)+'</span>';
+          }).join(' ')
+          :'<span style="font-size:9px;color:#9ca3af;font-style:italic">No role assignments found in trust policies</span>')
+      +'</div>'
+      +(risks.length?'<div style="margin-top:8px;display:flex;gap:3px;flex-wrap:wrap">'+riskDots(risks)+'</div>':'')
+    +'</div>';
+  }
+
+  function corrCardSection(title,items,col,cardFn){
     if(!items.length)return'';
-    return'<div style="padding:8px 16px 4px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:'+col+';border-bottom:1px solid #e5e7eb">'+e(title)+' <span style="font-weight:400;color:#9ca3af">('+items.length+')</span></div>'
-      +identTable(items);
+    return'<div style="margin-bottom:20px">'
+      +'<div style="padding:6px 0 8px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:'+col+';border-bottom:2px solid '+col+'33;margin-bottom:4px">'+e(title)+' <span style="font-weight:400;color:#9ca3af">('+items.length+')</span></div>'
+      +items.map(function(r,i){return cardFn(r,col,i);}).join('')
+    +'</div>';
   }
 
   var corrHtml=
-    corrSection('IAM Roles',byType.roles,'#0369a1')
-    +corrSection('IAM Users',byType.users,'#166534')
-    +corrSection('Service Accounts & Principals',byType.svcAccounts,'#7c3aed')
-    +(byType.other.length?corrSection('Other',byType.other,'#4b5563'):'');
+    (byType.roles.length||byType.users.length||byType.svcAccounts.length||byType.other.length)
+    ?'<div style="padding:12px 0">'
+      +corrCardSection('IAM Roles — Who Can Assume',byType.roles,'#0369a1',roleCard)
+      +corrCardSection('IAM Users — Role Assignments',byType.users,'#166534',principalCard)
+      +corrCardSection('Service Accounts — Role Assignments',byType.svcAccounts,'#7c3aed',principalCard)
+      +(byType.other.length?corrCardSection('Other Identities',byType.other,'#4b5563',principalCard):'')
+    +'</div>'
+    :'';
 
   setTab('ibody-corr',
     corrHtml
@@ -3520,7 +3650,7 @@ async function load(){
     const _db=d.daysBack||${DAYS_BACK};
     document.getElementById('footer-time').textContent='Assessment window: last '+_db+' days';
     const _sa=document.getElementById('sub-alerts');
-    if(_sa)_sa.textContent='Active threats & policy violations · last '+_db+' days';
+    if(_sa)_sa.textContent='Active threats & policy violations · last 14 days';
     const live=document.getElementById('live-dot');
     live.className='live-dot '+(Object.keys(d.errors||{}).length?'err':'ok');
     const bar=document.getElementById('err-bar');
@@ -4794,13 +4924,28 @@ const REPORT_CSS = `
                 size: a3 landscape;
                 margin: 1.2cm 1.5cm;
             }
-            .pagebreak { page-break-after: always; clear: both; }
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+                color-adjust: exact !important;
+            }
             .page-break-before { page-break-before: always; clear: both; }
             .no-print { display: none !important; }
             tbody tr:hover { background: transparent !important; }
-            .section-card, .finding-row, .kpi-card, .decision-card, table {
+            .section-card, .finding-row, .kpi-card, .decision-card {
                 page-break-inside: avoid;
                 break-inside: avoid;
+            }
+            table tr {
+                page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            table thead {
+                display: table-header-group;
+            }
+            h2, h3, h4 {
+                page-break-after: avoid;
+                break-after: avoid;
             }
             section.pagebreak {
                 page-break-before: always;
@@ -4850,6 +4995,43 @@ const REPORT_CSS = `
             margin-bottom: 0;
         }
         header img { height: 42px; }
+
+        /* ── PDF export button (screen only) ── */
+        .pdf-export-btn {
+            position: fixed;
+            top: 18px;
+            right: 22px;
+            z-index: 999;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--color-primary);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 10px 18px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: .02em;
+            cursor: pointer;
+            box-shadow: 0 4px 14px rgba(0,0,0,.25);
+            font-family: inherit;
+        }
+        .pdf-export-btn:hover { background: var(--color-primary-light); }
+        .pdf-export-hint {
+            position: fixed;
+            top: 56px;
+            right: 22px;
+            z-index: 999;
+            font-size: 10.5px;
+            color: #6b7280;
+            background: #fff;
+            padding: 4px 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.12);
+            max-width: 220px;
+            text-align: right;
+        }
 
         /* ── Cover / Title ── */
         .report-cover {
@@ -5398,7 +5580,6 @@ const REPORT_CSS = `
         }
         footer { margin-top: 5rem; padding: 2rem 2.5rem; background: var(--color-primary-dark); color: rgba(255,255,255,0.92); font-size: 0.78rem; text-align: center; }
         footer p { color: inherit; }
-        .pagebreak { page-break-after: always; clear: both; }
         .text-muted { color: var(--color-text-muted); }
         .text-critical { color: var(--color-critical); font-weight: 600; }
         ul.findings-list { margin: 0.5rem 0 0.5rem 1.25rem; }
@@ -5417,6 +5598,84 @@ const REPORT_CSS = `
             vertical-align: middle;
         }
     `;
+
+// Produces a deep copy of the cached findings with real infrastructure
+// identifiers swapped for consistent fake placeholders, so a report can be
+// shared publicly (sales collateral, docs) without leaking customer data.
+// Layout/format/scores/counts are untouched — only identifying values change.
+function sanitizeCacheData(data) {
+  const out = JSON.parse(JSON.stringify(data || {}));
+  const seen = {};
+  let counters = {};
+  function fake(category, real, format) {
+    if (real === undefined || real === null || real === '') return real;
+    const key = category + '|' + real;
+    if (seen[key]) return seen[key];
+    counters[category] = (counters[category] || 0) + 1;
+    const val = format(counters[category]);
+    seen[key] = val;
+    return val;
+  }
+  const pad = n => String(n).padStart(2, '0');
+  const fakeHost   = h => fake('host',   h, n => 'sample-host-' + pad(n));
+  const fakeMid    = m => fake('mid',    m, n => 'sample-mid-' + pad(n));
+  const fakeIdent  = p => fake('ident',  p, n => 'Sample-Identity-' + pad(n));
+  const fakeArn    = a => fake('arn',    a, n => 'arn:aws:iam::111111111111:role/Sample-Identity-' + pad(n));
+  const fakeSecret = s => fake('secret', s, n => 'sample-secret-' + pad(n));
+  const fakeRes    = r => fake('res',    r, n => 'sample-resource-' + pad(n));
+
+  const SENSITIVE_RESOURCE_KEYS = ['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','PRINCIPAL_ID','NAME','ACCOUNT_ID','ACCOUNT_ALIAS','SUBSCRIPTION_ID'];
+
+  function scrubText(text) {
+    if (!text) return text;
+    let t = String(text);
+    t = t.replace(/arn:aws:[a-z0-9-]+::\d{12}:[^\s,;()]+/gi, m => fakeArn(m));
+    t = t.replace(/\b\d{12}\b/g, m => fake('acct', m, () => '111111111111'));
+    t = t.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, m => fake('ip', m, n => '10.0.0.' + n));
+    t = t.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, m => fake('email', m, () => 'user@example.com'));
+    Object.keys(seen).forEach(key => {
+      const real = key.slice(key.indexOf('|') + 1);
+      if (real && real.length > 3 && t.includes(real)) t = t.split(real).join(seen[key]);
+    });
+    return t;
+  }
+
+  (out.identities || []).forEach(r => {
+    const orig = r.PRINCIPAL_ID || r.NAME || '';
+    if (!orig) return;
+    const label = fakeIdent(orig);
+    if (r.PRINCIPAL_ID) r.PRINCIPAL_ID = fakeArn(r.PRINCIPAL_ID);
+    if (r.NAME) r.NAME = label;
+  });
+
+  (out.vulns || []).forEach(r => {
+    if (r.evalCtx && r.evalCtx.hostname) r.evalCtx.hostname = fakeHost(r.evalCtx.hostname);
+    if (r.evalCtx && r.evalCtx.mid)      r.evalCtx.mid      = fakeMid(r.evalCtx.mid);
+    if (r.mid) r.mid = fakeMid(r.mid);
+  });
+
+  (out.secretsAll || []).concat(out.secrets || []).forEach(r => {
+    if (r.HOSTNAME) r.HOSTNAME = fakeHost(r.HOSTNAME);
+    if (r.MID)      r.MID      = fakeMid(r.MID);
+    if (r.SECRET_IDENTIFIER) r.SECRET_IDENTIFIER = fakeSecret(r.SECRET_IDENTIFIER);
+  });
+
+  (out.compliance || []).forEach(c => {
+    if (Array.isArray(c.resources)) {
+      c.resources.forEach(row => {
+        SENSITIVE_RESOURCE_KEYS.forEach(k => {
+          if (row[k] !== undefined && row[k] !== null && row[k] !== '') row[k] = fakeRes(row[k]);
+        });
+      });
+    }
+  });
+
+  (out.alerts || []).forEach(r => {
+    if (r.alertInfo && r.alertInfo.description) r.alertInfo.description = scrubText(r.alertInfo.description);
+  });
+
+  return out;
+}
 
 function buildReportHtml(data, meta) {
   const customer = ((meta && meta.customer) || 'Customer').trim();
@@ -5748,6 +6007,8 @@ function buildReportHtml(data, meta) {
   '  </style>\n</head>\n<body>\n' +
   '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
   '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
+  '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
+  '<div class="pdf-export-hint no-print">Landscape is pre-set. In "More settings," enable <strong>Background graphics</strong> so the cover gauge renders, then choose "Save as PDF."</div>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
   '  <h1>Cloud Security Posture Report</h1>\n' +
@@ -5791,11 +6052,6 @@ function buildReportHtml(data, meta) {
       '  </svg>\n'+
       '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
       '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#22c55e;font-weight:800">Review Only Required</span></div>\n'+
-      '  <div style="display:flex;justify-content:center;gap:28px;margin-top:20px;flex-wrap:wrap">'+
-        miniGauge('AWS',awsP,'#232F3E')+
-        miniGauge('AZURE',azureP,'#0078D4')+
-        miniGauge('GCP',gcpP,'#1a73e8')+
-      '</div>\n'+
       '  </div>\n';
   })()+
   '  <div class="meta-row">\n' +
@@ -5805,6 +6061,49 @@ function buildReportHtml(data, meta) {
   '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
   '  </div>\n</div>\n' +
   '<div class="toc"><h3>Discovered Risk Findings</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  (function(){
+    const awsP   = cspScores.aws   !== null ? cspScores.aws   : 100;
+    const azureP = cspScores.azure !== null ? cspScores.azure : 100;
+    const gcpP   = cspScores.gcp   !== null ? cspScores.gcp   : 100;
+    function cspBand(p){ return p>=90?'Review Only':p>=50?'Vulnerable':'High Risk'; }
+    function cspColor(p){ return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444'; }
+    function bigGauge(label, bgColor, logoSvg, p){
+      const arcL=314, f=Math.round((p/100)*arcL);
+      const c=cspColor(p), band=cspBand(p);
+      return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;min-width:200px">'+
+        '<div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+
+          logoSvg+label+
+        '</div>'+
+        '<svg viewBox="-10 -10 270 160" style="width:200px;overflow:visible">'+
+          '<path fill="none" stroke="#e2e8f0" stroke-width="18" stroke-linecap="round" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
+          '<path fill="none" stroke="'+c+'" stroke-width="18" stroke-linecap="round" stroke-dasharray="'+f+' '+arcL+'" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
+          '<text x="125" y="108" text-anchor="middle" font-size="52" font-weight="900" font-family="-apple-system,Inter,sans-serif" fill="'+c+'">'+p+'</text>'+
+          '<text x="125" y="128" text-anchor="middle" font-size="10" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#64748b" letter-spacing=".08em">'+band.toUpperCase()+'</text>'+
+        '</svg>'+
+        '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:-4px">CSPM Security Score — <span style="color:'+c+';font-weight:700">'+p+'/100</span></div>'+
+      '</div>';
+    }
+    const awsLogo='<svg viewBox="0 0 24 14" width="28" height="16" style="margin-right:5px"><path fill="#FF9900" d="M6.76 5.52c0 .28.03.5.08.66.06.16.14.33.25.51.04.06.05.12.05.17 0 .08-.05.15-.15.23l-.5.33c-.07.05-.14.07-.2.07-.08 0-.16-.04-.24-.11a2.5 2.5 0 01-.29-.38 6.3 6.3 0 01-.25-.47c-.63.74-1.42 1.11-2.37 1.11-.68 0-1.22-.19-1.61-.58-.39-.38-.59-.89-.59-1.52 0-.67.24-1.22.72-1.62.48-.4 1.12-.6 1.93-.6.27 0 .54.02.83.07.29.04.58.11.89.19v-.56c0-.58-.12-1-.37-1.23-.25-.24-.67-.35-1.27-.35-.27 0-.55.03-.84.1-.29.06-.57.15-.85.27-.13.06-.22.09-.28.1-.06.02-.1.03-.13.03-.12 0-.17-.08-.17-.25v-.4c0-.13.02-.23.06-.29.04-.06.12-.12.24-.18.27-.14.6-.26.98-.35.38-.1.79-.14 1.22-.14.93 0 1.61.21 2.05.63.43.42.65 1.06.65 1.92v2.54zm-3.27 1.22c.26 0 .53-.05.81-.14.28-.1.53-.27.74-.51.13-.15.22-.32.27-.51.05-.2.08-.43.08-.7v-.34a6.7 6.7 0 00-.72-.13 5.9 5.9 0 00-.74-.05c-.52 0-.9.1-1.16.31-.25.21-.38.5-.38.89 0 .36.09.63.28.81.18.19.44.27.82.27zm6.25.84c-.14 0-.24-.02-.3-.07-.07-.04-.12-.14-.17-.28L7.4 2.6c-.05-.15-.07-.25-.07-.3 0-.12.06-.18.18-.18h.73c.15 0 .25.02.31.07.06.04.11.14.16.28l1.36 5.36 1.26-5.36c.04-.15.09-.24.15-.28.06-.05.17-.07.31-.07h.6c.15 0 .25.02.31.07.06.04.12.14.15.28l1.28 5.43 1.4-5.43c.05-.15.1-.24.16-.28.06-.05.16-.07.3-.07h.7c.12 0 .18.06.18.18 0 .04-.01.08-.02.13l-.03.17-1.85 6.63c-.05.15-.1.24-.17.28-.06.05-.16.07-.3.07h-.64c-.15 0-.25-.02-.31-.07-.06-.05-.12-.15-.15-.29L12.2 3.32l-1.25 5.11c-.04.15-.09.24-.15.29-.06.05-.17.07-.31.07h-.65zm9.94.18c-.4 0-.8-.05-1.18-.14-.38-.1-.68-.2-.88-.32-.12-.07-.2-.15-.23-.22a.56.56 0 01-.05-.22v-.41c0-.17.06-.25.18-.25.05 0 .1.01.15.03.05.02.12.05.2.09.27.12.57.21.89.28.32.06.63.1.95.1.5 0 .9-.09 1.17-.26.27-.18.41-.43.41-.76 0-.22-.07-.41-.21-.56-.14-.15-.41-.29-.8-.41l-1.14-.35c-.58-.18-1-.45-1.27-.8a1.9 1.9 0 01-.4-1.17c0-.34.07-.64.22-.9.15-.26.35-.49.6-.67.25-.19.53-.33.86-.43.33-.1.68-.14 1.04-.14.18 0 .37.01.55.04.19.02.36.06.53.1.16.04.32.09.46.14.15.06.26.11.34.17.11.07.19.15.23.22.04.07.06.16.06.28v.38c0 .17-.06.26-.18.26-.06 0-.16-.03-.29-.1-.44-.2-.93-.3-1.48-.3-.46 0-.82.08-1.07.23-.25.15-.38.38-.38.7 0 .23.08.43.23.58.15.15.44.3.86.43l1.12.35c.57.18.98.43 1.23.76.25.33.37.7.37 1.12 0 .35-.07.66-.2.94-.14.28-.33.52-.58.72-.25.2-.55.35-.9.46-.36.1-.75.16-1.17.16z"/></svg>';
+    const azureLogo='<svg viewBox="0 0 18 14" width="26" height="16" style="margin-right:5px"><path fill="#fff" d="M10.46 0L6.3 7.27l4.27 4.8H3.5L0 14h18L10.46 0z"/></svg>';
+    const gcpLogo='<svg viewBox="0 0 24 24" width="18" height="18" style="margin-right:5px"><circle cx="12" cy="12" r="12" fill="none"/><path fill="#4285F4" d="M12 5.5a6.5 6.5 0 015.5 9.98l1.42 1.42A8.5 8.5 0 0012 3.5v2z"/><path fill="#EA4335" d="M5.52 17.52A6.5 6.5 0 0112 5.5v-2A8.5 8.5 0 003.5 18.94l2.02-1.42z"/><path fill="#FBBC05" d="M12 18.5a6.47 6.47 0 01-6.48-1l-2.02 1.44A8.5 8.5 0 0012 20.5v-2z"/><path fill="#34A853" d="M17.5 15.48A6.47 6.47 0 0112 18.5v2a8.5 8.5 0 006.92-4.6l-1.42-1.42z"/></svg>';
+    const hasAws=cspScores.aws!==null, hasAzure=cspScores.azure!==null, hasGcp=cspScores.gcp!==null;
+    const detectedCSPs=[hasAws&&'AWS',hasAzure&&'Azure',hasGcp&&'GCP'].filter(Boolean).join(', ')||'No CSP data detected';
+    return '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:70vh;display:flex;flex-direction:column">\n'+
+      '<div style="text-align:center;margin-bottom:2rem">\n'+
+      '  <div style="font-size:.72rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#94a3b8;margin-bottom:.5rem">Cloud Security Posture Score by Cloud Provider</div>\n'+
+      '  <h2 style="margin:0 0 .4rem;padding:0;border:none;font-size:1.8rem;color:#1e293b">Per-Cloud Security Score</h2>\n'+
+      '  <div style="font-size:.85rem;color:#64748b">Individual CSPM compliance scores for each detected cloud environment — <strong>'+detectedCSPs+'</strong></div>\n'+
+      '</div>\n'+
+      '<div style="display:flex;justify-content:center;align-items:flex-start;gap:40px;flex-wrap:wrap;flex:1;padding:1rem 0">\n'+
+        (hasAws   ? bigGauge('AWS',   '#232F3E', awsLogo,   awsP)   : '')+
+        (hasAzure ? bigGauge('Azure', '#0078D4', azureLogo, azureP) : '')+
+        (hasGcp   ? bigGauge('GCP',   '#1a73e8', gcpLogo,   gcpP)   : '')+
+      '</div>\n'+
+      '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem 1.5rem;margin-top:auto;font-size:.82rem;color:#64748b;text-align:center">\n'+
+      '  Scores reflect CSPM compliance posture per cloud environment. <strong style="color:#1e293b">90–100</strong> = Review Only &nbsp;·&nbsp; <strong style="color:#f59e0b">50–89</strong> = Vulnerable &nbsp;·&nbsp; <strong style="color:#ef4444">0–49</strong> = High Risk\n'+
+      '</div>\n'+
+      '</section>\n';
+  })()+
   '<section id="exec-summary" class="pagebreak">\n<h2>Executive Summary</h2>\n' +
   '<div class="kpi-grid">' +
   '<div class="kpi-card critical"><div class="kpi-number">'+alerts.length+'</div><div class="kpi-label">Critical Alerts</div></div>' +
@@ -6043,57 +6342,18 @@ function requestHandler(req, res) {
   }
 
   if (req.url.startsWith('/api/identity-trust') && req.method === 'GET') {
-    (async () => {
-      try {
-        const pid = decodeURIComponent((req.url.split('pid=')[1] || '').split('&')[0]);
-        if (!pid) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'pid required' })); return; }
-        const tf = timeFilter();
-        // Query trust relationships — who can assume this role/identity
-        const queryText = `{
-          source { LW_CE_IDENTITIES }
-          filter { PRINCIPAL_ID = '${pid.replace(/'/g, "\\'")}' }
-          return distinct {
-            PRINCIPAL_ID,
-            NAME,
-            METRICS,
-            TRUST_POLICY
-          }
-        }`;
-        let rows = [];
-        try {
-          rows = await post('Queries/execute', { query: { queryText }, arguments: [
-            { name: 'StartTimeRange', value: tf.startTime },
-            { name: 'EndTimeRange',   value: tf.endTime   },
-          ]});
-        } catch (e) { /* TRUST_POLICY field may not exist — fall back */ }
-
-        // Parse trust principals from TRUST_POLICY if present
-        let principals = [];
-        const row = rows[0];
-        if (row?.TRUST_POLICY) {
-          const tp = typeof row.TRUST_POLICY === 'string' ? JSON.parse(row.TRUST_POLICY) : row.TRUST_POLICY;
-          const stmts = tp?.Statement || tp?.statement || [];
-          for (const stmt of stmts) {
-            const p = stmt?.Principal || stmt?.principal;
-            if (!p) continue;
-            if (typeof p === 'string') { principals.push({ type: 'AWS', principal: p }); continue; }
-            for (const [k, v] of Object.entries(p)) {
-              const vals = Array.isArray(v) ? v : [v];
-              vals.forEach(vv => principals.push({ type: k, principal: vv }));
-            }
-          }
-        }
-        // Also surface METRICS.lateral_movement_risk if available
-        const lateral = row?.METRICS?.lateral_movement_principals || [];
-        lateral.forEach(lp => principals.push({ type: 'Lateral', principal: lp }));
-
-        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
-        res.end(JSON.stringify({ principals }));
-      } catch (e) {
-        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
-        res.end(JSON.stringify({ error: e.message, principals: [] }));
-      }
-    })();
+    try {
+      const pid = decodeURIComponent((req.url.split('pid=')[1] || '').split('&')[0]);
+      if (!pid) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'pid required' })); return; }
+      // Serve from cached identity data — trust principals are pre-parsed at fetch time
+      const cached = (cache.identities || []).find(r => r.PRINCIPAL_ID === pid);
+      const principals = cached?._trustPrincipals || [];
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+      res.end(JSON.stringify({ principals }));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+      res.end(JSON.stringify({ error: e.message, principals: [] }));
+    }
     return;
   }
 
@@ -6196,12 +6456,14 @@ function requestHandler(req, res) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
     const author   = (qs.get('author')   || 'Fortinet').trim();
+    const sanitize = /^(1|true|yes)$/i.test(qs.get('sanitize') || '');
     if (!cache.fetchedAt) {
       res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
-    const reportHtml = buildReportHtml(cache, { customer, author });
+    const reportData = sanitize ? sanitizeCacheData(cache) : cache;
+    const reportHtml = buildReportHtml(reportData, { customer, author });
     const reportPath = path.join(__dirname, 'rca.html');
     const pdfPath    = path.join(__dirname, 'rca.pdf');
     fs.writeFile(reportPath, reportHtml, err => {
