@@ -47,11 +47,17 @@ const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to s
 
 let token       = null;
 let tokenExpiry = 0;
+// Last successfully-run Governance Report (account + named compliance framework, e.g.
+// "CIS AWS Foundations Benchmark v1.4"), set by GET /api/governance/report. PDF report
+// generation reuses this — if a framework was run interactively before generating the
+// PDF, its Medium/High/Critical NonCompliant findings drive the Non-Compliance section
+// instead of the ad-hoc Policies-based fallback.
+let lastGovernanceReport = null;
 let cache = {
-  alerts: [], vulns: [], compliance: [], identities: [],
+  alerts: [], vulns: [], compliance: [], identities: [], publicStorage: [],
   fetchedAt: null, errors: {}, account: LW_ACCOUNT, subAccount: LW_SUBACCOUNT,
   riskScore: 0, daysBack: DAYS_BACK,
-  summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0 },
+  summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0, publicStorage: 0 },
 };
 
 const geoIpCache = {}; // ip → ipinfo.io response, cached for container lifetime
@@ -105,7 +111,7 @@ function request(method, hostname, path, headers, body, timeoutMs = 30000) {
         const raw = Buffer.concat(chunks).toString();
         let parsed = raw;
         try { parsed = JSON.parse(raw); } catch (_) {}
-        resolve({ status: res.statusCode, body: parsed, raw });
+        resolve({ status: res.statusCode, body: parsed, raw, headers: res.headers });
       });
     });
     req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error(`${method} ${path} timed out`)); });
@@ -191,11 +197,23 @@ async function ensureToken() {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-async function withRetry(fn, label, retries = 3) {
+async function withRetry(fn, label, retries = 5) {
   for (let i = 0; i < retries; i++) {
     try {
       const result = await fn();
-      if (result.status < 500) return result;
+      if (result.status !== 429 && result.status < 500) return result;
+      if (result.status === 429) {
+        // Lacework: 480 requests/hour per-endpoint token bucket, shared across every
+        // caller hitting that path (e.g. all Queries/execute traffic — compliance,
+        // secrets, secretsAll, identities). RateLimit-Reset (seconds) tells us how long
+        // until a token frees up; honor it instead of guessing, but cap it — a fresh
+        // token is usually available well before the bucket's full hourly reset.
+        const resetSec = parseInt(result.headers?.['ratelimit-reset'], 10);
+        const waitMs = Number.isFinite(resetSec) ? Math.min(Math.max(resetSec, 1), 30) * 1000 : 3000 * (i + 1);
+        console.log(`  [retry] ${label} got 429 (rate limited), waiting ${Math.round(waitMs/1000)}s, attempt ${i + 1}/${retries}`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
       console.log(`  [retry] ${label} got ${result.status}, attempt ${i + 1}/${retries}`);
     } catch (e) {
       console.log(`  [retry] ${label} error: ${e.message}, attempt ${i + 1}/${retries}`);
@@ -259,6 +277,11 @@ function timeFilter(days) {
   return { startTime: timeFmt(start), endTime: timeFmt(end) };
 }
 
+function timeArgs(days) {
+  const tf = timeFilter(days);
+  return [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }];
+}
+
 // ── 1. Alerts — POST /api/v2/Alerts/search ───────────────────────────────────
 
 // Alerts API caps at 7 days per request — split into chunks if window > 7
@@ -297,11 +320,194 @@ async function fetchAlerts() {
 // ── 2. Vulns — POST /api/v2/Vulnerabilities/Hosts/search ─────────────────────
 // Field mapping (confirmed via API exploration):
 //   machineTags.lw_InternetExposure = "Yes"  → internet-exposed filter (client-side)
-//   hostRiskScore >= 8                        → host risk filter (client-side; API rejects it)
-//   cveRiskScore                              → CVSS-based score (sort key)
+//   cveRiskScore >= 8                         → CVE severity filter (client-side; API rejects it)
 //   featureKey.version_installed              → installed package version
 //   machineTags.Hostname                      → display hostname
 // Server-side filters: status=Active, severity=Critical|High only.
+//
+// NOTE: filtering was originally on hostRiskScore (Lacework's composite host-risk metric)
+// instead of cveRiskScore (the CVE's own CVSS-based severity). Confirmed via live data this
+// hides real, internet-exposed hosts with critical CVEs: e.g. "my-blogs" had a traced
+// internet→IGW→security-group→instance exposure path (LW_APA_EXPOSURE_PATHS) and a Critical
+// CVE at cveRiskScore 9.74, but hostRiskScore 0.22 (Lacework's composite weighs in factors
+// beyond CVE severity, e.g. asset-criticality tagging) — so it never appeared in this panel.
+
+// ── True Internet Exposure — verified via actual security-group/NSG/firewall rules ──
+// machineTags.lw_InternetExposure just reflects "this host sits on a network path that
+// reaches the internet" (confirmed via LW_APA_EXPOSURE_PATHS) — it does NOT mean the
+// attached security control actually permits inbound traffic. This checks the real rules:
+//   AWS:   instance → SecurityGroups[].GroupId → IpPermissions[].IpRanges[].CidrIp
+//   Azure: VM → NIC → networkSecurityGroup → securityRules[] source
+//   GCP:   instance → tags.items[] → firewall targetTags match, sourceRanges
+// Two tiers, not one binary flag:
+//   'open'       — a wide-open wildcard rule (0.0.0.0/0, ::/0, "Internet", "Any", "*").
+//                  Reachable by anyone — this is what counts as "Internet Exposed"
+//                  everywhere (dashboard counts, Exploit Simulation Layer, Attack Path,
+//                  reports).
+//   'restricted' — an Allow rule scoped to a specific public/internet-routable IP or CIDR
+//                  (e.g. an allowlisted partner or admin address). The host *does* accept
+//                  inbound traffic from the internet, just from a narrow allowlist — real,
+//                  but a materially smaller blast radius than wide-open. Surfaced as
+//                  "Restricted External Access", not folded into the main Exposed tally.
+// Only genuinely private/reserved sources (RFC1918, loopback, link-local, CGNAT,
+// multicast/reserved) count as neither.
+function isWildcardSource(cidr) {
+  const s = String(cidr || '').trim().toLowerCase();
+  return s === '*' || s === '0.0.0.0/0' || s === '::/0' || s === 'internet' || s === 'any';
+}
+function isPublicSource(cidr) {
+  const s = String(cidr || '').trim().toLowerCase();
+  if (!s) return false;
+  if (isWildcardSource(s)) return true;
+  const ip = s.split('/')[0];
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false; // not a plain IPv4/CIDR (e.g. a service tag or unrecognized IPv6) — not counted
+  const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+  if (a === 10) return false;                          // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return false;    // 172.16.0.0/12
+  if (a === 192 && b === 168) return false;             // 192.168.0.0/16
+  if (a === 127) return false;                          // loopback
+  if (a === 169 && b === 254) return false;             // link-local
+  if (a === 100 && b >= 64 && b <= 127) return false;    // CGNAT 100.64.0.0/10
+  if (a === 0) return false;                            // "this network"
+  if (a >= 224) return false;                            // multicast + reserved
+  return true;
+}
+async function fetchTrueExposure() {
+  const [awsInstanceRows, awsSgRows, azureNicRows, azureNsgRows, gcpInstanceRows, gcpFwRows] = await Promise.all([
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_AWS_EC2_INSTANCES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_AWS_EC2_SECURITY_GROUPS } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_AZURE_NETWORK_NETWORKINTERFACES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_AZURE_NETWORK_NETWORKSECURITYGROUPS } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_GCP_COMPUTE_INSTANCE } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_GCP_COMPUTE_FIREWALL } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+  ]);
+
+  const portRangeStr = (from, to) => (from == null ? '*' : from === to ? String(from) : `${from}-${to}`);
+
+  // AWS: SG has an inbound Allow rule from a public source (wildcard or a specific public
+  // IP) → capture each matching rule as evidence, keyed by GroupId, so instances carrying
+  // that SG can show exactly what's open and why.
+  const awsWildcardSgRules = new Map(); // groupId → [{sgName, protocol, port, source}]
+  for (const sg of awsSgRows) {
+    const cfg = sg.RESOURCE_CONFIG || {};
+    const perms = cfg.IpPermissions || [];
+    const reasons = [];
+    for (const p of perms) {
+      (p.IpRanges || []).filter(r => isPublicSource(r.CidrIp)).forEach(r => reasons.push({
+        control: 'security group', name: cfg.GroupName || sg.RESOURCE_ID,
+        protocol: (p.IpProtocol === '-1' ? 'all' : (p.IpProtocol || '').toUpperCase()),
+        port: portRangeStr(p.FromPort, p.ToPort), source: r.CidrIp,
+        tier: isWildcardSource(r.CidrIp) ? 'open' : 'restricted',
+      }));
+      (p.Ipv6Ranges || []).filter(r => isPublicSource(r.CidrIpv6)).forEach(r => reasons.push({
+        control: 'security group', name: cfg.GroupName || sg.RESOURCE_ID,
+        protocol: (p.IpProtocol === '-1' ? 'all' : (p.IpProtocol || '').toUpperCase()),
+        port: portRangeStr(p.FromPort, p.ToPort), source: r.CidrIpv6,
+        tier: isWildcardSource(r.CidrIpv6) ? 'open' : 'restricted',
+      }));
+    }
+    if (reasons.length) awsWildcardSgRules.set(sg.RESOURCE_ID, reasons);
+  }
+  const awsExposure = new Map(); // instanceId → [reasons]
+  for (const inst of awsInstanceRows) {
+    const sgs = (inst.RESOURCE_CONFIG && inst.RESOURCE_CONFIG.SecurityGroups) || [];
+    const reasons = sgs.flatMap(g => awsWildcardSgRules.get(g.GroupId) || []);
+    if (reasons.length) awsExposure.set(inst.RESOURCE_ID, reasons);
+  }
+
+  // Azure: NSG has an inbound Allow rule from a public source (wildcard or a specific
+  // public IP, e.g. an allowlisted partner address) → capture each matching rule, keyed
+  // by NSG name, so VMs behind that NSG (via their NIC) can show exactly what's open and why.
+  const azureWildcardNsgRules = new Map(); // nsgName (lowercase) → [{name, protocol, port, source}]
+  for (const nsg of azureNsgRows) {
+    const rules = (nsg.RESOURCE_CONFIG && nsg.RESOURCE_CONFIG.securityRules) || [];
+    const reasons = [];
+    for (const r of rules) {
+      const p = r.properties || r;
+      if (p.direction !== 'Inbound' || p.access !== 'Allow') continue;
+      const srcs = p.sourceAddressPrefix ? [p.sourceAddressPrefix] : (p.sourceAddressPrefixes || []);
+      const wildcardSrc = srcs.find(isPublicSource);
+      if (!wildcardSrc) continue;
+      const ports = p.destinationPortRange ? [p.destinationPortRange] : (p.destinationPortRanges || ['*']);
+      reasons.push({
+        control: 'NSG rule', name: r.name || nsg.RESOURCE_ID,
+        protocol: (p.protocol === '*' ? 'all' : (p.protocol || '')).toUpperCase(),
+        port: ports.join(','), source: wildcardSrc,
+        tier: isWildcardSource(wildcardSrc) ? 'open' : 'restricted',
+      });
+    }
+    if (reasons.length) azureWildcardNsgRules.set((nsg.RESOURCE_ID || '').toLowerCase(), reasons);
+  }
+  const azureExposure = new Map(); // VM name (lowercase) → [reasons]
+  for (const nic of azureNicRows) {
+    const cfg = nic.RESOURCE_CONFIG || {};
+    const vmId = cfg.virtualMachine && cfg.virtualMachine.id;
+    const nsgId = cfg.networkSecurityGroup && cfg.networkSecurityGroup.id;
+    if (!vmId || !nsgId) continue;
+    const nsgName = (nsgId.split('/').pop() || '').toLowerCase();
+    const reasons = azureWildcardNsgRules.get(nsgName);
+    if (reasons && reasons.length) {
+      const vmName = (vmId.split('/').pop() || '').toLowerCase();
+      if (vmName) azureExposure.set(vmName, reasons);
+    }
+  }
+
+  // GCP: firewall allows inbound from a public source (wildcard or a specific public IP)
+  // → capture as evidence for any instance matching its targetTags (or ALL instances on
+  // that network if targetTags is empty).
+  const gcpWildcardFirewalls = [];
+  for (const fw of gcpFwRows) {
+    const cfg = fw.RESOURCE_CONFIG || {};
+    if (cfg.direction && cfg.direction !== 'INGRESS') continue;
+    if (cfg.disabled) continue;
+    const ranges = cfg.sourceRanges || [];
+    const allowed = Array.isArray(cfg.allowed) ? cfg.allowed : [];
+    const wildcardRange = ranges.find(isPublicSource);
+    if (allowed.length && wildcardRange) {
+      gcpWildcardFirewalls.push({
+        targetTags: cfg.targetTags || [],
+        reasons: allowed.map(a => ({
+          control: 'firewall rule', name: fw.RESOURCE_ID,
+          protocol: (a.IPProtocol || '').toUpperCase(), port: (a.ports || ['all']).join(','), source: wildcardRange,
+          tier: isWildcardSource(wildcardRange) ? 'open' : 'restricted',
+        })),
+      });
+    }
+  }
+  const gcpExposure = new Map(); // instance name (lowercase) → [reasons]
+  for (const inst of gcpInstanceRows) {
+    const cfg = inst.RESOURCE_CONFIG || {};
+    const instTags = (cfg.tags && cfg.tags.items) || [];
+    const reasons = gcpWildcardFirewalls
+      .filter(fw => fw.targetTags.length === 0 || fw.targetTags.some(t => instTags.includes(t)))
+      .flatMap(fw => fw.reasons);
+    if (reasons.length) gcpExposure.set((inst.RESOURCE_ID || '').toLowerCase(), reasons);
+  }
+
+  console.log(`  [true-exposure] AWS instances w/ public-source SG: ${awsExposure.size}  Azure VMs w/ public-source NSG: ${azureExposure.size}  GCP instances w/ public-source FW: ${gcpExposure.size}`);
+
+  // Returns full exposure evidence for a vuln row's host: a permissive security-group/
+  // NSG/firewall rule is necessary but NOT sufficient — the host also needs an actual
+  // public IP for that rule to route anywhere. A wildcard-open SG on an instance with no
+  // public IP (machineTags.ExternalIp empty) is unreachable regardless.
+  // `exposed` = has an 'open' (wildcard) rule — the real "Internet Exposed" signal.
+  // `restricted` = has only 'restricted' (specific-public-IP) rules — real but narrower
+  // blast radius; surfaced separately, not folded into the main Exposed tally.
+  return function getExposureEvidence(machineTags) {
+    const mt = machineTags && typeof machineTags === 'object' && !Array.isArray(machineTags) ? machineTags : {};
+    const publicIp = String(mt.ExternalIp || '').trim();
+    if (!publicIp) return { exposed: false, restricted: false, publicIp: '', reasons: [] };
+    const instanceId = mt.InstanceId || '';
+    const hostname = (mt.Hostname || mt.Name || '').toLowerCase();
+    const reasons = (instanceId.startsWith('i-') && awsExposure.get(instanceId))
+      || (hostname && azureExposure.get(hostname))
+      || (hostname && gcpExposure.get(hostname))
+      || [];
+    const exposed = reasons.some(r => r.tier === 'open');
+    return { exposed, restricted: !exposed && reasons.length > 0, publicIp, reasons };
+  };
+}
 
 async function fetchVulns() {
   function vulnQuery(sev) {
@@ -320,16 +526,35 @@ async function fetchVulns() {
     }, 60000);
   }
 
-  const [crits, highs] = await Promise.all([
+  const [crits, highs, getExposureEvidence] = await Promise.all([
     vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); return []; }),
     vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); return []; }),
+    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }); }),
   ]);
 
   const rows = [...crits, ...highs];
 
+  // Overwrite machineTags.lw_InternetExposure with the verified value (real wide-open
+  // wildcard security-group/NSG/firewall rule), not Lacework's topological "sits on a path
+  // to the internet" tag — every downstream consumer already reads this field, so this
+  // replaces exposure classification everywhere without touching each call site
+  // individually. lw_RestrictedExternalAccess is the separate, lower-severity signal for
+  // hosts reachable only from a specific allowlisted public IP (not wide open) — real
+  // exposure, but not folded into "Internet Exposed" counts/Attack Path/report tallies.
+  // r._exposureEvidence carries the actual justification (rule/port/source) per row.
+  for (const r of rows) {
+    const mt = r.machineTags;
+    if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
+      const ev = getExposureEvidence(mt);
+      mt.lw_InternetExposure = ev.exposed ? 'Yes' : 'No';
+      mt.lw_RestrictedExternalAccess = ev.restricted ? 'Yes' : 'No';
+      r._exposureEvidence = ev;
+    }
+  }
+
   // Client-side filters (API does not support these as server-side expressions):
   //   Hosts > Machine status in (Online, Launched)  — exclude stopped/terminated hosts
-  //   hostRiskScore >= 8                             — host risk threshold
+  //   cveRiskScore >= 8                              — CVE severity threshold
   //   machineTags.lw_InternetExposure === "Yes"      — primary internet exposure check
   //   Fallback: hostRiskInfo.host_risk_factors_breakdown.internet_reachability !== "None"
   const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
@@ -343,14 +568,17 @@ async function fetchVulns() {
       : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
     if (state && OFFLINE_RE.test(state)) return false;
 
-    // Host risk score >= 8 (fallback: riskScore → cveRiskScore as impact proxy)
-    const hs = parseFloat(r.hostRiskScore ?? r.riskScore ?? r.cveRiskScore ?? 0);
-    if (hs < 8) return false;
+    // CVE severity score >= 8 (fallback: riskScore → hostRiskScore as impact proxy).
+    // Deliberately NOT hostRiskScore first — that's Lacework's broader host-composite
+    // metric, which can rate a host low even with a genuinely critical, internet-exposed
+    // CVE present (see note above fetchVulns).
+    const cs = parseFloat(r.cveRiskScore ?? r.riskScore ?? r.hostRiskScore ?? 0);
+    if (cs < 8) return false;
 
     return true;
   });
 
-  console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → hostRisk>=8: ${filtered.length}`);
+  console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → cveRisk>=8: ${filtered.length}`);
   return filtered
     .sort((a, b) => parseFloat(b.cveRiskScore ?? b.hostRiskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.hostRiskScore ?? 0))
     .slice(0, 500);
@@ -366,8 +594,28 @@ function policyCloud(s) {
   return 'cloud';
 }
 
+// Policy tags encode category/subcategory as "domain:<X>" / "subdomain:<X>" (see
+// Lacework Policies API tags examples, e.g. "domain:AWS", "subdomain:Configuration").
+function policyCategoryTags(tags) {
+  const arr = Array.isArray(tags) ? tags : [];
+  const find = prefix => { const t = arr.find(x => (x||'').toLowerCase().startsWith(prefix)); return t ? t.slice(prefix.length) : ''; };
+  return { category: find('domain:'), subCategory: find('subdomain:') };
+}
+
+// Cap on how many compliance policies one refresh cycle evaluates. Lacework's
+// Queries/execute endpoint shares one 480-requests/hour token bucket across every
+// caller — compliance, secrets, secretsAll, and identities. Evaluating all
+// (sometimes 250+) enabled Critical/High policies in a single burst can by itself
+// consume over half that hourly budget, and every restart/redeploy/crash re-runs the
+// full burst — stacking multiple runs into the same rolling hour reliably exhausts
+// the bucket and starts failing every other feature that shares it (confirmed live:
+// secrets + secretsAll both started throwing HTTP 429 after a handful of restarts).
+// Critical-first sort means the highest-severity policies are always evaluated first.
+const COMPLIANCE_POLICY_CAP = 50;
+
 async function fetchCompliance() {
-  // Step 1 — get Critical/High compliance policy definitions (includes description)
+  // Step 1 — get enabled Critical/High compliance policy definitions, capped and
+  // sorted Critical-first (see COMPLIANCE_POLICY_CAP above for why the cap exists).
   let policies = [];
   try {
     const resp = await get('Policies');
@@ -381,16 +629,18 @@ async function fetchCompliance() {
       const rank = s => s?.toLowerCase() === 'critical' ? 0 : 1;
       return rank(a.severity) - rank(b.severity);
     })
-    .slice(0, 15);
-    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, evaluating ${policies.length} critical`);
+    .slice(0, COMPLIANCE_POLICY_CAP);
+    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, evaluating ${policies.length} critical/high (capped at ${COMPLIANCE_POLICY_CAP})`);
   } catch (e) {
     console.log(`  [compliance/Policies] ${e.message.slice(0,120)}`);
     return [];
   }
 
-  // Step 2 — run policy queries in parallel batches of 3 (avoids rate-limit, ~3× faster than sequential)
+  // Step 2 — run policy queries in parallel batches of 3 (avoids rate-limit, ~3× faster than
+  // sequential). Fixed 14-day ("last 2 weeks") window regardless of the global dynamicDaysBack
+  // assessment-window setting — Critical Misconfigurations is always assessed on its own clock.
   const findings = [];
-  const tf2 = timeFilter();
+  const tf2 = timeFilter(14);
   const BATCH = 3;
 
   async function runPolicy(p) {
@@ -403,23 +653,31 @@ async function fetchCompliance() {
         ],
       }, 60000);
       console.log(`  [compliance] ${p.policyId} → ${rows.length} rows`);
-      if (rows.length) return {
-        alertId:     p.policyId,
-        cloud:       policyCloud(p.queryId || p.policyId),
-        title:       p.title || p.policyId,
-        description: p.description || '—',
-        severity:    'Critical',
-        violations:  rows.length,
-        resources:   rows.slice(0, 100),
-      };
+      if (rows.length) {
+        const { category, subCategory } = policyCategoryTags(p.tags);
+        return {
+          alertId:     p.policyId,
+          cloud:       policyCloud(p.queryId || p.policyId),
+          title:       p.title || p.policyId,
+          description: p.description || '—',
+          severity:    (p.severity || 'critical').charAt(0).toUpperCase() + (p.severity || 'critical').slice(1).toLowerCase(),
+          category,
+          subCategory,
+          violations:  rows.length,
+          // Full resource detail, not just a preview — bounded only as a payload-size
+          // safety ceiling, not a "top N" business cap.
+          resources:   rows.slice(0, 1000),
+        };
+      }
     } catch (e) {
+      // 429s are already retried with backoff inside post()/withRetry() — reaching here on
+      // a 429 means the bucket stayed exhausted through every retry, not a one-off blip.
       console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
-      if (e.message.includes('429')) await new Promise(r => setTimeout(r, 5000));
     }
     return null;
   }
 
-  for (let i = 0; i < policies.length && findings.length < 10; i += BATCH) {
+  for (let i = 0; i < policies.length; i += BATCH) {
     const batch = policies.slice(i, i + BATCH);
     const results = await Promise.all(batch.map(runPolicy));
     results.forEach(r => r && findings.push(r));
@@ -427,8 +685,12 @@ async function fetchCompliance() {
     if (findings.length) {
       cache = { ...cache, compliance: findings.slice().sort((a, b) => b.violations - a.violations) };
     }
-    if (i + BATCH < policies.length && findings.length < 10) {
-      await new Promise(r => setTimeout(r, 500));
+    if (i + BATCH < policies.length) {
+      // Evaluating every enabled Critical/High policy (not a capped top-15) can mean 100+
+      // requests against Lacework's shared 480/hour Queries/execute bucket, on top of
+      // secretsAll/secrets/identities traffic hitting the same bucket — a larger gap here
+      // spreads that load out so a single refresh cycle doesn't threaten the hourly budget.
+      await new Promise(r => setTimeout(r, 1500));
     }
   }
 
@@ -465,13 +727,32 @@ async function fetchIdentities() {
     }
   }`;
 
-  const [rows, trustRows] = await Promise.all([
+  // LW_CE_LINKED_IDENTITIES has no free-text PRINCIPAL_TYPE field, but its RELATION_TYPE
+  // values are prefixed with the real identity type (e.g. AZURE_USER_TO_GROUP,
+  // AWS_ROLE_TO_ROLE, GCP_GOOGLE_ACCOUNT_TO_GROUP, AZURE_SERVICE_ACCOUNT_TO_GROUP) — a
+  // reliable, LQL-verified type signal, unlike guessing from PRINCIPAL_ID/NAME string
+  // patterns (which misses Azure AD / GCP Workspace users whose ID is a bare email).
+  const linkedQuery = `{
+    source { LW_CE_LINKED_IDENTITIES }
+    return distinct {
+      PRINCIPAL_ID,
+      RELATION_TYPE,
+      LINKED_PRINCIPAL_ID,
+      LINKED_NAME
+    }
+  }`;
+
+  const [rows, trustRows, linkedRows] = await Promise.all([
     post('Queries/execute', {
       query: { queryText: mainQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
     }, 60000).catch(() => []),
     post('Queries/execute', {
       query: { queryText: trustQuery },
+      arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
+    }, 60000).catch(() => []),
+    post('Queries/execute', {
+      query: { queryText: linkedQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
     }, 60000).catch(() => []),
   ]);
@@ -481,9 +762,19 @@ async function fetchIdentities() {
   for (const t of trustRows) {
     if (t.PRINCIPAL_ID && t.TRUST_POLICY) trustMap[t.PRINCIPAL_ID] = t.TRUST_POLICY;
   }
-  console.log(`  [identities] total: ${rows.length}  trust policies: ${Object.keys(trustMap).length}`);
 
-  console.log(`  [identities] total: ${rows.length}`);
+  // Build LQL-verified type map: PRINCIPAL_ID → { cloud: AWS|AZURE|GCP, type: USER | ROLE | GOOGLE_ACCOUNT | SERVICE_ACCOUNT | INSTANCE_PROFILE | GROUP | ... }
+  // Cloud is kept alongside type — RELATION_TYPE's own prefix (e.g. AZURE_USER_TO_GROUP)
+  // was previously discarded, so an Azure user linked via that relation collapsed to the
+  // same bare 'USER' type as an AWS IAM user and got labeled identically downstream.
+  const lqlTypeMap = {};
+  for (const l of linkedRows) {
+    if (!l.PRINCIPAL_ID || lqlTypeMap[l.PRINCIPAL_ID]) continue;
+    const m = /^(AWS|AZURE|GCP)_(.+?)_TO_/.exec(l.RELATION_TYPE || '');
+    if (m) lqlTypeMap[l.PRINCIPAL_ID] = { cloud: m[1], type: m[2] };
+  }
+
+  console.log(`  [identities] total: ${rows.length}  trust policies: ${Object.keys(trustMap).length}  LQL-typed: ${Object.keys(lqlTypeMap).length}`);
   if (rows.length) console.log(`  [identities] sample: ${JSON.stringify(rows[0]).slice(0, 200)}`);
 
   // Filter criteria (any match qualifies):
@@ -511,8 +802,17 @@ async function fetchIdentities() {
         pid.includes(':root') || nm === 'root' ||
         pt.includes('serviceprincipal') || pt.includes('aad') ||
         CLOUD_ROLE_TYPES.has(pt.split('_')[0]);
+      if (!isTypedIdentity) return false;
 
-      return isTypedIdentity && (risks.includes('ALLOWS_FULL_ADMIN') || isCritical || highUnused);
+      // Users, Root accounts, and Service Accounts/Principals are always included
+      // regardless of severity, so the Identity & Access Risk view can show the full
+      // Critical/High/Medium/Low picture for cloud users. Roles stay gated behind
+      // admin/critical/high-unused — there are far more of them, and only the
+      // highest-risk ones are actionable at that volume.
+      const isRole = pid.includes(':role/') || pid.includes(':assumed-role/');
+      if (!isRole) return true;
+
+      return risks.includes('ALLOWS_FULL_ADMIN') || isCritical || highUnused;
     })
     .sort((a, b) => {
       // Sort: Full Admin first, then by risk_score desc
@@ -521,7 +821,11 @@ async function fetchIdentities() {
       if (aAdmin !== bAdmin) return aAdmin - bAdmin;
       return (b.METRICS?.risk_score || 0) - (a.METRICS?.risk_score || 0);
     })
-    .slice(0, 50);
+    // Was capped at 50 — in role-heavy AWS orgs, admin-flagged roles alone can fill every
+    // slot (Full Admin sorted first) and starve out rarer-but-real risks like admin IAM
+    // Users entirely before they reach the client. Raised well above typical pre-filtered
+    // volume so long-tail identity types (Users among many Roles) aren't silently dropped.
+    .slice(0, 300);
 
   // Parse TRUST_POLICY (from trustMap) into trust principals for the Correlated tab
   filtered.forEach(r => {
@@ -546,9 +850,82 @@ async function fetchIdentities() {
       lateral.forEach(lp => principals.push({ type: 'Lateral', principal: lp }));
     } catch (_) {}
     r._trustPrincipals = principals;
+    r._lqlType = lqlTypeMap[r.PRINCIPAL_ID] || null;
   });
 
   return filtered;
+}
+
+// ── Governance Reports — GET /api/v2/CloudAccounts + /api/v2/Reports ─────────
+// Lets the UI pick a named compliance framework ("Governance Report") and run it
+// against a specific configured cloud account, via Lacework's Reports API.
+// NOTE: only AWS_CIS_14 / AZURE_CIS_1_5 / GCP_CIS13 are confirmed exact reportType
+// values from the API spec; the rest follow Lacework's documented naming convention
+// but a wrong/unsupported value will simply surface as an API error to the caller.
+const GOVERNANCE_REPORT_TYPES = {
+  aws: [
+    { value: 'AWS_CIS_14',        label: 'CIS AWS Foundations Benchmark v1.4' },
+    { value: 'AWS_CIS_S3',        label: 'CIS AWS Foundations — S3 Only' },
+    { value: 'AWS_SOC_2',         label: 'SOC 2' },
+    { value: 'AWS_HIPAA',         label: 'HIPAA' },
+    { value: 'AWS_PCI_DSS_3.2.1', label: 'PCI DSS 3.2.1' },
+    { value: 'AWS_ISO_27001:2013',label: 'ISO 27001:2013' },
+    { value: 'AWS_NIST_CSF',      label: 'NIST CSF' },
+    { value: 'NIST_800-53_Rev4',  label: 'NIST 800-53 Rev4' },
+    { value: 'NIST_800-171_Rev2', label: 'NIST 800-171 Rev2' },
+    { value: 'AWS_CMMC_1.02',     label: 'CMMC 1.02' },
+  ],
+  azure: [
+    { value: 'AZURE_CIS_1_5',       label: 'CIS Azure Foundations Benchmark v1.5' },
+    { value: 'AZURE_SOC_2',         label: 'SOC 2' },
+    { value: 'AZURE_PCI_DSS_3.2.1', label: 'PCI DSS 3.2.1' },
+    { value: 'AZURE_ISO_27001:2013',label: 'ISO 27001:2013' },
+    { value: 'AZURE_NIST_CSF',      label: 'NIST CSF' },
+  ],
+  gcp: [
+    { value: 'GCP_CIS13',         label: 'CIS GCP Foundations Benchmark v1.3' },
+    { value: 'GCP_SOC_2',         label: 'SOC 2' },
+    { value: 'GCP_PCI_DSS_3.2.1', label: 'PCI DSS 3.2.1' },
+    { value: 'GCP_ISO_27001:2013',label: 'ISO 27001:2013' },
+    { value: 'GCP_HIPAA',         label: 'HIPAA' },
+  ],
+};
+
+async function fetchGovernanceTargets() {
+  let accounts = [];
+  try { accounts = (await get('CloudAccounts'))?.data || []; } catch (e) { console.error('[governance] CloudAccounts fetch failed:', e.message); }
+
+  const perAccount = await Promise.all(accounts.filter(a => a.enabled).map(async (a) => {
+    const d = a.data || {};
+    if (a.type === 'AwsCfg' && d.awsAccountId) {
+      return [{ cloud: 'aws', label: `AWS ${d.awsAccountId} — ${a.name}`, primaryQueryId: d.awsAccountId, secondaryQueryId: '' }];
+    }
+    if (a.type === 'AzureCfg' && d.tenantId) {
+      let subs = [];
+      try {
+        const subResp = await get(`Configs/AzureSubscriptions?tenantId=${encodeURIComponent(d.tenantId)}`);
+        subs = (subResp?.data || []).flatMap(t => t.subscriptions || []);
+      } catch (e) { console.error('[governance] AzureSubscriptions fetch failed:', e.message); }
+      return subs.length
+        ? subs.map(sub => ({ cloud: 'azure', label: `Azure ${sub} — ${a.name}`, primaryQueryId: d.tenantId, secondaryQueryId: sub }))
+        : [{ cloud: 'azure', label: `Azure tenant ${d.tenantId} — ${a.name}`, primaryQueryId: d.tenantId, secondaryQueryId: '' }];
+    }
+    if (a.type === 'GcpCfg' && d.id) {
+      if (d.idType === 'ORGANIZATION') {
+        let projs = [];
+        try {
+          const projResp = await get(`Configs/GcpProjects?orgId=${encodeURIComponent(d.id)}`);
+          projs = (projResp?.data || []).flatMap(o => o.projects || []);
+        } catch (e) { console.error('[governance] GcpProjects fetch failed:', e.message); }
+        return projs.length
+          ? projs.map(p => ({ cloud: 'gcp', label: `GCP ${p} — ${a.name}`, primaryQueryId: p, secondaryQueryId: p }))
+          : [{ cloud: 'gcp', label: `GCP org ${d.id} — ${a.name}`, primaryQueryId: d.id, secondaryQueryId: d.id }];
+      }
+      return [{ cloud: 'gcp', label: `GCP ${d.id} — ${a.name}`, primaryQueryId: d.id, secondaryQueryId: d.id }];
+    }
+    return [];
+  }));
+  return perAccount.flat();
 }
 
 // ── 5. Secrets All — POST /api/v2/Queries/execute (LQL) ──────────────────────
@@ -566,13 +943,16 @@ async function fetchSecretsAll() {
   const secretsQueryText = `{source { LW_HE_SECRETS_ALL } return {RECORD_CREATED_TIME, MID, HOSTNAME, FILE_PATH, SECRET_TYPE, SECRET_METADATA}}`;
   const machQueryText    = `{source { LW_HE_MACHINES } return { MID, HOSTNAME, TAGS }}`;
 
+  // withRetry() (not a bare request() call) so a 429 here gets the same RateLimit-Reset-aware
+  // backoff as every other Queries/execute caller, instead of throwing on the first hit — this
+  // fetcher needs the raw {status, body} shape for pagination, so it can't go through post().
   const [r1resp, machResp] = await Promise.all([
-    request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+    withRetry(() => request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
       subAccountHeaders(tok),
-      { query: { queryText: secretsQueryText }, arguments: timeArgs }, 60000),
-    request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
+      { query: { queryText: secretsQueryText }, arguments: timeArgs }, 60000), 'Queries/execute (secretsAll)'),
+    withRetry(() => request('POST', LW_ACCOUNT, '/api/v2/Queries/execute',
       subAccountHeaders(tok),
-      { query: { queryText: machQueryText }, arguments: timeArgs }, 60000)
+      { query: { queryText: machQueryText }, arguments: timeArgs }, 60000), 'Queries/execute (machines)')
       .catch(() => ({ status: 0, body: null })),
   ]);
 
@@ -586,10 +966,10 @@ async function fetchSecretsAll() {
   let nextUrl = r1resp.body?.paging?.urls?.nextPage || null;
   while (nextUrl) {
     const u = new URL(nextUrl);
-    const { status: sN, body: rN } = await request(
+    const { status: sN, body: rN } = await withRetry(() => request(
       'GET', LW_ACCOUNT, u.pathname + u.search,
       { Authorization: `Bearer ${tok}` }, null,
-    );
+    ), 'Queries/execute (secretsAll page)');
     if (sN !== 200) break;
     if (Array.isArray(rN?.data)) all.push(...rN.data);
     nextUrl = rN?.paging?.urls?.nextPage || null;
@@ -660,6 +1040,152 @@ async function fetchSecrets() {
   return rows;
 }
 
+// ── Public Storage Exposure — object storage only (S3 / Azure Blob containers / GCS
+// buckets), never block storage (EBS/Managed Disks/Persistent Disks are out of scope).
+// Each cloud is fetched directly from its own CFG resource inventory + the specific
+// signal that actually proves public exposure — not inferred from generic compliance
+// policy titles, which only surfaces whatever cloud happens to have a Critical/High
+// policy loaded that week:
+//   AWS   — LW_CFG_AWS_S3 (bucket inventory) joined to GET_BUCKET_POLICY_STATUS.IsPublic
+//           and GET_BUCKET_ACL grants to the AllUsers/AuthenticatedUsers group URIs, gated
+//           by GET_PUBLIC_ACCESS_BLOCK (IgnorePublicAcls/RestrictPublicBuckets can neutralize
+//           an otherwise-public policy/ACL).
+//   Azure — LW_CFG_AZURE_STORAGE_STORAGEACCOUNTS_BLOBSERVICES_CONTAINERS.publicAccess,
+//           checked per-container ('Blob'/'Container' = public, 'None' = private), gated
+//           by the parent storage account's allowBlobPublicAccess (LW_CFG_AZURE_STORAGE_
+//           STORAGEACCOUNTS) — Azure denies public access account-wide when that's Disabled
+//           regardless of what an individual container's own setting says.
+//   GCP   — LW_CFG_GCP_STORAGE_BUCKET joined to its _IAMPOLICY bindings for the
+//           allUsers/allAuthenticatedUsers special members, gated by the bucket's own
+//           iamConfiguration.publicAccessPrevention ('enforced' blocks public IAM/ACL grants
+//           outright).
+//
+// 8 queries run in small batches (not all at once) with short gaps between batches, same
+// self-throttling pattern fetchCompliance() uses — otherwise this alone can push a refresh
+// cycle over Lacework's per-account rate limit alongside the other concurrent Phase-1
+// fetchers, and a 429 on any one of these silently reads as "no public storage" instead of
+// "couldn't check" (refreshData() falls back to the prior cycle's result when that happens
+// — see the publicStorage retention comment there).
+async function fetchPublicStorage() {
+  const tf = timeArgs(7);
+  async function q(source, fields) {
+    try {
+      return await post('Queries/execute', {
+        query: { queryText: `{source { ${source} } return distinct { ${fields} }}` },
+        arguments: tf,
+      }, 60000);
+    } catch (e) {
+      console.log(`  [public-storage] ${source} ERR: ${e.message.slice(0, 100)}`);
+      return [];
+    }
+  }
+  const specs = [
+    ['LW_CFG_AWS_S3', 'RESOURCE_ID, ACCOUNT_ID, ACCOUNT_ALIAS, RESOURCE_REGION, ARN, RESOURCE_CONFIG'],
+    ['LW_CFG_AWS_S3_GET_BUCKET_POLICY_STATUS', 'RESOURCE_ID, RESOURCE_CONFIG'],
+    ['LW_CFG_AWS_S3_GET_BUCKET_ACL', 'RESOURCE_ID, RESOURCE_CONFIG'],
+    ['LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK', 'RESOURCE_ID, RESOURCE_CONFIG'],
+    ['LW_CFG_AZURE_STORAGE_STORAGEACCOUNTS_BLOBSERVICES_CONTAINERS', 'RESOURCE_ID, SUBSCRIPTION_ID, URN, RESOURCE_CONFIG'],
+    ['LW_CFG_AZURE_STORAGE_STORAGEACCOUNTS', 'RESOURCE_ID, RESOURCE_CONFIG'],
+    ['LW_CFG_GCP_STORAGE_BUCKET', 'RESOURCE_ID, PROJECT_ID, RESOURCE_REGION, RESOURCE_CONFIG'],
+    ['LW_CFG_GCP_STORAGE_BUCKET_IAMPOLICY', 'RESOURCE_ID, RESOURCE_CONFIG'],
+  ];
+  const BATCH = 3;
+  const results = [];
+  for (let i = 0; i < specs.length; i += BATCH) {
+    const batch = specs.slice(i, i + BATCH);
+    results.push(...await Promise.all(batch.map(([source, fields]) => q(source, fields))));
+    if (i + BATCH < specs.length) await new Promise(r => setTimeout(r, 500));
+  }
+  const [s3Buckets, s3PolicyStatus, s3Acl, s3PublicAccessBlock, azContainers, azStorageAccounts, gcpBuckets, gcpIamPolicy] = results;
+
+  // ── AWS S3 ── A bucket's own Block Public Access settings can neutralize an otherwise-
+  // public policy/ACL: IgnorePublicAcls makes S3 disregard public ACL grants entirely, and
+  // RestrictPublicBuckets strips external (non-AWS-service) access from a public bucket
+  // policy. So a bucket only counts as actually public if the relevant block flag is NOT
+  // set — a bucket with IsPublic=true but RestrictPublicBuckets=true is not exposed.
+  const s3BlockMap = {};
+  s3PublicAccessBlock.forEach(r => {
+    const cfg = r.RESOURCE_CONFIG?.PublicAccessBlockConfiguration || {};
+    s3BlockMap[r.RESOURCE_ID] = { ignoreAcls: cfg.IgnorePublicAcls === true, restrictBuckets: cfg.RestrictPublicBuckets === true };
+  });
+  const s3PublicReasons = {}; // RESOURCE_ID → ['Public Policy'|'Public ACL', ...]
+  function markS3Public(id, reason) {
+    if (!s3PublicReasons[id]) s3PublicReasons[id] = [];
+    s3PublicReasons[id].push(reason);
+  }
+  s3PolicyStatus.forEach(r => {
+    const isPublicPolicy = r.RESOURCE_CONFIG?.PolicyStatus?.IsPublic === true;
+    const restricted = s3BlockMap[r.RESOURCE_ID]?.restrictBuckets;
+    if (isPublicPolicy && !restricted) markS3Public(r.RESOURCE_ID, 'Public Policy');
+  });
+  s3Acl.forEach(r => {
+    const grants = r.RESOURCE_CONFIG?.Grants || [];
+    const isPublicGrant = grants.some(g => /AllUsers|AuthenticatedUsers/.test(g?.Grantee?.URI || ''));
+    const ignored = s3BlockMap[r.RESOURCE_ID]?.ignoreAcls;
+    if (isPublicGrant && !ignored) markS3Public(r.RESOURCE_ID, 'Public ACL');
+  });
+  const awsPublic = s3Buckets.filter(b => s3PublicReasons[b.RESOURCE_ID]).map(b => ({
+    cloud: 'aws',
+    name: b.RESOURCE_ID,
+    account: b.ACCOUNT_ALIAS || b.ACCOUNT_ID || '—',
+    region: b.RESOURCE_REGION || '—',
+    resourceType: 'S3 Bucket (' + s3PublicReasons[b.RESOURCE_ID].join(' + ') + ')',
+    urn: b.ARN || b.RESOURCE_ID,
+  }));
+
+  // ── Azure Blob Containers ── A container's own publicAccess setting is gated by its
+  // parent storage account's allowBlobPublicAccess: when that account-level switch is
+  // Disabled, Azure denies public access to every container underneath it regardless of
+  // what the individual container's publicAccess property says — same relationship as
+  // S3's Block Public Access overriding a bucket's own policy/ACL above.
+  const azAllowPublicMap = {}; // storage account name (lowercased) → allowBlobPublicAccess
+  azStorageAccounts.forEach(a => { azAllowPublicMap[(a.RESOURCE_ID || '').toLowerCase()] = a.RESOURCE_CONFIG?.allowBlobPublicAccess; });
+  const azurePublic = azContainers.filter(c => {
+    const pa = c.RESOURCE_CONFIG?.publicAccess;
+    if (!pa || pa === 'None') return false;
+    const acctMatch = /storageaccounts\/([^/]+)\//i.exec(c.URN || '');
+    const acctName = acctMatch ? acctMatch[1].toLowerCase() : null;
+    // Missing account row (join miss) defaults to "not blocked" — Azure's own account
+    // default is allowBlobPublicAccess=true unless explicitly disabled.
+    return acctName ? azAllowPublicMap[acctName] !== false : true;
+  }).map(c => {
+    const acctMatch = /storageaccounts\/([^/]+)\//i.exec(c.URN || '');
+    return {
+      cloud: 'azure',
+      name: c.RESOURCE_ID,
+      account: acctMatch ? acctMatch[1] : (c.SUBSCRIPTION_ID || '—'),
+      region: '—',
+      resourceType: 'Blob Container (' + c.RESOURCE_CONFIG.publicAccess + ')',
+      urn: c.URN || c.RESOURCE_ID,
+    };
+  });
+
+  // ── GCP Cloud Storage ── Public Access Prevention (publicAccessPrevention: 'enforced')
+  // is GCP's equivalent master switch — when enforced, GCP blocks anonymous/public access
+  // via IAM or ACL even if an allUsers/allAuthenticatedUsers binding exists on the bucket.
+  const gcpPapByBucket = {};
+  gcpBuckets.forEach(b => { gcpPapByBucket[b.RESOURCE_ID] = b.RESOURCE_CONFIG?.iamConfiguration?.publicAccessPrevention; });
+  const gcpPublicIds = new Set();
+  gcpIamPolicy.forEach(p => {
+    const bindings = p.RESOURCE_CONFIG?.bindings || [];
+    const isPublicMember = bindings.some(b => (b.members || []).some(m => m === 'allUsers' || m === 'allAuthenticatedUsers'));
+    const papEnforced = gcpPapByBucket[p.RESOURCE_ID] === 'enforced';
+    if (isPublicMember && !papEnforced) gcpPublicIds.add(p.RESOURCE_ID);
+  });
+  const gcpPublic = gcpBuckets.filter(b => gcpPublicIds.has(b.RESOURCE_ID)).map(b => ({
+    cloud: 'gcp',
+    name: (b.RESOURCE_ID || '').replace('//storage.googleapis.com/', ''),
+    account: b.PROJECT_ID || '—',
+    region: b.RESOURCE_REGION || '—',
+    resourceType: 'Cloud Storage Bucket',
+    urn: b.RESOURCE_ID,
+  }));
+
+  const findings = [...awsPublic, ...azurePublic, ...gcpPublic];
+  console.log(`  [public-storage] aws:${awsPublic.length} azure:${azurePublic.length} gcp:${gcpPublic.length}`);
+  return findings;
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 
 function calcRiskScore(alerts, vulns, identities) {
@@ -673,7 +1199,11 @@ async function refreshData() {
   console.log(`\n[${new Date().toISOString()}] Refreshing…`);
   const errors = {};
 
-  // Phase 1: fast parallel fetch — update cache immediately so UI is responsive
+  // Phase 1: fast parallel fetch — update cache immediately so UI is responsive.
+  // fetchPublicStorage() deliberately is NOT in this batch — its 8 CFG queries would double
+  // the concurrent Queries/execute burst at the exact moment this fires, which is enough by
+  // itself to trip this tenant's rate limit before compliance even gets a turn. It runs in
+  // Phase 2 instead, after Phase 1's fetchers have already completed and freed up quota.
   const [a, v, i, s] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
@@ -688,12 +1218,13 @@ async function refreshData() {
     return [];
   }
 
-  const alerts     = unwrap(a,  'alerts');
-  const vulns      = unwrap(v,  'vulns');
-  const identities = unwrap(i,  'identities');
-  const secrets    = unwrap(s,  'secrets');
+  const alerts       = unwrap(a,  'alerts');
+  const vulns        = unwrap(v,  'vulns');
+  const identities    = unwrap(i,  'identities');
+  const secrets      = unwrap(s,  'secrets');
 
-  // Publish fast data right away; compliance + secretsAll will update the cache when ready
+  // Publish fast data right away; compliance + secretsAll + publicStorage update the cache
+  // as each becomes ready
   cache = {
     ...cache,
     alerts, vulns, identities, secrets,
@@ -702,37 +1233,56 @@ async function refreshData() {
     account: LW_ACCOUNT,
     daysBack: dynamicDaysBack,
     riskScore: calcRiskScore(alerts, vulns, identities),
-    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: cache.secretsAll?.length ?? 0 },
+    summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: cache.secretsAll?.length ?? 0, publicStorage: cache.publicStorage?.length ?? 0 },
   };
 
-  // Phase 2: compliance then secretsAll — sequential to avoid rate-limit and contention
-  const c = await fetchCompliance().then(v => ({ status: 'fulfilled', value: v }))
-                                   .catch(e => ({ status: 'rejected', reason: e }));
-  const freshComp  = unwrap(c, 'compliance');
-  // Retain last good compliance result when rate-limited (429 → empty list)
-  const compliance = freshComp.length > 0 ? freshComp : (cache.compliance ?? []);
+  // Phase 2: compliance + secretsAll + publicStorage run concurrently, each publishing to
+  // cache the moment IT resolves — not gated behind all three settling together. They used
+  // to run sequentially (compliance fully finishing before secretsAll started) to avoid
+  // rate-limit contention, but compliance now evaluates every enabled Critical/High policy
+  // instead of a capped top-15 and can take several minutes; secretsAll (usually much
+  // faster) would otherwise sit unpublished behind it the whole time. Compliance already
+  // self-throttles internally (batches of 3, 500ms gaps between batches) and publicStorage
+  // does the same (batches of 3, see fetchPublicStorage()), so running secretsAll's single
+  // query alongside them is a small, acceptable increase in concurrent Queries/execute calls.
+  const compliancePromise = fetchCompliance()
+    .then(v => ({ status: 'fulfilled', value: v }))
+    .catch(e => ({ status: 'rejected', reason: e }))
+    .then(res => {
+      const freshComp = unwrap(res, 'compliance');
+      // Retain last good compliance result when rate-limited (429 → empty list)
+      const compliance = freshComp.length > 0 ? freshComp : (cache.compliance ?? []);
+      cache = { ...cache, compliance, summary: { ...cache.summary, compliance: compliance.length } };
+      return compliance;
+    });
 
-  cache = { ...cache, compliance, summary: { ...cache.summary, compliance: compliance.length } };
+  const secretsAllPromise = fetchSecretsAll()
+    .then(v => ({ status: 'fulfilled', value: v }))
+    .catch(e => ({ status: 'rejected', reason: e }))
+    .then(res => {
+      const secretsAll = unwrap(res, 'secretsAll');
+      cache = { ...cache, secretsAll, summary: { ...cache.summary, secretsAll: secretsAll.length } };
+      return secretsAll;
+    });
 
-  // Fetch secretsAll last — large LQL query, run alone to avoid contention
-  const sa = await fetchSecretsAll().then(v => ({ status: 'fulfilled', value: v }))
-                                    .catch(e => ({ status: 'rejected', reason: e }));
-  const secretsAll = unwrap(sa, 'secretsAll');
+  // fetchPublicStorage()'s per-query catch (see there) turns a rate-limited query into an
+  // empty result rather than a thrown error, so an empty result here can mean either
+  // "genuinely nothing public" or "got rate-limited mid-fetch". Retaining the prior cycle's
+  // result on empty — same guard compliance uses above — avoids the panel flashing to
+  // "nothing found" on a transient 429.
+  const publicStoragePromise = fetchPublicStorage()
+    .then(v => ({ status: 'fulfilled', value: v }))
+    .catch(e => ({ status: 'rejected', reason: e }))
+    .then(res => {
+      const freshPublicStorage = unwrap(res, 'publicStorage');
+      const publicStorage = freshPublicStorage.length > 0 ? freshPublicStorage : (cache.publicStorage ?? []);
+      cache = { ...cache, publicStorage, summary: { ...cache.summary, publicStorage: publicStorage.length } };
+      return publicStorage;
+    });
 
-  cache = {
-    ...cache,
-    secretsAll,
-    summary: {
-      alerts:     alerts.length,
-      vulns:      vulns.length,
-      compliance: compliance.length,
-      identities: identities.length,
-      secrets:    secrets.length,
-      secretsAll: secretsAll.length,
-    },
-  };
+  const [compliance, secretsAll, publicStorage] = await Promise.all([compliancePromise, secretsAllPromise, publicStoragePromise]);
 
-  console.log(`[done] alerts:${alerts.length} vulns:${vulns.length} compliance:${compliance.length} identities:${identities.length} secretsAll:${secretsAll.length}`);
+  console.log(`[done] alerts:${alerts.length} vulns:${vulns.length} compliance:${compliance.length} identities:${identities.length} secretsAll:${secretsAll.length} publicStorage:${publicStorage.length}`);
   if (Object.keys(errors).length) console.log('[errors]', errors);
 }
 
@@ -1143,6 +1693,11 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
   </div>
+  <div class="sb-item" id="nav-storage" onclick="nav('storage')">
+    <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+    Public Storage Exposure
+    <span style="margin-left:auto;font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:#7c3aed;border-radius:8px;padding:1px 6px">BETA</span>
+  </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
     Risk Findings Inventory
@@ -1154,9 +1709,16 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   </div>
   <!-- Generate Report button (alpha: live from cache) -->
   <div style="padding:0 0 6px">
-    <a id="rpt-btn-link" href="/report" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
+    <a id="rpt-btn-link" href="/report" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none" onclick="return openReportGenModal(event)">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Report
+    </a>
+  </div>
+  <!-- Generate Report 2 button (beta: wider-scope assessment report) -->
+  <div style="padding:0 0 6px">
+    <a id="rpt2-btn-link" href="/report2" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none;background:#7c3aed">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      Generate Report 2 <span style="font-size:9px;font-weight:800;letter-spacing:.06em;background:rgba(255,255,255,.25);border-radius:3px;padding:1px 5px;margin-left:5px">BETA</span>
     </a>
   </div>
   <!-- Sidebar meta -->
@@ -1193,8 +1755,8 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:20px 24px 16px;gap:0">
 
     <!-- Title -->
-    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:4px">Cloud Security Posture Management Score</div>
-    <div style="font-size:10px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;margin-bottom:12px">Fortinet Rapid Cloud Assessment empowered by <a id="fg-link" href="https://community.fortinet.com/forticnapp-63" target="_blank" style="color:#DA291C;text-decoration:none;font-weight:700">FortiCNAPP</a> · last ${DAYS_BACK} days</div>
+    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:12px">Cloud Security Posture Management Score</div>
+    <div style="font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#64748b;text-align:center;max-width:560px;margin-bottom:10px;line-height:1.5"><span style="color:#15803d;font-weight:800">Accelerating Risk Reduction</span> while strengthening cloud security posture, improving configuration hygiene &amp; enhancing runtime threat detection</div>
 
     <!-- Centering wrapper: responsive — fills available space up to a comfortable max -->
     <div style="width:100%;max-width:clamp(480px,58vw,740px);display:flex;flex-direction:column;align-items:center">
@@ -1263,7 +1825,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <text x="200" y="248" text-anchor="middle" font-size="9.5" font-weight="600"
             letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
             fill="#64748b" text-transform="uppercase">
-        <tspan>THE HIGHER THE RISK SCORE, THE HIGHER THE REMEDIATION PRIORITY — </tspan><tspan fill="#15803d" font-weight="800">ACCELERATING RISK REDUCTION</tspan><tspan> WHILE STRENGTHENING CLOUD SECURITY POSTURE, IMPROVING CONFIGURATION HYGIENE, AND ENHANCING DETECTION AND MITIGATION OF RUNTIME THREATS</tspan>
+        <tspan>THE HIGHER THE RISK SCORE, THE HIGHER THE REMEDIATION PRIORITY</tspan>
       </text>
     </svg>
 
@@ -1405,7 +1967,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Host Exposure &amp; Risk</div>
+      <div class="vh-title">Host Internet and Lateral Exposure &amp; Risk</div>
       <div class="vh-sub">Internet-exposed &amp; Private hosts · CVE risk ≥ 8 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
@@ -1437,13 +1999,13 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <span class="vh-badge" id="cnt-i">—</span>
   </div>
   <div class="lab-tabs-bar">
-    <button class="lab-tab active" id="itab-nomfa" onclick="switchIdentTab('nomfa')">Root / Admin — No MFA</button>
-    <button class="lab-tab" id="itab-roles" onclick="switchIdentTab('roles')">Highest Permissive Role</button>
-    <button class="lab-tab" id="itab-corr" onclick="switchIdentTab('corr')">Correlated Identities</button>
+    <button class="lab-tab active" id="itab-aws" onclick="switchIdentTab('aws')">AWS</button>
+    <button class="lab-tab" id="itab-azure" onclick="switchIdentTab('azure')">Azure</button>
+    <button class="lab-tab" id="itab-gcp" onclick="switchIdentTab('gcp')">GCP</button>
   </div>
-  <div id="ibody-nomfa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
-  <div id="ibody-roles" style="display:none"></div>
-  <div id="ibody-corr" style="display:none"></div>
+  <div id="ibody-aws" style="padding:0 20px"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+  <div id="ibody-azure" style="display:none;padding:0 20px"></div>
+  <div id="ibody-gcp" style="display:none;padding:0 20px"></div>
   <!-- keep legacy id so existing KPI wiring still works -->
   <div id="body-i" style="display:none"></div>
 </div>
@@ -1453,12 +2015,25 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr vha-purple">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Discovered Secrets</div>
-      <div class="vh-sub">High-permission secrets &amp; credentials detected on hosts</div>
+      <div class="vh-title">Secrets Found</div>
+      <div class="vh-sub">All secrets &amp; credentials detected on hosts</div>
     </div>
     <span class="vh-badge" id="cnt-sa">—</span>
   </div>
   <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Public Storage Exposure ═══ -->
+<div class="view" id="view-storage">
+  <div class="view-hdr vha-orange">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Public Storage Exposure <span style="font-size:9px;font-weight:800;letter-spacing:.04em;color:#fff;background:#7c3aed;border-radius:8px;padding:2px 7px;vertical-align:middle;margin-left:4px">BETA</span></div>
+      <div class="vh-sub">S3 / Blob / Cloud Storage with public access, across AWS, Azure &amp; GCP</div>
+    </div>
+    <span class="vh-badge" id="cnt-storage">—</span>
+  </div>
+  <div id="body-storage"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
 <!-- ═══ View: Asset Risk ═══ -->
@@ -1484,6 +2059,38 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <button onclick="closeHostGraph()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;color:#fff;font-size:18px;width:32px;height:32px;cursor:pointer;line-height:1">&#x2715;</button>
     </div>
     <div id="host-graph-body" style="padding:0"></div>
+  </div>
+</div>
+
+<!-- Generate Report — Cloud Account + Compliance Framework prompt -->
+<div id="rptgen-overlay" style="display:none;position:fixed;inset:0;z-index:3200;background:rgba(0,0,0,.55);align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;width:min(460px,96vw);box-shadow:0 24px 60px rgba(0,0,0,.3);overflow:hidden">
+    <div style="background:linear-gradient(135deg,#0f172a,#334155);padding:18px 22px;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:15px;font-weight:800;color:#fff">Generate Report</div>
+        <div style="font-size:11px;color:#cbd5e1;margin-top:2px">Scope the Compliance section to one cloud account &amp; framework</div>
+      </div>
+      <button onclick="closeReportGenModal()" style="background:rgba(255,255,255,.15);border:none;border-radius:8px;color:#fff;font-size:18px;width:32px;height:32px;cursor:pointer;line-height:1">&#x2715;</button>
+    </div>
+    <div style="padding:20px 22px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <span style="font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b">1. Cloud Account</span>
+        <select id="rptgen-account-select" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px;font-weight:600;color:#0f172a;background:#fff;cursor:pointer;outline:none" onchange="rptGenAccountChanged()" onmousedown="loadGovernanceTargets()">
+          <option value="">Loading cloud accounts…</option>
+        </select>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <span style="font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b">2. Compliance Framework (CIS / HIPAA / NIST / SOC 2 / PCI…)</span>
+        <select id="rptgen-framework-select" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px;font-weight:600;color:#0f172a;background:#fff;cursor:pointer;outline:none">
+          <option value="">Select account first…</option>
+        </select>
+      </div>
+      <div id="rptgen-status" style="font-size:11px;color:#b91c1c;min-height:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+        <a id="rptgen-skip" href="/report" target="_blank" onclick="closeReportGenModal()" style="font-size:11px;color:#94a3b8;text-decoration:none;align-self:center;margin-right:auto">Skip — use default compliance scan</a>
+        <button id="rptgen-go-btn" onclick="runReportGenModal()" disabled style="padding:8px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;color:#fff;background:#0f172a;cursor:pointer;opacity:.5">Generate Report</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1539,6 +2146,9 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <div class="vh-text">
       <div class="vh-title">Exploit Simulation Layer</div>
       <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</div>
+    </div>
+    <div id="lab-storage-badge" onclick="nav('storage')" style="display:none;cursor:pointer;align-items:center;gap:7px;font-size:11px;font-weight:700;color:#fff;background:#b91c1c;border-radius:7px;padding:6px 13px" title="Public object storage — click to view">
+      🗄️ <span id="lab-storage-cnt">0</span> Public Storage Resource<span id="lab-storage-plural">s</span> Exposed
     </div>
   </div>
 
@@ -1648,7 +2258,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <text   x="293" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
     <!-- Node 3 — Exposed Hosts -->
-    <circle id="jnd3" cx="450" cy="338" r="38" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"/>
+    <circle id="jnd3" cx="450" cy="338" r="38" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"><title id="jnd3-title">Exposed Hosts</title></circle>
     <text   x="450" y="329" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
     <text   x="450" y="341" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
     <text id="jnd3-cnt" x="450" y="357" text-anchor="middle" font-size="18" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
@@ -1681,6 +2291,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
   </svg>
   </div>
+  <div id="jnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
   </div><!-- /lab-global-panel -->
 
   <!-- ── Per-CSP diagram (shared SVG, re-rendered per active tab) ── -->
@@ -1731,23 +2342,27 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <!-- Gray tracks -->
       <g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">
         <line x1="350" y1="130" x2="350" y2="157"/>
-        <line x1="350" y1="241" x2="112" y2="274"/>
-        <line x1="350" y1="241" x2="350" y2="274"/>
-        <line x1="350" y1="241" x2="588" y2="274"/>
-        <line x1="112" y1="352" x2="350" y2="387"/>
-        <line x1="350" y1="352" x2="350" y2="387"/>
-        <line x1="588" y1="352" x2="350" y2="387"/>
+        <line x1="350" y1="241" x2="91"  y2="274"/>
+        <line x1="350" y1="241" x2="264" y2="274"/>
+        <line x1="350" y1="241" x2="437" y2="274"/>
+        <line x1="350" y1="241" x2="610" y2="274"/>
+        <line x1="91"  y1="352" x2="350" y2="387"/>
+        <line x1="264" y1="352" x2="350" y2="387"/>
+        <line x1="437" y1="352" x2="350" y2="387"/>
+        <line x1="610" y1="352" x2="350" y2="387"/>
       </g>
 
       <!-- Animated attack flow (stroke color set by JS via cjsnake) -->
       <g id="cjsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">
         <line x1="350" y1="130" x2="350" y2="157" style="animation:path-flow 1s   linear infinite 0s"/>
-        <line x1="350" y1="241" x2="112" y2="274" style="animation:path-flow 1.1s linear infinite 0s"/>
-        <line x1="350" y1="241" x2="350" y2="274" style="animation:path-flow 1.1s linear infinite .2s"/>
-        <line x1="350" y1="241" x2="588" y2="274" style="animation:path-flow 1.1s linear infinite .4s"/>
-        <line x1="112" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .1s"/>
-        <line x1="350" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .3s"/>
-        <line x1="588" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .5s"/>
+        <line x1="350" y1="241" x2="91"  y2="274" style="animation:path-flow 1.1s linear infinite 0s"/>
+        <line x1="350" y1="241" x2="264" y2="274" style="animation:path-flow 1.1s linear infinite .15s"/>
+        <line x1="350" y1="241" x2="437" y2="274" style="animation:path-flow 1.1s linear infinite .3s"/>
+        <line x1="350" y1="241" x2="610" y2="274" style="animation:path-flow 1.1s linear infinite .45s"/>
+        <line x1="91"  y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .1s"/>
+        <line x1="264" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .25s"/>
+        <line x1="437" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .4s"/>
+        <line x1="610" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .55s"/>
       </g>
 
       <!-- LAYER 1: Attacker -->
@@ -1769,30 +2384,39 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <circle cx="350" cy="199" r="42" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>
       <text x="350" y="205" text-anchor="middle" font-size="14" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>
 
-      <!-- LAYER 3: 3 factor nodes -->
+      <!-- LAYER 3: 4 factor nodes -->
       <!-- Node 1 — Identities -->
-      <circle id="cjnd1" cx="112" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-      <text   x="112" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-      <text id="cjnd1-cnt" x="112" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="112" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
-      <circle cx="136" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="136" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+      <circle id="cjnd1" cx="91" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
+      <text   x="91" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
+      <text id="cjnd1-cnt" x="91" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="91" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
+      <circle cx="115" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="115" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
       <!-- Node 2 — Alerts -->
-      <circle id="cjnd2" cx="350" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-      <text   x="350" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
-      <text id="cjnd2-cnt" x="350" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="350" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
-      <circle cx="374" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="374" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+      <circle id="cjnd2" cx="264" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
+      <text   x="264" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
+      <text id="cjnd2-cnt" x="264" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="264" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
+      <circle cx="288" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="288" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
-      <!-- Node 3 — Compliance -->
-      <circle id="cjnd3" cx="588" cy="313" r="38" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-      <text   x="588" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-      <text id="cjnd3-cnt" x="588" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="588" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
-      <circle cx="612" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="612" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+      <!-- Node 3 — Exposed Hosts -->
+      <circle id="cjnd3" cx="437" cy="313" r="38" fill="#f97316" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"><title id="cjnd3-title">Exposed Hosts</title></circle>
+      <text   x="437" y="304" text-anchor="middle" font-size="7.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
+      <text   x="437" y="316" text-anchor="middle" font-size="7.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
+      <text id="cjnd3-cnt" x="437" y="332" text-anchor="middle" font-size="18" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="437" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#ef4444" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Initial Access · TA0001</text>
+      <circle cx="461" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="461" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
+
+      <!-- Node 4 — Compliance -->
+      <circle id="cjnd4" cx="610" cy="313" r="38" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
+      <text   x="610" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
+      <text id="cjnd4-cnt" x="610" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
+      <text x="610" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
+      <circle cx="634" cy="286" r="10" fill="#FCD34D"/>
+      <text   x="634" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
 
       <!-- LAYER 4: Cloud posture goal -->
       <circle id="cjnd-goal" cx="350" cy="429" r="38" fill="#22c55e" filter="url(#cjnd-shadow)"/>
@@ -1800,6 +2424,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <text id="cjnd-goal-cnt" x="350" y="440" text-anchor="middle" font-size="10" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
     </svg>
     </div>
+    <div id="cjnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
   </div>
 
 </div>
@@ -1998,6 +2623,18 @@ function renderAlerts(rows,err){
 function renderVulns(rows,err){
   try{_renderVulns(rows,err);}catch(ex){state('body-v','','Host Internet Exposure render error: '+ex.message+' ('+ex.stack+')');console.error('[renderVulns]',ex);}
 }
+// Friendly category label for a raw SECRET_TYPE (e.g. "aws_secret_access_key" → "AWS Key").
+function ciemCategoryLabel(t){
+  var tl=(t||'').toLowerCase();
+  if(tl.indexOf('ssh')>=0)return'SSH Key';
+  if(tl.indexOf('aws')>=0)return'AWS Key';
+  if(tl.indexOf('gcp')>=0||tl.indexOf('google')>=0)return'GCP Key';
+  if(tl.indexOf('azure')>=0)return'Azure Key';
+  if(tl.indexOf('oauth')>=0||tl.indexOf('token')>=0)return'OAuth Token';
+  if(tl.indexOf('rsa')>=0||tl.indexOf('ecdsa')>=0||tl.indexOf('ed25519')>=0)return'Private Key';
+  return t||'Credential';
+}
+
 function _renderVulns(rows,err){
   if(err){state('body-v','',err);return;}
   rows=rows||[];
@@ -2037,9 +2674,15 @@ function _renderVulns(rows,err){
         var pt=mt.find(function(t){return/external.?ip|public.?ip/i.test(t.key||'');});
         if(pt)pubIp=pt.value||'';
       }
-      hostMap[h]={name:h,pubIp:pubIp,
-        reach:(mt2&&typeof mt2==='object'&&!Array.isArray(mt2)&&mt2.lw_InternetExposure==='Yes'?'Internet Exposed':null)||'',
-        vulns:[],maxRisk:0,crit:0,high:0,fixable:0};
+      var cloudRaw=(mt&&typeof mt==='object'&&!Array.isArray(mt)&&mt.VmProvider)||'';
+      var cloud=cloudRaw?cloudRaw.toLowerCase():'';
+      if(cloud==='google')cloud='gcp';
+      var mt2Obj=(mt2&&typeof mt2==='object'&&!Array.isArray(mt2))?mt2:null;
+      hostMap[h]={name:h,pubIp:pubIp,cloud:cloud,
+        reach:(mt2Obj&&mt2Obj.lw_InternetExposure==='Yes'?'Internet Exposed':null)||'',
+        restricted:!!(mt2Obj&&mt2Obj.lw_RestrictedExternalAccess==='Yes'),
+        vulns:[],maxRisk:0,crit:0,high:0,fixable:0,
+        exposureEvidence:r._exposureEvidence||null};
     }
     var host=hostMap[h];
     var rs=parseFloat(r.hostRiskScore||r.riskScore||0);
@@ -2057,35 +2700,35 @@ function _renderVulns(rows,err){
   // Internet-exposed hosts come from vulns data (all have CVE risk ≥ 8)
   var inetHosts=allHosts.filter(function(h){return h.reach==='Internet Exposed';});
 
-  // Private hosts: all secret-bearing hosts from secretsAll, grouped by HOSTNAME
+  // Private hosts: all non-internet-exposed hosts with CVE risk ≥ 8 · Unpatched (same
+  // base set as the Internet Exposed tab), enriched with correlated Secrets from secretsAll —
+  // NOT gated on secrets being present, so hosts with only CVE risk still show up.
   var _CIEM_TYPES=['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
     'AWS_SECRET_ACCESS_KEY','AWS_ACCESS_KEY','AWS_CREDENTIALS','AWS_SECRET',
     'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
   var _privMap={};
+  var _exposedHostSet={};
+  allHosts.forEach(function(h){
+    if(h.reach==='Internet Exposed'){_exposedHostSet[h.name.toLowerCase()]=true;return;}
+    _privMap[h.name.toLowerCase()]={name:h.name,cloud:h.cloud||'',restricted:!!h.restricted,ciemSecrets:[],genericSecrets:[],vulns:h.vulns||[],maxRisk:h.maxRisk||0,crit:h.crit||0,high:h.high||0};
+  });
+  // Correlate secrets onto matching hosts (and surface secret-only hosts with no CVE >= 8 too).
+  // Must also skip hosts already known Internet Exposed above -- otherwise a host with no
+  // qualifying CVE (so never evaluated against reach) but with a secretsAll entry would
+  // get created here and misclassified as private in the Attack Path graph.
   (_ld.secretsAll||[]).forEach(function(s){
     var hn=s.HOSTNAME||'';
     if(!hn)return;
     var hnl=hn.toLowerCase();
-    if(!_privMap[hnl])_privMap[hnl]={name:hn,ciemSecrets:[],genericSecrets:[]};
+    if(_exposedHostSet[hnl])return;
+    if(!_privMap[hnl])_privMap[hnl]={name:hn,ciemSecrets:[],genericSecrets:[],vulns:[],maxRisk:0,crit:0,high:0};
     var t=(s.SECRET_TYPE||'').toUpperCase();
     if(_CIEM_TYPES.indexOf(t)>=0)_privMap[hnl].ciemSecrets.push(s.SECRET_TYPE||t);
     else _privMap[hnl].genericSecrets.push(s.SECRET_TYPE||t);
   });
-  // Enrich private hosts with CVE data from non-internet-exposed vuln rows
-  allHosts.forEach(function(h){
-    if(h.reach==='Internet Exposed')return;
-    var hnl=h.name.toLowerCase();
-    if(_privMap[hnl]){
-      _privMap[hnl].vulns=h.vulns||[];
-      _privMap[hnl].maxRisk=h.maxRisk||0;
-      _privMap[hnl].crit=h.crit||0;
-      _privMap[hnl].high=h.high||0;
-    }
-  });
 
   var privHosts=Object.values(_privMap)
-    .filter(function(h){return h.ciemSecrets.length||h.genericSecrets.length;})
-    .sort(function(a,b){return(b.ciemSecrets.length*2+b.genericSecrets.length)-(a.ciemSecrets.length*2+a.genericSecrets.length);});
+    .sort(function(a,b){return(b.ciemSecrets.length*2+b.genericSecrets.length+b.maxRisk)-(a.ciemSecrets.length*2+a.genericSecrets.length+a.maxRisk);});
 
   function summaryStrip(hostArr,rowsArr,label){
     var tc=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
@@ -2150,14 +2793,45 @@ function _renderVulns(rows,err){
       return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';
     }
 
+    var hasCiemInet=!!(arEntry&&arEntry.ciemSecrets&&arEntry.ciemSecrets.length);
+
+    // ── Exposure justification: Public IP + the specific SG (AWS) / NSG (Azure) /
+    // firewall rule (GCP) that actually allows the internet in — why this host is
+    // truly reachable, not just tagged reachable.
+    var ev=host.exposureEvidence;
+    var expBadges='';
+    if(host.pubIp){
+      expBadges+='<span style="font-size:9px;font-family:monospace;font-weight:700;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:3px;padding:1px 6px">Public IP '+e(host.pubIp)+'</span>';
+    }
+    if(ev&&ev.reasons&&ev.reasons.length){
+      var seenCtrl={};
+      expBadges+=ev.reasons.filter(function(r){
+        var k=r.control+'|'+r.name;if(seenCtrl[k])return false;seenCtrl[k]=1;return true;
+      }).map(function(r){
+        var ctrlLabel=r.control==='security group'?'SG':r.control==='NSG rule'?'NSG':'FW';
+        return'<span title="'+e(r.protocol+' '+r.port+' from '+r.source)+'" style="font-size:9px;font-weight:600;color:#7c2d12;background:#fff7ed;border:1px solid #fdba74;border-radius:3px;padding:1px 6px;font-family:monospace">'+e(ctrlLabel+': '+r.name)+'</span>';
+      }).join('');
+    }
+
+    var cloudTagInet=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
+
     html+='<div style="padding:11px 16px 10px;border-bottom:1px solid var(--border)">'
-      // ── Host header row ────────────────────────────────────────────────────
+      // ── Host header row — same chip layout as the Private Hosts panel ───────
       +'<div style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
         +'<div style="flex:1;min-width:0">'
-          +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+          +'<span style="display:flex;align-items:center">'
+            +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+            +cloudTagInet
+          +'</span>'
+          +(expBadges?'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'+expBadges+'</span>':'')
           +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
-            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">Machine Details</button>'
+            +(hasCiemInet?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+arEntry.ciemSecrets.length+' credential'+(arEntry.ciemSecrets.length!==1?'s':'')+'</span>':'')
+            +(hasCiemInet?arEntry.ciemSecrets.map(function(t){return'<span style="font-size:8px;font-weight:600;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(ciemCategoryLabel(t))+'</span>';}).join(''):'')
+            +(arEntry&&arEntry.genericSecrets&&arEntry.genericSecrets.length?'<span style="font-size:9px;font-weight:600;color:#92400e;background:#fffbeb;border-radius:3px;padding:1px 6px">'+arEntry.genericSecrets.length+' secret'+(arEntry.genericSecrets.length!==1?'s':'')+'</span>':'')
+            +(n?'<span style="font-size:9px;font-weight:600;color:#c2410c;background:#fff7ed;border-radius:3px;padding:1px 6px">'+n+' CVE'+(n!==1?'s':'')+(host.crit?' &middot; '+host.crit+' crit':'')+'</span>':'')
+            +(_arCritMisc?'<span style="font-size:9px;color:#4b5563">Misconfigs &middot; '+_arCritMisc+'</span>':'')
+            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px;margin-left:4px">Machine Details</button>'
             +'<span style="font-size:9px;color:var(--muted)">|</span>'
             +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
             +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 9px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap;margin-left:4px">&#9654; CVEs</button>'
@@ -2256,28 +2930,33 @@ function _renderVulns(rows,err){
   // ── Private Hosts panel ────────────────────────────────────────────────────
   html+='<div id="vpanel-priv" style="display:none">';
   if(!privHosts.length){
-    html+='<div class="state">No private hosts with exposed Secrets found</div>';
+    html+='<div class="state">No private hosts with CVE risk ≥ 8 or exposed Secrets found</div>';
   }else{
     var privCap=50;
     // Summary bar for private hosts
     html+='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
       +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+privHosts.length+' Private Hosts</span>'
-      +'<span style="font-size:11px;color:var(--muted)">&middot; Exposed Secrets &amp; Credentials</span>'
+      +'<span style="font-size:11px;color:var(--muted)">&middot; CVE Risk ≥ 8 &amp; Exposed Secrets</span>'
       +(_arCritMisc?'<span class="b b-hi" style="font-size:9px">'+_arCritMisc+' Critical Misconfigs</span>':'')
       +(_critIdents.length?'<span class="b" style="font-size:9px;background:#ede9fe;color:#7c3aed;border:1px solid #ddd6fe">'+_critIdents.length+' Privileged Identities</span>':'')
       +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Private &middot; Correlated Secrets · Identities &amp; Misconfigs</span>'
     +'</div>'
-    +(privHosts.length>privCap?'<div style="font-size:10px;color:var(--muted);padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border)">Showing top '+privCap+' of '+privHosts.length+' hosts by secret severity</div>':'');
+    +(privHosts.length>privCap?'<div style="font-size:10px;color:var(--muted);padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border)">Showing top '+privCap+' of '+privHosts.length+' hosts by risk</div>':'');
     privHosts.slice(0,privCap).forEach(function(host,pidx){
       var hasCiem=host.ciemSecrets.length>0;
       var secCol=hasCiem?'#b91c1c':'#92400e';
       var secBg=hasCiem?'#fee2e2':'#fffbeb';
+      var cloudTagPriv=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
       html+='<div style="padding:10px 16px 9px;border-bottom:1px solid var(--border)">'
         +'<div style="display:flex;align-items:center;gap:10px">'
           +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(pidx+1)+'</span>'
           +'<div style="flex:1;min-width:0">'
-            +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:700;color:var(--text);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+            +'<span style="display:flex;align-items:center">'
+              +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
+              +cloudTagPriv
+            +'</span>'
             +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
+              +(host.restricted?'<span style="font-size:9px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:3px;padding:1px 6px" title="Reachable from a specific allowlisted public IP, not wide open">Restricted External Access</span>':'')
               +(hasCiem?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+host.ciemSecrets.length+' credential'+(host.ciemSecrets.length!==1?'s':'')+'</span>':'')
               +(host.genericSecrets.length?'<span style="font-size:9px;font-weight:600;color:#92400e;background:#fffbeb;border-radius:3px;padding:1px 6px">'+host.genericSecrets.length+' secret'+(host.genericSecrets.length!==1?'s':'')+'</span>':'')
               +(host.vulns&&host.vulns.length?'<span style="font-size:9px;font-weight:600;color:#c2410c;background:#fff7ed;border-radius:3px;padding:1px 6px">'+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':'')+(host.crit?' &middot; '+host.crit+' crit':'')+'</span>':'')
@@ -2308,43 +2987,166 @@ function renderCompliance(rows,err){
   setKpi('kpi-c',rows.length);setCount('cnt-c',rows.length,true);
   if(!rows.length){state('body-c','','No critical compliance violations');return}
   const baseC='https://'+(_lastData?.account||'');
-  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th>Policy ID</th><th>Cloud</th><th>Title</th><th>Description</th><th>Severity</th><th>Violations</th><th></th></tr></thead><tbody>'
+  setBody('body-c','<div class="tbl-wrap"><table><thead><tr><th style="width:9%">Policy ID</th><th style="width:6%">Cloud</th><th style="width:14%">Title</th><th style="width:8%">Category</th><th style="width:9%">Subcategory</th><th style="width:34%">Description</th><th style="width:7%">Severity</th><th style="width:7%">Resource Count</th><th style="width:6%"></th></tr></thead><tbody>'
     +rows.map(r=>'<tr class="'+strip(r.severity)+'">'
       +'<td class="m"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.alertId||'—')+'</a><button class="cp-btn" data-cp="'+e(r.alertId||'')+'">'+cpIcon+'</button></td>'
       +'<td>'+cloud(r.cloud)+'</td>'
-      +'<td class="desc"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
-      +'<td class="desc">'+e(r.description||'—')+'</td>'
+      +'<td class="desc" style="max-width:none"><a class="rf-link" href="'+e(baseC)+'" target="_blank">'+e(r.title||'—')+'</a></td>'
+      +'<td>'+e(r.category||'—')+'</td>'
+      +'<td>'+e(r.subCategory||'—')+'</td>'
+      +'<td class="desc" style="white-space:pre-line;max-width:none">'+e(r.description||'—')+'</td>'
       +'<td>'+sev(r.severity)+'</td>'
       +'<td class="r">'+e(r.violations||0)+'</td>'
       +'<td><button class="comp-det-btn" data-pid="'+e(r.alertId||'')+'" style="font-size:10px;padding:2px 9px;border-radius:5px;border:none;cursor:pointer;background:#f59e0b;color:#fff;font-weight:700" title="Non-compliant resources">Details</button></td>'
     +'</tr>').join('')+'</tbody></table></div>');
 }
 
+// ── Public Storage Exposure — object storage only (S3 buckets, Azure Blob containers,
+// GCS buckets — never block storage) fetched directly server-side (fetchPublicStorage())
+// from each cloud's own CFG inventory + its specific public-access proof (S3 bucket policy
+// status/ACL, Azure per-container publicAccess, GCS bucket IAM policy grants) — see the
+// comment on fetchPublicStorage() for why this isn't inferred from compliance policy titles.
+// "Content" still cross-references whatever DSPM data-classification fields a compliance
+// finding's resource row happens to carry for the same bucket/container name, best-effort.
+function renderPublicStorage(d){
+  var findings=(d&&d.publicStorage)||[];
+  if(!findings.length){setCount('cnt-storage',0,true);state('body-storage','','No public object storage exposure found (S3 buckets, Azure Blob containers, GCS buckets)');return}
+
+  var CONTENT_KEYS=['DATA_CATEGORIES','SENSITIVE_DATA_TYPES','DATA_CLASSIFICATION','DATA_CLASSIFICATIONS','SENSITIVITY','PII_TYPES','CONTENT_TYPES','CLASSIFICATION','DATA_TYPES'];
+  function pick(row,keys){for(var i=0;i<keys.length;i++){if(row&&row[keys[i]]!=null&&row[keys[i]]!=='')return row[keys[i]];}return null;}
+  var dspmByName={};
+  ((d&&d.compliance)||[]).forEach(function(f){
+    (Array.isArray(f.resources)?f.resources:[]).forEach(function(row){
+      var nm=row&&(row.URN||row.RESOURCE_ID||row.RESOURCE_KEY||row.BUCKET_NAME||row.NAME);
+      var v=nm&&pick(row,CONTENT_KEYS);
+      if(nm&&v!=null)dspmByName[nm]=v;
+    });
+  });
+  function contentHtml(name){
+    var v=dspmByName[name];
+    if(v==null)return'<span style="color:#94a3b8;font-size:10.5px">No data classification available</span>';
+    var vals=Array.isArray(v)?v:[v];
+    return vals.map(function(x){return'<span class="b b-hi" style="margin:1px">'+e(String(x))+'</span>';}).join(' ');
+  }
+
+  var groups={aws:[],azure:[],gcp:[]};
+  findings.forEach(function(f){
+    var c=(f.cloud||'').toLowerCase();
+    if(!groups[c])groups[c]=[];
+    groups[c].push(f);
+  });
+
+  setCount('cnt-storage',findings.length,true);
+
+  var order=['aws','azure','gcp'];
+  var html=order.filter(function(c){return groups[c]&&groups[c].length;}).map(function(c){
+    var items=groups[c];
+    var rowsHtml=items.map(function(f){
+      return'<tr>'
+        +'<td class="p" style="font-family:monospace;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+e(String(f.urn||f.name))+'">'+e(String(f.name))+'</td>'
+        +'<td class="p">'+e(String(f.account||'—'))+'</td>'
+        +'<td class="p">'+e(String(f.region||'—'))+'</td>'
+        +'<td class="desc">'+e(f.resourceType||'—')+'</td>'
+        +'<td>'+sev('critical')+'</td>'
+        +'<td>'+contentHtml(f.name)+'</td>'
+      +'</tr>';
+    }).join('');
+    return'<div style="padding:6px 0 8px;margin-top:16px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#111827;border-bottom:2px solid #11182733;margin-bottom:4px">'+cloud(c)+' <span style="font-weight:400;color:#9ca3af">('+items.length+' resource'+(items.length===1?'':'s')+')</span></div>'
+      +'<div class="tbl-wrap"><table><thead><tr><th>Bucket / Container</th><th>Account / Project</th><th>Region</th><th>Resource Type</th><th>Severity</th><th>Content — Data Classification (DSPM)</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
+  }).join('');
+
+  setBody('body-storage',html);
+}
+
 function renderIdentities(rows,err){
   const setTab=function(id,html){var el=document.getElementById(id);if(el)el.innerHTML=html;};
   if(err){
-    setTab('ibody-nomfa','<div class="state">'+err+'</div>');
-    setTab('ibody-roles','<div class="state">'+err+'</div>');
-    setTab('ibody-corr','<div class="state">'+err+'</div>');
+    setTab('ibody-aws','<div class="state">'+err+'</div>');
+    setTab('ibody-azure','<div class="state">'+err+'</div>');
+    setTab('ibody-gcp','<div class="state">'+err+'</div>');
     return;
   }
   setKpi('kpi-i',rows.length);setCount('cnt-i',rows.length,true);
   if(!rows.length){
     const msg='<div class="state">No high-permissive identities found</div>';
-    setTab('ibody-nomfa',msg);setTab('ibody-roles',msg);setTab('ibody-corr',msg);return;
+    setTab('ibody-aws',msg);setTab('ibody-azure',msg);setTab('ibody-gcp',msg);return;
   }
 
   // ── Shared helpers ────────────────────────────────────────────────────────
+  // Cross-cloud "root-equivalent" detector — AWS has a literal root account; Azure/GCP
+  // don't, so the tenant-wide Global Administrator (Entra ID) / Workspace Super Admin
+  // (GCP) directory roles are the closest analogues (unrestricted control, no per-resource scoping).
+  // LW_CE_IDENTITIES has no dedicated "assigned role name" field for Azure/GCP, so this
+  // matches on NAME/PRINCIPAL_ID text the same way the existing AWS root check does.
+  function rootEquivalent(r){
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase();
+    const nm=(r.NAME||'').toLowerCase();
+    if(pid.includes(':root')||nm==='root')return{label:'AWS Root Account',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+    if(nm.includes('global admin')||nm.includes('globaladmin')||pid.includes('globaladmin'))
+      return{label:'Azure Global Administrator',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+    if(nm.includes('super admin')||nm.includes('superadmin')||pid.includes('superadmin'))
+      return{label:'GCP Workspace Super Admin',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+    return null;
+  }
+
   function identType(r){
     const pid=(r.PRINCIPAL_ID||'').toLowerCase();
     const nm=(r.NAME||'').toLowerCase();
-    if(pid.includes(':root')||nm==='root')return{label:'Root Account',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+    const pt=(r.PROVIDER_TYPE||'').toLowerCase();
+    const rootEq=rootEquivalent(r);
+    if(rootEq)return rootEq;
+    // Real LQL-verified type from LW_CE_LINKED_IDENTITIES.RELATION_TYPE (server-attached
+    // as r._lqlType) takes priority over string-pattern guessing below — it's classified
+    // data straight from the source, not an ARN/name heuristic. Only covers identities
+    // that appear in a linked-identity relationship (e.g. group membership, role chaining);
+    // falls through to the heuristics for identities with no such relationship.
+    const lqlType=r._lqlType; // {cloud:'AWS'|'AZURE'|'GCP', type:'USER'|'ROLE'|...} or null
+    // NOTE: INSTANCE_PROFILE is deliberately NOT mapped to IAM Role here — an ARN-based
+    // check further below reliably classifies actual instance profiles as their own
+    // 'Instance Profile' type; folding them into 'IAM Role' here would hide them from
+    // anything that filters on that distinct type (e.g. the EC2 Instance Profile tab).
+    if(lqlType&&lqlType.type==='ROLE')return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
+    if(lqlType&&lqlType.type==='USER'){
+      // Cloud is carried alongside type specifically so an Azure user linked via
+      // AZURE_USER_TO_GROUP isn't collapsed into the same bare 'USER' bucket as an
+      // AWS IAM user (RELATION_TYPE's own prefix used to be discarded — see lqlTypeMap).
+      if(lqlType.cloud==='AZURE')return{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'};
+      if(lqlType.cloud==='GCP')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+      return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    }
+    if(lqlType&&lqlType.type==='GOOGLE_ACCOUNT')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    if(lqlType&&lqlType.type==='SERVICE_ACCOUNT')return lqlType.cloud==='AZURE'
+      ?{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'}
+      :{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+
     if(pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com'))return{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
     if(pid.includes(':assumed-role/')||pid.includes('/sts:'))return{label:'Assumed Role',color:'#b45309',bg:'#fffbeb',border:'#fde68a'};
+    if(pid.includes(':group/'))return{label:'IAM Group',color:'#be185d',bg:'#fdf2f8',border:'#fbcfe8'};
+    if(pid.includes(':instance-profile/'))return{label:'Instance Profile',color:'#0e7490',bg:'#ecfeff',border:'#a5f3fc'};
+    // Azure/GCP identities are classified from PROVIDER_TYPE before the AWS-style ARN/name
+    // heuristics below — those heuristics (":user/", "user" in name, "role" in name) are
+    // AWS-shaped and otherwise misfire on Azure/GCP records whose NAME or PRINCIPAL_ID
+    // happens to contain those substrings, mislabeling them as generic AWS types.
+    if(pt==='azure'||pt==='gcp'){
+      // Azure AD / GCP Workspace human users have PROVIDER_TYPE just 'azure'/'gcp' (no
+      // serviceprincipal/aad marker) and no AWS-style ARN — but their PRINCIPAL_ID is an
+      // email/UPN (e.g. user@tenant.onmicrosoft.com, user#EXT#@tenant.onmicrosoft.com,
+      // user@workspace-domain.com). Any gserviceaccount.com address already matched the
+      // Service Account check above, so an '@' here means a real person, not a service.
+      if(pid.includes('@'))return pt==='azure'
+        ?{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'}
+        :{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+      // Azure Service Principals / App Registrations (e.g. automation identities like
+      // "lacework_security_audit", "azure-cli-*", FortiGate/FortiManager service accounts)
+      // have a bare GUID PRINCIPAL_ID with no email — distinct from human Azure AD users,
+      // whose ID always contains '@'. No linked-identity relationship is recorded for most
+      // of them either (no group membership), so this is the last-resort signal.
+      if(pt==='azure'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pid))
+        return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+    }
     if(pid.includes(':role/')||nm.includes('role'))return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
     if(pid.includes(':user/')||nm.includes('user'))return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    const pt=(r.PROVIDER_TYPE||'').toLowerCase();
-    if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+    if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
     if(pt.includes('user'))return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
     return{label:'Identity',color:'#475569',bg:'#f8fafc',border:'#e2e8f0'};
   }
@@ -2392,6 +3194,14 @@ function renderIdentities(rows,err){
     return'<span class="b b-nt">—</span>';
   }
 
+  function privBadge(risks){
+    var isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
+    var noMfa=risks.includes('PASSWORD_LOGIN_NO_MFA')||risks.includes('AWS_ROOT_USER_PASSWORD_LOGIN_NO_MFA');
+    if(isAdmin&&noMfa)return'<span style="font-size:10px;font-weight:800;background:#7f1d1d;color:#fff;border-radius:3px;padding:2px 8px;white-space:nowrap">&#9888; ADMIN + NO MFA</span>';
+    if(isAdmin)return'<span style="font-size:10px;font-weight:700;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:3px;padding:1px 7px;white-space:nowrap">&#9888; Admin</span>';
+    if(risks.includes('ALLOWS_PRIVILEGE_ESCALATION')||risks.includes('EXCESSIVE_PERMISSIONS'))return'<span style="font-size:10px;font-weight:700;background:#fffbeb;color:#b45309;border:1px solid #fde68a;border-radius:3px;padding:1px 7px;white-space:nowrap">Elevated</span>';
+    return'<span style="font-size:10px;color:#9ca3af">Standard</span>';
+  }
   function identRow(r,idx){
     var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
     var sev=(r.METRICS&&r.METRICS.risk_severity)||'';
@@ -2407,7 +3217,7 @@ function renderIdentities(rows,err){
     var keys=Array.isArray(r.ACCESS_KEYS)?r.ACCESS_KEYS:[];
     var activeKeys=keys.filter(function(k){return(k.active||k.status||'').toString().toLowerCase()==='true'||k.active===true;});
     var lastUsed=r.LAST_USED_TIME?fmtDate(r.LAST_USED_TIME):'Never';
-    return'<tr>'
+    return'<tr data-itype="'+e(type.label)+'">'
       +'<td style="font-size:11px;font-weight:500;color:#9ca3af;font-variant-numeric:tabular-nums;padding-right:4px;width:32px">'+(idx+1)+'</td>'
       +'<td style="max-width:320px">'
         +'<div style="font-weight:600;font-size:12.5px;color:#111827;word-break:break-word;line-height:1.4">'+e(sName)+'</div>'
@@ -2417,6 +3227,7 @@ function renderIdentities(rows,err){
       +'<td style="white-space:nowrap">'
         +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
       +'</td>'
+      +'<td>'+privBadge(risks)+'</td>'
       +'<td>'+sevBadge(sev)+'</td>'
       +'<td><div style="display:flex;gap:3px;align-items:center;flex-wrap:nowrap">'+riskDots(risks)+'</div></td>'
       +'<td style="font-size:11.5px;font-weight:600;color:'+unusedCol+';font-variant-numeric:tabular-nums;white-space:nowrap" title="'+unusedRaw+'">'+unusedStr+'</td>'
@@ -2434,6 +3245,7 @@ function renderIdentities(rows,err){
         +'<th style="width:32px">#</th>'
         +'<th>Identity name</th>'
         +'<th>Identity type</th>'
+        +'<th>Privilege</th>'
         +'<th>Risk severity</th>'
         +'<th>Risk flags <span style="font-size:8px;font-weight:400;opacity:.6">FA PE MFA EP XA CON UP UK</span></th>'
         +'<th title="Percentage of granted permissions never used">Unused %</th>'
@@ -2443,253 +3255,109 @@ function renderIdentities(rows,err){
     +'</table></div>';
   }
 
-  // ── Tab 1: Root / Admin — No MFA ──────────────────────────────────────────
-  const noMfaRows=rows.filter(function(r){
-    var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
-    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
-    var nm=(r.NAME||'').toLowerCase();
-    var isRoot=pid.includes(':root')||nm==='root';
-    var isAdmin=risks.includes('ALLOWS_FULL_ADMIN');
-    var noMfa=risks.includes('PASSWORD_LOGIN_NO_MFA')||r.MFA_ENABLED===false||r.MFA_ENABLED==='false';
-    return isRoot||(isAdmin&&noMfa);
-  });
-  setTab('ibody-nomfa',
-    noMfaRows.length
-      ?identTable(noMfaRows)
-      :'<div class="state">No Root / Admin without MFA found</div>');
+  var SEV_RANK={critical:0,high:1,medium:2,low:3};
+  // Preferred display order for identity-type filter chips — root-equivalents first,
+  // then humans, then machine identities, roughly Critical→Low blast-radius order.
+  var TYPE_ORDER=['AWS Root Account','Azure Global Administrator','GCP Workspace Super Admin',
+    'IAM User','Azure User','User','IAM Group','Azure Service Principal','Service Principal','Service Account','IAM Role','Assumed Role','Instance Profile','Identity'];
 
-  // ── Tab 2: All identities — sorted by risk score ──────────────────────────
-  const roleRows=rows.slice().sort(function(a,b){
-    return((b.METRICS&&b.METRICS.risk_score)||0)-((a.METRICS&&a.METRICS.risk_score)||0);
-  });
-  setTab('ibody-roles',identTable(roleRows));
-
-  // ── Tab 3: Correlated — role↔user/SVC assignment view ────────────────────
-  const byType={roles:[],users:[],svcAccounts:[],other:[]};
-  rows.forEach(function(r){
-    var t=identType(r);
-    if(t.label==='IAM Role'||t.label==='Assumed Role')byType.roles.push(r);
-    else if(t.label==='IAM User'||t.label==='User')byType.users.push(r);
-    else if(t.label==='Service Account'||t.label==='Service Principal')byType.svcAccounts.push(r);
-    else byType.other.push(r);
-  });
-
-  // Build reverse map: principal ARN → list of roles that trust it
-  var principalToRoles={};
-  byType.roles.forEach(function(role){
-    var tp=role._trustPrincipals||[];
-    tp.forEach(function(p){
-      var key=(p.principal||'').toLowerCase();
-      if(!key)return;
-      if(!principalToRoles[key])principalToRoles[key]=[];
-      principalToRoles[key].push(role);
+  // ── Identity-type filter chip bar — lets the user narrow a cloud tab down to one
+  // identity type (IAM Role, IAM User, Service Account, ...) instead of the tab always
+  // showing every type at once. Chips are built from whatever types are actually present
+  // in this cloud's data; "All" (default) shows everything, matching the tab's full set.
+  function typeFilterBarHtml(cloud,cloudRows){
+    var typeMeta={};
+    cloudRows.forEach(function(r){
+      var t=identType(r);
+      if(!typeMeta[t.label])typeMeta[t.label]={count:0,color:t.color,bg:t.bg,border:t.border};
+      typeMeta[t.label].count++;
     });
-  });
-
-  function pTypeColor(t){
-    return t==='AWS'?'#d97706':t==='Service'?'#7c3aed':t==='Federated'?'#0e7490':'#4b5563';
-  }
-  function pTypeBg(t){
-    return t==='AWS'?'#fffbeb':t==='Service'?'#f5f3ff':t==='Federated'?'#ecfeff':'#f9fafb';
-  }
-
-  function trustPillsHtml(principals){
-    if(!principals||!principals.length)return'<span style="font-size:9px;color:#9ca3af;font-style:italic">No trust data</span>';
-    return principals.map(function(p){
-      var col=pTypeColor(p.type),bg=pTypeBg(p.type);
-      var label=p.principal||'—';
-      // shorten long ARNs: keep last two segments
-      var parts=label.split('/');
-      var short=parts.length>2?'…/'+parts.slice(-2).join('/'):label;
-      return'<span title="'+e(label)+'" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;background:'+bg+';color:'+col+';border:1px solid '+col+'44;border-radius:4px;padding:1px 7px;font-family:monospace;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis">'
-        +'<span style="font-weight:700;font-size:8px;letter-spacing:.06em">'+e(p.type||'?')+'</span>'
-        +' '+e(short)+'</span>';
-    }).join(' ');
-  }
-
-  function roleAssignmentsForPrincipal(r){
-    var pid=(r.PRINCIPAL_ID||'').toLowerCase();
-    var nm=(r.NAME||'').toLowerCase();
-    var matched=[];
-    byType.roles.forEach(function(role){
-      var tp=role._trustPrincipals||[];
-      var found=tp.some(function(p){
-        var pv=(p.principal||'').toLowerCase();
-        return pv&&(pv===pid||pv.includes(pid)||pv.includes(nm)||(nm&&pid&&pid.includes(nm)));
-      });
-      if(found)matched.push(role);
+    var typeLabels=Object.keys(typeMeta).sort(function(a,b){
+      var ia=TYPE_ORDER.indexOf(a); ia=ia===-1?TYPE_ORDER.length:ia;
+      var ib=TYPE_ORDER.indexOf(b); ib=ib===-1?TYPE_ORDER.length:ib;
+      return ia-ib;
     });
-    return matched;
-  }
-
-  // ── Role cards: each role with its trusted principals ──
-  function roleCard(role,idx){
-    var sName=shortName(role);
-    var pid=role.PRINCIPAL_ID||'';
-    var type=identType(role);
-    var risks=(role.METRICS&&role.METRICS.risks)?role.METRICS.risks:[];
-    var sev=(role.METRICS&&role.METRICS.risk_severity)||'';
-    var tp=role._trustPrincipals||[];
-    var sevBadge_=function(s){var sl=(s||'').toLowerCase();
-      if(sl==='critical')return'<span class="b b-cr">Critical</span>';
-      if(sl==='high')return'<span class="b b-hi">High</span>';
-      if(sl==='medium')return'<span class="b b-me">Medium</span>';
-      if(s)return'<span class="b b-nt">'+e(s)+'</span>';
-      return'';};
-    return'<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid #0369a1;border-radius:8px;padding:12px 14px;margin:6px 0">'
-      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap">'
-        +'<div style="flex:1;min-width:0">'
-          +'<div style="font-weight:700;font-size:12.5px;color:#0f172a;word-break:break-word">'+e(sName)+'</div>'
-          +(pid&&pid!==sName?'<div style="font-size:9px;color:#9ca3af;font-family:monospace;word-break:break-all;margin-top:1px">'+e(pid)+'</div>':'')
-        +'</div>'
-        +'<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">'
-          +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
-          +sevBadge_(sev)
-        +'</div>'
-      +'</div>'
-      +'<div style="margin-top:8px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;margin-bottom:4px">&#x1F512; Who can assume this role</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
-        +(tp.length?trustPillsHtml(tp):'<span style="font-size:9px;color:#9ca3af;font-style:italic">No trust policy data available</span>')
-      +'</div>'
-      +(risks.length?'<div style="margin-top:8px;display:flex;gap:3px;flex-wrap:wrap">'+riskDots(risks)+'</div>':'')
+    return '<div class="itype-filter" data-cloud="'+cloud+'" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 0 4px">'
+      +'<span style="font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9ca3af;margin-right:2px">Filter by identity type:</span>'
+      +'<button class="itype-chip" data-itype-filter="all" '
+        +'style="font-size:10.5px;font-weight:700;padding:3px 10px;border-radius:12px;border:1px solid #0f172a;background:#0f172a;color:#fff;cursor:pointer;opacity:1;box-shadow:0 0 0 2px #0f172a55">All ('+cloudRows.length+')</button>'
+      +typeLabels.map(function(t){
+        var m=typeMeta[t];
+        return '<button class="itype-chip" data-itype-filter="'+e(t)+'" '
+          +'style="font-size:10.5px;font-weight:600;padding:3px 10px;border-radius:12px;border:1px solid '+m.border+';background:'+m.bg+';color:'+m.color+';cursor:pointer;opacity:.62">'+e(t)+' ('+m.count+')</button>';
+      }).join('')
     +'</div>';
   }
 
-  // ── User / SVC card: identity with roles it can assume ──
-  function principalCard(r,col,idx){
-    var sName=shortName(r);
-    var pid=r.PRINCIPAL_ID||'';
-    var type=identType(r);
-    var sev=(r.METRICS&&r.METRICS.risk_severity)||'';
-    var risks=(r.METRICS&&r.METRICS.risks)?r.METRICS.risks:[];
-    var assignedRoles=roleAssignmentsForPrincipal(r);
-    var sevBadge_=function(s){var sl=(s||'').toLowerCase();
-      if(sl==='critical')return'<span class="b b-cr">Critical</span>';
-      if(sl==='high')return'<span class="b b-hi">High</span>';
-      if(sl==='medium')return'<span class="b b-me">Medium</span>';
-      if(s)return'<span class="b b-nt">'+e(s)+'</span>';
-      return'';};
-    return'<div style="background:#fff;border:1px solid #e2e8f0;border-left:3px solid '+col+';border-radius:8px;padding:12px 14px;margin:6px 0">'
-      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap">'
-        +'<div style="flex:1;min-width:0">'
-          +'<div style="font-weight:700;font-size:12.5px;color:#0f172a;word-break:break-word">'+e(sName)+'</div>'
-          +(pid&&pid!==sName?'<div style="font-size:9px;color:#9ca3af;font-family:monospace;word-break:break-all;margin-top:1px">'+e(pid)+'</div>':'')
-        +'</div>'
-        +'<div style="display:flex;align-items:center;gap:5px;flex-shrink:0">'
-          +'<span style="font-size:10px;font-weight:600;background:'+type.bg+';color:'+type.color+';border:1px solid '+type.border+';border-radius:3px;padding:1px 7px">'+e(type.label)+'</span>'
-          +sevBadge_(sev)
-        +'</div>'
-      +'</div>'
-      +'<div style="margin-top:8px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#64748b;margin-bottom:4px">&#x1F517; IAM Roles assigned (can assume)</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
-        +(assignedRoles.length
-          ?assignedRoles.map(function(role){
-            var rn=shortName(role);
-            var rt=identType(role);
-            return'<span title="'+e(role.PRINCIPAL_ID||'')+'" style="display:inline-flex;align-items:center;gap:3px;font-size:9.5px;background:'+rt.bg+';color:'+rt.color+';border:1px solid '+rt.border+';border-radius:4px;padding:1px 7px;font-family:monospace;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis">'+e(rn)+'</span>';
-          }).join(' ')
-          :'<span style="font-size:9px;color:#9ca3af;font-style:italic">No role assignments found in trust policies</span>')
-      +'</div>'
-      +(risks.length?'<div style="margin-top:8px;display:flex;gap:3px;flex-wrap:wrap">'+riskDots(risks)+'</div>':'')
-    +'</div>';
+  function cloudGroupHtml(cloud,label){
+    var cloudRows=rows.filter(function(r){return cspOfIdentity(r)===cloud;}).sort(function(a,b){
+      // Root accounts first, then no-MFA identities, then Critical→High→Medium→Low, then risk score.
+      var aRoot=rootEquivalent(a)?0:1, bRoot=rootEquivalent(b)?0:1;
+      if(aRoot!==bRoot)return aRoot-bRoot;
+      var risksA=(a.METRICS&&a.METRICS.risks)||[], risksB=(b.METRICS&&b.METRICS.risks)||[];
+      var aNoMfa=risksA.includes('PASSWORD_LOGIN_NO_MFA')?0:1, bNoMfa=risksB.includes('PASSWORD_LOGIN_NO_MFA')?0:1;
+      if(aNoMfa!==bNoMfa)return aNoMfa-bNoMfa;
+      var aSev=SEV_RANK[((a.METRICS&&a.METRICS.risk_severity)||'').toLowerCase()];
+      var bSev=SEV_RANK[((b.METRICS&&b.METRICS.risk_severity)||'').toLowerCase()];
+      aSev=aSev==null?4:aSev; bSev=bSev==null?4:bSev;
+      if(aSev!==bSev)return aSev-bSev;
+      return((b.METRICS&&b.METRICS.risk_score)||0)-((a.METRICS&&a.METRICS.risk_score)||0);
+    });
+    var hdr='<div style="padding:6px 0 8px;margin-top:16px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#111827;border-bottom:2px solid #11182733;margin-bottom:4px">'+e(label)+' <span style="font-weight:400;color:#9ca3af">('+cloudRows.length+')</span></div>';
+    return hdr+(cloudRows.length?(typeFilterBarHtml(cloud,cloudRows)+identTable(cloudRows)):'<div class="state">No '+e(label)+' found</div>');
   }
 
-  function corrCardSection(title,items,col,cardFn){
-    if(!items.length)return'';
-    return'<div style="margin-bottom:20px">'
-      +'<div style="padding:6px 0 8px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:'+col+';border-bottom:2px solid '+col+'33;margin-bottom:4px">'+e(title)+' <span style="font-weight:400;color:#9ca3af">('+items.length+')</span></div>'
-      +items.map(function(r,i){return cardFn(r,col,i);}).join('')
-    +'</div>';
-  }
-
-  var corrHtml=
-    (byType.roles.length||byType.users.length||byType.svcAccounts.length||byType.other.length)
-    ?'<div style="padding:12px 0">'
-      +corrCardSection('IAM Roles — Who Can Assume',byType.roles,'#0369a1',roleCard)
-      +corrCardSection('IAM Users — Role Assignments',byType.users,'#166534',principalCard)
-      +corrCardSection('Service Accounts — Role Assignments',byType.svcAccounts,'#7c3aed',principalCard)
-      +(byType.other.length?corrCardSection('Other Identities',byType.other,'#4b5563',principalCard):'')
-    +'</div>'
-    :'';
-
-  setTab('ibody-corr',
-    corrHtml
-      ?'<div id="ibody-corr-graph"></div>'+corrHtml
-      :'<div class="state">No correlated identity data available</div>');
-
-  // Draw identity graph after DOM is set
-  setTimeout(function(){renderIdentityGraph(rows);},0);
+  setTab('ibody-aws',   cloudGroupHtml('aws','AWS — Identities'));
+  setTab('ibody-azure', cloudGroupHtml('azure','Azure — Identities'));
+  setTab('ibody-gcp',   cloudGroupHtml('gcp','GCP — Identities'));
 }
+
+// Toggle the identity-type filter within a CSP tab: "all" shows every row, otherwise
+// only rows whose identType() label (stamped as data-itype on each <tr>) matches.
+// Delegated (not inline onclick) since chip HTML is regenerated on every data refresh.
+document.addEventListener('click',function(ev){
+  var btn=ev.target.closest('.itype-chip');
+  if(!btn)return;
+  var bar=btn.closest('.itype-filter');
+  if(!bar)return;
+  var cloud=bar.getAttribute('data-cloud');
+  var type=btn.getAttribute('data-itype-filter');
+  Array.prototype.forEach.call(bar.querySelectorAll('.itype-chip'),function(c){
+    c.style.opacity='.62';c.style.boxShadow='none';
+  });
+  btn.style.opacity='1';btn.style.boxShadow='0 0 0 2px #0f172a55';
+  var body=document.getElementById('ibody-'+cloud);
+  if(!body)return;
+  Array.prototype.forEach.call(body.querySelectorAll('tbody tr[data-itype]'),function(tr){
+    tr.style.display=(type==='all'||tr.getAttribute('data-itype')===type)?'':'none';
+  });
+});
 
 function renderSecretsAll(rows,err){
   const el=document.getElementById('t-sa');if(el)el.textContent=rows?rows.length:'—';
   setCount('cnt-sa',rows?rows.length:0,true);
   if(err){state('body-sa','',err);return}
   if(!rows||!rows.length){state('body-sa','','No secrets detected');return}
-  // Group by SECRET_TYPE
+  // Group by SECRET_TYPE — plain listing of every secret found, no DAC/permission framing.
   const groups={};
   rows.forEach(r=>{
     const cat=r.SECRET_TYPE||'Unknown';
     if(!groups[cat])groups[cat]=[];
     groups[cat].push(r);
   });
-  const SECRET_TYPE_LABELS={'SSH_PRIVATE_KEY':'Moderate to High Permissive Access SSH Private Key','SSH_PRIVATE_KEYS':'Moderate to High Permissive Access SSH Private Key','RSA':'Moderate to High Permissive Access SSH Private Key (RSA)','ECDSA':'Moderate to High Permissive Access SSH Private Key (ECDSA)','ED25519':'Moderate to High Permissive Access SSH Private Key (ED25519)','AWS_SECRET_ACCESS_KEY':'Moderate to High Permissive Access AWS Secret Access Key','AWS_ACCESS_KEY':'Moderate to High Permissive Access AWS Secret Access Key','AWS_CREDENTIALS':'Moderate to High Permissive Access AWS Credentials','AWS_SECRET':'Moderate to High Permissive Access AWS Secret Access Key'};
+  const SECRET_TYPE_LABELS={'SSH_PRIVATE_KEY':'SSH Private Key','SSH_PRIVATE_KEYS':'SSH Private Key','RSA':'SSH Private Key (RSA)','ECDSA':'SSH Private Key (ECDSA)','ED25519':'SSH Private Key (ED25519)','AWS_SECRET_ACCESS_KEY':'AWS Secret Access Key','AWS_ACCESS_KEY':'AWS Secret Access Key','AWS_CREDENTIALS':'AWS Credentials','AWS_SECRET':'AWS Secret Access Key'};
   const displayCat=cat=>SECRET_TYPE_LABELS[cat]||SECRET_TYPE_LABELS[cat.toUpperCase()]||cat;
-  const isHighRisk=cat=>{const l=cat.toLowerCase();return l.includes('key')||l.includes('token')||l.includes('password')||l.includes('credential');};
-  const sortedGroups=Object.entries(groups).sort((a,b)=>{
-    const ah=isHighRisk(a[0])?1:0,bh=isHighRisk(b[0])?1:0;
-    if(ah!==bh)return bh-ah;
-    return b[1].length-a[1].length;
-  });
+  const sortedGroups=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
   const renderGroup=([cat,items])=>{
-    const high=isHighRisk(cat);
-    const hdrColor=high?'#ef4444':'#0ea5e9';
-    const hdrBg=high?'#fef2f2':'#f0f9ff';
+    const hdrColor='#0ea5e9',hdrBg='#f0f9ff';
     const rowsHtml=items.map(r=>{
       const inContainer=r.IS_IN_CONTAINER===true||r.IS_IN_CONTAINER==='true'||r.IS_IN_CONTAINER===1;
       const containerLabel=inContainer?'<span class="b b-hi" title="'+e(r.CONTAINER_KEY||'')+'">'+e(r.CONTAINER_KEY?r.CONTAINER_KEY.slice(0,16):'Container')+'</span>':'<span style="color:#94a3b8">—</span>';
       const detectedAt=r.RECORD_CREATED_TIME?fmtDate(r.RECORD_CREATED_TIME):r.BATCH_END_TIME?fmtDate(r.BATCH_END_TIME):'—';
-      const meta=(typeof r.SECRET_METADATA==='object'&&r.SECRET_METADATA)?r.SECRET_METADATA:{};
-      const rawPerms=r.FILE_PERMISSIONS!=null?r.FILE_PERMISSIONS:meta.file_permissions;
-      let dacHtml;
-      if(rawPerms==null){
-        dacHtml='<span style="color:#94a3b8">—</span>';
-      }else{
-        const oct=(rawPerms&0o777).toString(8).padStart(3,'0');
-        const permissive=(rawPerms&0o377)!==0;
-        const col=permissive?'#ef4444':'#22c55e';
-        const plain=(function(o){
-          const m={
-            '777':'Everyone: read, write & execute',
-            '776':'Owner+Group: read/write/execute · Others: read/write',
-            '775':'Owner+Group: read/write/execute · Others: read/execute',
-            '774':'Owner+Group: read/write/execute · Others: read-only',
-            '755':'Owner: full · Others: read & execute',
-            '750':'Owner: full · Group: read/execute · Others: none',
-            '700':'Owner only: full access',
-            '666':'Everyone: read & write (no execute)',
-            '664':'Owner+Group: read/write · Others: read-only',
-            '660':'Owner+Group: read/write · Others: none',
-            '644':'Owner: read/write · Others: read-only',
-            '640':'Owner: read/write · Group: read-only · Others: none',
-            '600':'Owner: read/write · Others: none',
-            '400':'Owner: read-only (recommended)',
-            '444':'Everyone: read-only',
-          };
-          if(m[o])return m[o];
-          const u=parseInt(o[0]),g=parseInt(o[1]),w=parseInt(o[2]);
-          const bits=n=>(n&4?'r':'-')+(n&2?'w':'-')+(n&1?'x':'-');
-          return'Owner: '+bits(u)+' · Group: '+bits(g)+' · World: '+bits(w);
-        })(oct);
-        dacHtml='<span style="font-size:11px;font-weight:600;color:'+col+'">'
-          +'<code style="font-size:11px;font-weight:700;margin-right:5px">'+oct+'</code>'
-          +e(plain)+'</span>';
-      }
       return'<tr>'
         +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
         +'<td>'+containerLabel+'</td>'
         +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
-        +'<td>'+dacHtml+'</td>'
         +'<td class="m">'+detectedAt+'</td>'
         +'</tr>';
     }).join('');
@@ -2698,7 +3366,7 @@ function renderSecretsAll(rows,err){
         +'<span style="font-weight:700;font-size:13px;color:'+hdrColor+'">'+e(displayCat(cat))+'</span>'
         +'<span style="background:'+hdrColor+';color:#fff;border-radius:10px;font-size:11px;font-weight:700;padding:1px 8px">'+items.length+'</span>'
       +'</div>'
-      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th>Permissions</th><th>Detected</th></tr></thead><tbody>'
+      +'<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>Container</th><th>File Path</th><th>Detected</th></tr></thead><tbody>'
         +rowsHtml
       +'</tbody></table></div>'
     +'</div>';
@@ -2731,12 +3399,13 @@ function buildAssetRiskMap(d){
     var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
     var host=(mtObj&&mtObj.Hostname)||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
     if(!host)return;
-    if(!map[host])map[host]={name:host,vulns:[],ciemSecrets:[],genericSecrets:[],risk:0,ciem:0,secretRisk:0,threatRisk:0,miscRisk:0,internetExposed:false,publicIP:null};
+    if(!map[host])map[host]={name:host,vulns:[],ciemSecrets:[],genericSecrets:[],risk:0,ciem:0,secretRisk:0,threatRisk:0,miscRisk:0,internetExposed:false,publicIP:null,cloud:''};
     var w=Math.min(100,parseFloat(r.riskScore||0)*10);
     map[host].vulns.push({id:r.vulnId||'',score:parseFloat(r.riskScore||0),w:w});
     map[host].threatRisk+=w;map[host].risk+=w;
     if(mtObj&&mtObj.lw_InternetExposure==='Yes')map[host].internetExposed=true;
-    if(!map[host].publicIP){var pip=(mtObj&&(mtObj.PublicIpAddress||mtObj.public_ip||mtObj.externalIp))||null;if(pip)map[host].publicIP=pip;}
+    if(!map[host].publicIP){var pip=(mtObj&&(mtObj.ExternalIp||mtObj.PublicIpAddress||mtObj.public_ip||mtObj.externalIp))||null;if(pip)map[host].publicIP=pip;}
+    if(!map[host].cloud){var cr=(mtObj&&mtObj.VmProvider)||'';var cl=cr?cr.toLowerCase():'';if(cl==='google')cl='gcp';if(cl)map[host].cloud=cl;}
   });
   (d.secretsAll||[]).forEach(function(r){
     var sh=(r.HOSTNAME||'').toLowerCase();
@@ -3169,6 +3838,121 @@ function nav(name){
   var ve=document.getElementById('view-'+name);if(ve)ve.classList.add('active');
   var ne=document.getElementById('nav-'+name);if(ne)ne.classList.add('active');
   history.replaceState(null,'','#'+name);
+  if(name==='compliance')loadGovernanceTargets();
+}
+
+// ── Governance Report (FortiCNAPP Reports API) — powers the Generate Report modal's
+// account/framework prompt below ──
+let _govTargets=null,_govReportTypes=null,_govLoading=false,_govLoadedOk=false;
+
+// Fills one cloud-account <select> from the already-fetched _govTargets (or a loading/
+// empty state if not fetched yet) — factored out so the Generate Report modal (and any
+// future caller) can share one fetch instead of each hitting the API.
+function populateGovAccountSelect(sel){
+  if(!sel)return;
+  if(!_govLoadedOk){sel.innerHTML='<option value="">Loading cloud accounts (can take several seconds)…</option>';return;}
+  if(!_govTargets||!_govTargets.length){sel.innerHTML='<option value="">No cloud accounts configured</option>';return;}
+  sel.innerHTML='<option value="">Select cloud account…</option>'+_govTargets.map(function(t,i){
+    return '<option value="'+i+'">'+e(t.label)+'</option>';
+  }).join('');
+}
+
+async function loadGovernanceTargets(){
+  var sels=[document.getElementById('rptgen-account-select')].filter(Boolean);
+  if(_govLoadedOk){sels.forEach(populateGovAccountSelect);return;}
+  if(_govLoading){sels.forEach(populateGovAccountSelect);return;}
+  _govLoading=true;
+  sels.forEach(populateGovAccountSelect);
+  try{
+    var res=await fetch('/api/governance/targets');
+    var d=await res.json();
+    if(d.error)throw new Error(d.error);
+    _govTargets=d.targets||[];
+    _govReportTypes=d.reportTypes||{};
+    _govLoadedOk=true;
+    sels.forEach(populateGovAccountSelect);
+  }catch(err){
+    sels.forEach(function(sel){sel.innerHTML='<option value="">Failed to load — click to retry</option>';});
+    console.error('[governance] targets load failed:',err);
+  }finally{
+    _govLoading=false;
+  }
+}
+
+// Fills a framework <select> + enables/disables its action button once a cloud account is
+// picked — used by the Generate Report modal's account/framework/action elements.
+function populateGovFrameworkOptions(accountSel,fwSel,actionBtn){
+  var idx=accountSel.value;
+  // Remember the framework picked before switching accounts — rebuilding the <select>'s
+  // innerHTML below otherwise silently resets to the first option, so e.g. picking "CIS
+  // AWS Foundations Benchmark v1.4" then switching accounts would drop back to whatever
+  // framework happens to be first, not stick with what the user actually chose.
+  var prevFramework=fwSel.value;
+  if(idx===''||!_govTargets){
+    fwSel.innerHTML='<option value="">Select account first…</option>';
+    actionBtn.disabled=true;actionBtn.style.opacity='.5';
+    return;
+  }
+  var t=_govTargets[idx];
+  var opts=(_govReportTypes&&_govReportTypes[t.cloud])||[];
+  fwSel.innerHTML=opts.length
+    ? opts.map(function(o){return '<option value="'+e(o.value)+'">'+e(o.label)+'</option>';}).join('')
+    : '<option value="">No frameworks available for '+e(t.cloud)+'</option>';
+  if(prevFramework&&opts.some(function(o){return o.value===prevFramework;}))fwSel.value=prevFramework;
+  actionBtn.disabled=!opts.length;actionBtn.style.opacity=opts.length?'1':'.5';
+}
+
+// cloud + frameworkLabel + accountLabel let the server persist this as the "last
+// governance report" — reused by Generate Report / Report 2's Non-Compliance section.
+function govReportUrl(t,reportType,frameworkLabel){
+  return '/api/governance/report?reportType='+encodeURIComponent(reportType)+'&primaryQueryId='+encodeURIComponent(t.primaryQueryId)+(t.secondaryQueryId?'&secondaryQueryId='+encodeURIComponent(t.secondaryQueryId):'')
+    +'&cloud='+encodeURIComponent(t.cloud)+'&frameworkLabel='+encodeURIComponent(frameworkLabel)+'&accountLabel='+encodeURIComponent(t.label);
+}
+
+// ── Generate Report modal — same account/framework picker as the Compliance tab's
+// Governance box, but the point is to run it right before generating the customer
+// report, so the report's Compliance section is scoped to what the user just picked
+// (buildReportHtml() already prefers the freshest server-side lastGovernanceReport
+// over the generic account-wide scan — this just makes running one part of the flow).
+function openReportGenModal(ev){
+  if(ev&&ev.preventDefault)ev.preventDefault();
+  document.getElementById('rptgen-overlay').style.display='flex';
+  document.getElementById('rptgen-status').textContent='';
+  loadGovernanceTargets();
+  return false;
+}
+function closeReportGenModal(){
+  document.getElementById('rptgen-overlay').style.display='none';
+}
+function rptGenAccountChanged(){
+  populateGovFrameworkOptions(document.getElementById('rptgen-account-select'),document.getElementById('rptgen-framework-select'),document.getElementById('rptgen-go-btn'));
+}
+async function runReportGenModal(){
+  var accSel=document.getElementById('rptgen-account-select');
+  var fwSel=document.getElementById('rptgen-framework-select');
+  var idx=accSel.value;
+  var reportType=fwSel.value;
+  if(idx===''||!reportType||!_govTargets)return;
+  var t=_govTargets[idx];
+  var frameworkLabel=fwSel.options[fwSel.selectedIndex]?fwSel.options[fwSel.selectedIndex].text:reportType;
+  var goBtn=document.getElementById('rptgen-go-btn');
+  var status=document.getElementById('rptgen-status');
+  goBtn.disabled=true;goBtn.textContent='Fetching…';
+  status.style.color='#64748b';status.textContent='Running '+frameworkLabel+' against '+t.label+'…';
+  try{
+    var res=await fetch(govReportUrl(t,reportType,frameworkLabel));
+    var d=await res.json();
+    if(d.error)throw new Error(d.error);
+    // Server now holds this as the "last governance report" — the /report route already
+    // reads it in preference to the generic compliance scan, so just open it.
+    var reportUrl=(document.getElementById('rpt-btn-link')&&document.getElementById('rpt-btn-link').getAttribute('href'))||'/report';
+    window.open(reportUrl,'_blank');
+    closeReportGenModal();
+  }catch(err){
+    status.style.color='#b91c1c';status.textContent='Failed to run report: '+(err.message||err);
+  }finally{
+    goBtn.disabled=false;goBtn.textContent='Generate Report';
+  }
 }
 
 let _lastData=null;
@@ -3248,9 +4032,12 @@ function cspOfIdentity(r){
   if(p.includes('GCP')||p.includes('GOOGLE'))return 'gcp';
   return null;
 }
-// Option 3 — Hybrid Severity-Bucket model (logarithmic penalty, base 11)
-// Buckets: CRITICAL(max -40) | HIGH(max -30) | MEDIUM(max -20) | LOW(max -10)
-// penalty_b = max_b × log₁₁(1 + count_b)   score = 100 − Σ penalty_b
+// Rate-based Severity-Mix model — penalty is a weighted average of each severity
+// bucket's SHARE of this cloud's total findings, not raw counts. A cloud with far more
+// inventory (e.g. AWS with 233 identities vs Azure's 30) isn't penalized just for having
+// more assets — only a genuinely worse ratio of critical/high findings lowers the score.
+// Buckets: CRITICAL(weight 40) | HIGH(30) | MEDIUM(20) | LOW(10)
+// penalty = Σ weight_b × (count_b / total)   score = 100 − penalty
 function calcCspScore(d,csp){
   let C=0,H=0,M=0,L=0;
   // Alerts — severity from API ('Critical'|'High')
@@ -3268,10 +4055,10 @@ function calcCspScore(d,csp){
     const rs=r.METRICS?.risk_score||0;
     if(rs>=0.8)C++;else if(rs>=0.5)H++;else if(rs>=0.2)M++;else L++;
   });
-  if(C+H+M+L===0)return null;
-  const log11=n=>Math.log(1+n)/Math.log(11);
-  const penalty=40*log11(C)+30*log11(H)+20*log11(M)+10*log11(L);
-  return Math.max(0,Math.round(100-Math.min(100,penalty)));
+  const total=C+H+M+L;
+  if(total===0)return null;
+  const penalty=40*(C/total)+30*(H/total)+20*(M/total)+10*(L/total);
+  return Math.max(0,Math.round(100-penalty));
 }
 function cspBadgeColor(csp){return{aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[csp]||'#94a3b8';}
 
@@ -3279,6 +4066,10 @@ function renderCspLab(d,csp){
   const alerts=(d.alerts||[]).filter(r=>cspOfAlert(r)===csp);
   const compliance=(d.compliance||[]).filter(r=>(r.cloud||'')===csp);
   const identities=(d.identities||[]).filter(r=>cspOfIdentity(r)===csp);
+  // Same exposure logic as the Global panel's jnd3 (no relative-risk-score gate — see
+  // renderLab), scoped to hosts tagged with this specific cloud via machineTags.VmProvider.
+  const {map:_cHmap}=buildAssetRiskMap(d);
+  const exposedHosts=Object.values(_cHmap).filter(h=>h.internetExposed===true&&h.cloud===csp);
   const raw=calcCspScore(d,csp);
   const p=raw!==null?raw:100;
   const color=scoreColor(p);
@@ -3291,15 +4082,17 @@ function renderCspLab(d,csp){
   const bandEl=document.getElementById('clab-band-txt');
   if(bandEl)bandEl.textContent=band;
   const nodes=[
-    {nd:'cjnd1',cnt:'cjnd1-cnt',count:identities.length,activeClr:'#ef4444'},
-    {nd:'cjnd2',cnt:'cjnd2-cnt',count:alerts.length,    activeClr:'#ef4444'},
-    {nd:'cjnd3',cnt:'cjnd3-cnt',count:compliance.length,activeClr:'#f59e0b'},
+    {nd:'cjnd1',cnt:'cjnd1-cnt',count:identities.length,   activeClr:'#ef4444'},
+    {nd:'cjnd2',cnt:'cjnd2-cnt',count:alerts.length,       activeClr:'#ef4444'},
+    {nd:'cjnd3',cnt:'cjnd3-cnt',count:exposedHosts.length, activeClr:'#f97316'},
+    {nd:'cjnd4',cnt:'cjnd4-cnt',count:compliance.length,   activeClr:'#f59e0b'},
   ];
   nodes.forEach(n=>{
     const el=document.getElementById(n.nd),ct=document.getElementById(n.cnt);
     if(ct)ct.textContent=n.count;
     if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
   });
+  renderExposedHostsInfo(exposedHosts,'cjnd3-title','cjnd3-ip-row');
   const goal=document.getElementById('cjnd-goal');
   const goalCnt=document.getElementById('cjnd-goal-cnt');
   if(goal)goal.setAttribute('fill',color);
@@ -3323,22 +4116,20 @@ function switchVTab(tab){
 }
 
 function switchIdentTab(tab){
-  ['nomfa','roles','corr'].forEach(function(t){
+  ['aws','azure','gcp'].forEach(function(t){
     const btn=document.getElementById('itab-'+t);
     if(btn)btn.classList.toggle('active',t===tab);
     const body=document.getElementById('ibody-'+t);
     if(body)body.style.display=(t===tab)?'':'none';
   });
-  // Auto-load trust principals for all roles when opening Correlated tab
-  if(tab==='corr'){
-    const body=document.getElementById('ibody-corr');
-    if(!body)return;
-    const btns=body.querySelectorAll('.load-trust-btn:not([data-loaded])');
-    btns.forEach(function(btn){
-      btn.setAttribute('data-loaded','1');
-      loadTrustPrincipals(btn);
-    });
-  }
+  // Auto-load trust principals for all roles when opening a tab that shows role cards / rows
+  const body=document.getElementById('ibody-'+tab);
+  if(!body)return;
+  const btns=body.querySelectorAll('.load-trust-btn:not([data-loaded])');
+  btns.forEach(function(btn){
+    btn.setAttribute('data-loaded','1');
+    loadTrustPrincipals(btn);
+  });
 }
 
 function switchLabTab(tab){
@@ -3359,6 +4150,29 @@ function switchLabTab(tab){
   }
 }
 
+// Populates an exposed-hosts node's hover tooltip (<title>) + the visible IP caption row
+// below the diagram — shared by the Global panel (jnd3) and each per-CSP panel (cjnd3),
+// which both need "which host, which public IP" surfaced, not just a bare count.
+function renderExposedHostsInfo(exposedHosts,titleId,capRowId){
+  const titleEl=document.getElementById(titleId);
+  const capRow=document.getElementById(capRowId);
+  if(exposedHosts.length){
+    const withIp=exposedHosts.filter(h=>h.publicIP);
+    if(titleEl)titleEl.textContent=exposedHosts.map(h=>h.name+(h.publicIP?' ('+h.publicIP+')':'')).join(', ');
+    if(capRow){
+      if(withIp.length){
+        capRow.style.display='';
+        capRow.innerHTML=withIp.map(h=>'<b style="font-family:SFMono-Regular,Consolas,monospace">'+e(h.publicIP)+'</b> <span style="color:#9ca3af">('+e(h.name)+')</span>').join('&nbsp;&nbsp;·&nbsp;&nbsp;');
+      }else{
+        capRow.style.display='none';
+      }
+    }
+  }else{
+    if(titleEl)titleEl.textContent='No internet-exposed hosts detected';
+    if(capRow)capRow.style.display='none';
+  }
+}
+
 function renderLab(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
@@ -3370,7 +4184,13 @@ function renderLab(d){
   const _allHosts=Object.values(_hmap);
   const _maxRisk=_allHosts.reduce(function(m,a){return Math.max(m,a.risk);},1);
   _allHosts.forEach(function(a){a.normalizedScore=Math.round(a.risk/_maxRisk*100);});
-  const _exposedHosts=_allHosts.filter(function(h){return h.internetExposed===true&&h.normalizedScore>20;})
+  // normalizedScore is relative to maxRisk across ALL hosts — a handful of private hosts
+  // with huge unbounded CVE counts (threatRisk sums every CVE's score, uncapped per host)
+  // can push maxRisk into the thousands and crush a genuinely internet-exposed host's
+  // normalizedScore under any reasonable cutoff. This node counts exposure, not relative
+  // risk rank, so it must not apply that threshold — matches the per-CSP panel below,
+  // which already lists every internetExposed host with no score gate.
+  const _exposedHosts=_allHosts.filter(function(h){return h.internetExposed===true;})
     .sort(function(a,b){return b.normalizedScore-a.normalizedScore;});
   // ── Snake journey map: update SVG elements ──
   const nodes=[
@@ -3385,6 +4205,15 @@ function renderLab(d){
     if(ct)ct.textContent=n.count;
     if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
   });
+  renderExposedHostsInfo(_exposedHosts,'jnd3-title','jnd3-ip-row');
+  // Public Storage badge — separate stat, not one of the 5 attack-chain nodes above
+  const storageCount=(d.publicStorage||[]).length;
+  const sBadge=document.getElementById('lab-storage-badge');
+  if(sBadge){
+    sBadge.style.display=storageCount>0?'flex':'none';
+    document.getElementById('lab-storage-cnt').textContent=storageCount;
+    document.getElementById('lab-storage-plural').textContent=storageCount===1?'':'s';
+  }
   // Goal node
   const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
   const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
@@ -3638,6 +4467,7 @@ async function load(){
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
+    renderPublicStorage(d);
     renderAssetRisk(d);
     updateRiskScore(calcGlobalScoreFromCsp(d));
     updateCspGauges(d);
@@ -3787,10 +4617,12 @@ function getCookie(name){
 }
 
 function wireReportBtn(user){
-  const btn=document.getElementById('rpt-btn-link');
-  if(!btn||!user) return;
+  if(!user) return;
   const params=new URLSearchParams({customer:(user.company||'Customer'),author:(user.first||'')+(user.last?' '+user.last:'')});
-  btn.href='/report?'+params.toString();
+  const btn=document.getElementById('rpt-btn-link');
+  if(btn)btn.href='/report?'+params.toString();
+  const btn2=document.getElementById('rpt2-btn-link');
+  if(btn2)btn2.href='/report2?'+params.toString();
 }
 
 function showUserBadge(user){
@@ -4443,6 +5275,7 @@ document.addEventListener('click',function(ev){
 // ── GeoIP panel ───────────────────────────────────────────────────────────────
 function closeGeoPanel(){document.getElementById('geo-overlay').style.display='none';}
 document.getElementById('geo-overlay').addEventListener('click',function(ev){if(ev.target===this)closeGeoPanel();});
+document.getElementById('rptgen-overlay').addEventListener('click',function(ev){if(ev.target===this)closeReportGenModal();});
 
 const _geoCache={};
 async function openGeoPanel(ip,hostname){
@@ -4999,8 +5832,8 @@ const REPORT_CSS = `
         /* ── PDF export button (screen only) ── */
         .pdf-export-btn {
             position: fixed;
-            top: 18px;
-            right: 22px;
+            bottom: 18px;
+            left: 22px;
             z-index: 999;
             display: flex;
             align-items: center;
@@ -5018,20 +5851,6 @@ const REPORT_CSS = `
             font-family: inherit;
         }
         .pdf-export-btn:hover { background: var(--color-primary-light); }
-        .pdf-export-hint {
-            position: fixed;
-            top: 56px;
-            right: 22px;
-            z-index: 999;
-            font-size: 10.5px;
-            color: #6b7280;
-            background: #fff;
-            padding: 4px 10px;
-            border-radius: 5px;
-            box-shadow: 0 2px 8px rgba(0,0,0,.12);
-            max-width: 220px;
-            text-align: right;
-        }
 
         /* ── Cover / Title ── */
         .report-cover {
@@ -5115,37 +5934,45 @@ const REPORT_CSS = `
             margin: 1.5rem auto 2rem;
         }
         .toc h3 { margin-top: 0; font-size: 1rem; color: var(--color-primary-dark); text-align: center; margin-bottom: 1.1rem; }
-        .toc-cards { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+        .toc-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; }
         .toc-card {
-            flex: 1 1 calc(20% - 0.75rem);
-            min-width: 140px;
+            min-width: 0;
             border: 1px solid var(--color-border);
-            border-top: 3px solid var(--color-primary);
+            border-top: 4px solid var(--color-primary);
             border-radius: 8px;
-            padding: 0.9rem 1rem;
+            padding: 1rem 1.1rem;
             background: white;
             text-decoration: none;
             display: block;
-            transition: box-shadow 0.15s;
+            transition: box-shadow 0.15s, transform 0.15s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
-        .toc-card:hover { box-shadow: 0 4px 12px rgba(218,41,28,0.15); }
+        .toc-card:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.14); transform: translateY(-2px); }
         .toc-card .tc-num {
-            font-size: 0.65rem;
+            font-size: 0.62rem;
             font-weight: 700;
             letter-spacing: 1.5px;
             text-transform: uppercase;
-            color: var(--color-primary);
+            color: var(--color-text-muted);
+            margin-bottom: 0.3rem;
+        }
+        .toc-card .tc-count {
+            font-size: 2.1rem;
+            font-weight: 900;
+            line-height: 1;
             margin-bottom: 0.35rem;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.5px;
         }
         .toc-card .tc-title {
-            font-size: 0.88rem;
+            font-size: 0.86rem;
             font-weight: 700;
             color: var(--color-primary-dark);
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.3rem;
             line-height: 1.3;
         }
         .toc-card .tc-sub {
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             color: var(--color-text-muted);
             line-height: 1.45;
         }
@@ -5322,6 +6149,39 @@ const REPORT_CSS = `
             border: 1px solid var(--color-critical-border);
         }
         .risk-chip.high { background: var(--color-high-bg); color: var(--color-high); border-color: var(--color-high); }
+
+        /* ── Host groups (CVEs grouped by Internet Exposure) ── */
+        .host-exposure-summary {
+            display: flex;
+            gap: 1.75rem;
+            margin: 0.5rem 0 2rem;
+            flex-wrap: wrap;
+        }
+        .hes-item { font-size: 0.82rem; color: var(--color-text-muted); }
+        .hes-item strong { color: var(--color-text); font-size: 1.05rem; }
+        .hes-item.exposed strong { color: var(--color-critical); }
+        .host-group {
+            margin-bottom: 2rem;
+            border: 1px solid var(--color-border);
+            border-left: 5px solid var(--color-low);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .host-group.exposed { border-left-color: var(--color-critical); }
+        .host-group-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0.85rem 1.25rem;
+            background: var(--color-bg-light);
+            flex-wrap: wrap;
+            break-after: avoid;
+            page-break-after: avoid;
+        }
+        .host-group-header .host-name { font-size: 0.92rem; font-weight: 700; color: var(--color-text); }
+        .host-group-header .host-ip { font-size: 0.75rem; color: var(--color-text-muted); font-family: monospace; }
+        .host-group-header .host-cve-count { margin-left: auto; font-size: 0.75rem; color: var(--color-text-muted); }
+        .host-group table { margin: 0; }
 
         /* ── Apple-style Summary Chart ── */
         .apple-chart {
@@ -5642,10 +6502,14 @@ function sanitizeCacheData(data) {
 
   (out.identities || []).forEach(r => {
     const orig = r.PRINCIPAL_ID || r.NAME || '';
-    if (!orig) return;
-    const label = fakeIdent(orig);
-    if (r.PRINCIPAL_ID) r.PRINCIPAL_ID = fakeArn(r.PRINCIPAL_ID);
-    if (r.NAME) r.NAME = label;
+    if (orig) {
+      const label = fakeIdent(orig);
+      if (r.PRINCIPAL_ID) r.PRINCIPAL_ID = fakeArn(r.PRINCIPAL_ID);
+      if (r.NAME) r.NAME = label;
+    }
+    if (Array.isArray(r._trustPrincipals)) {
+      r._trustPrincipals = r._trustPrincipals.map(p => ({ type: p.type, principal: scrubText(p.principal) }));
+    }
   });
 
   (out.vulns || []).forEach(r => {
@@ -5677,57 +6541,252 @@ function sanitizeCacheData(data) {
   return out;
 }
 
-function buildReportHtml(data, meta) {
-  const customer = ((meta && meta.customer) || 'Customer').trim();
-  const author   = ((meta && meta.author)   || 'Fortinet').trim();
-  const dateStr  = new Date().toLocaleDateString('en-US', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+// Groups CVE rows by host and flags internet exposure — shared by both report builders.
+function groupVulnsByHost(vulns) {
+  const map = {};
+  (vulns || []).forEach(function(r) {
+    const mt = r.machineTags;
+    const mtObj = (mt && typeof mt === 'object' && !Array.isArray(mt)) ? mt : null;
+    const host = (mtObj && mtObj.Hostname) || (r.evalCtx && r.evalCtx.hostname) || r.mid || 'Unknown Host';
+    if (!map[host]) {
+      const pubIp = (mtObj && (mtObj.ExternalIp || mtObj.PublicIp || mtObj.publicIp)) || '';
+      map[host] = { name: host, exposed: !!(mtObj && mtObj.lw_InternetExposure === 'Yes'), pubIp, rows: [], maxRisk: 0 };
+    }
+    const g = map[host];
+    const rs = parseFloat(r.riskScore || 0);
+    if (rs > g.maxRisk) g.maxRisk = rs;
+    g.rows.push(r);
+  });
+  const hosts = Object.values(map).sort(function(a, b) {
+    if (a.exposed !== b.exposed) return a.exposed ? -1 : 1;
+    return b.maxRisk - a.maxRisk;
+  });
+  const exposedCount  = hosts.filter(function(h){ return h.exposed; }).length;
+  const internalCount = hosts.length - exposedCount;
+  return { hosts, exposedCount, internalCount };
+}
 
-  const alerts     = data.alerts     || [];
-  const vulns      = data.vulns      || [];
-  const compliance = data.compliance || [];
-  const identities = data.identities || [];
-  const secrets    = data.secrets    || [];
-  const secretsAll = data.secretsAll || [];
+// Server-side port of the dashboard's client-only buildAssetRiskMap() (inside buildHtml's
+// template literal, not reachable from Node) — per-host correlated risk (CIEM/secrets/CVE/misconfig).
+const CIEM_SECRET_TYPES = ['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
+  'AWS_SECRET_ACCESS_KEY','AWS_ACCESS_KEY','AWS_CREDENTIALS','AWS_SECRET',
+  'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
+function computeAssetRiskMap(vulns, secretsAll, compliance) {
+  const ciemSet = {}; CIEM_SECRET_TYPES.forEach(t => ciemSet[t] = true);
+  const map = {};
+  (vulns || []).forEach(function(r) {
+    const mt = r.machineTags;
+    const mtObj = (mt && typeof mt === 'object' && !Array.isArray(mt)) ? mt : null;
+    const host = (mtObj && mtObj.Hostname) || (r.evalCtx && r.evalCtx.hostname) || r.mid || '';
+    if (!host) return;
+    if (!map[host]) map[host] = { name: host, vulns: [], ciemSecrets: [], genericSecrets: [], risk: 0, ciem: 0, secretRisk: 0, threatRisk: 0, miscRisk: 0, internetExposed: false };
+    const w = Math.min(100, parseFloat(r.riskScore || 0) * 10);
+    map[host].vulns.push({ id: r.vulnId || '', score: parseFloat(r.riskScore || 0), w });
+    map[host].threatRisk += w; map[host].risk += w;
+    if (mtObj && mtObj.lw_InternetExposure === 'Yes') map[host].internetExposed = true;
+  });
+  (secretsAll || []).forEach(function(r) {
+    const sh = (r.HOSTNAME || '').toLowerCase();
+    if (!sh) return;
+    const keys = Object.keys(map);
+    const matchKey = keys.find(function(k) {
+      const kl = k.toLowerCase();
+      return kl === sh || sh.indexOf(kl) === 0 || kl.indexOf(sh.split('.')[0]) === 0;
+    });
+    if (!matchKey) return;
+    const t = (r.SECRET_TYPE || '').toUpperCase();
+    if (ciemSet[t]) { map[matchKey].ciemSecrets.push(r.SECRET_TYPE); map[matchKey].ciem += 100; map[matchKey].risk += 100; }
+    else { map[matchKey].genericSecrets.push(r.SECRET_TYPE); map[matchKey].secretRisk += 50; map[matchKey].risk += 50; }
+  });
+  const critMisc = (compliance || []).filter(c => (c.severity || '').toLowerCase() === 'critical').length;
+  const miscBoost = Math.min(60, critMisc * 10);
+  if (miscBoost > 0) Object.values(map).forEach(a => { if (a.risk > 0) { a.miscRisk = miscBoost; a.risk += miscBoost; } });
+  const allA = Object.values(map);
+  const maxRisk = allA.reduce((mx, a) => Math.max(mx, a.risk), 1);
+  allA.forEach(a => { a.normalizedScore = Math.round(a.risk / maxRisk * 100); });
+  return { map, maxRisk, critMisc };
+}
 
-  // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly
-  function _cspOfAlert(r) {
+// Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly.
+// Shared by both report builders (MultiCloud + per-cloud CSPM score gauges).
+function computeCspScores(data) {
+  function cspOfAlert(r) {
     const t = ((r.alertType||'')+(r.alertName||'')).toUpperCase();
     if (t.includes('AWS')||t.includes('CLOUDTRAIL')||t.includes('EC2')||t.includes('S3')) return 'aws';
     if (t.includes('AZURE')||t.includes('AZ_')) return 'azure';
     if (t.includes('GCP')||t.includes('GOOGLE')||t.includes('GKE')) return 'gcp';
     return null;
   }
-  function _cspOfIdentity(r) {
+  function cspOfIdentity(r) {
     const p = ((r.PROVIDER_TYPE||r.CLOUD_PROVIDER||'')).toUpperCase();
     if (p.includes('AWS')) return 'aws';
     if (p.includes('AZURE')) return 'azure';
     if (p.includes('GCP')||p.includes('GOOGLE')) return 'gcp';
     return null;
   }
-  function calcCspScoreReport(csp) {
+  function calcCspScore(csp) {
     let C=0, H=0, M=0, L=0;
-    (data.alerts||[]).filter(r=>_cspOfAlert(r)===csp).forEach(r=>{
+    const findings = [];
+    (data.alerts||[]).filter(r=>cspOfAlert(r)===csp).forEach(r=>{
       const s=(r.severity||'').toLowerCase();
-      if(s==='critical')C++;else if(s==='high')H++;else M++;
+      let weight;
+      if(s==='critical'){C++;weight='Critical';}else if(s==='high'){H++;weight='High';}else{M++;weight='Medium';}
+      findings.push({ type:'Alert', title: r.alertName||r.alertType||'—', weight, rawSeverity: r.severity||'—' });
     });
     (data.compliance||[]).filter(r=>(r.cloud||'')===csp).forEach(r=>{
       const s=(r.severity||'').toLowerCase();
-      if(s==='critical')C++;else H++;
+      let weight;
+      if(s==='critical'){C++;weight='Critical';}else{H++;weight='High';}
+      findings.push({ type:'Misconfiguration', title: r.title||'—', weight, rawSeverity: r.severity||'—' });
     });
-    (data.identities||[]).filter(r=>_cspOfIdentity(r)===csp).forEach(r=>{
+    (data.identities||[]).filter(r=>cspOfIdentity(r)===csp).forEach(r=>{
       const rs=(r.METRICS&&r.METRICS.risk_score)||0;
-      if(rs>=0.8)C++;else if(rs>=0.5)H++;else if(rs>=0.2)M++;else L++;
+      let weight;
+      if(rs>=0.8){C++;weight='Critical';}else if(rs>=0.5){H++;weight='High';}else if(rs>=0.2){M++;weight='Medium';}else{L++;weight='Low';}
+      const label = r.NAME || (r.PRINCIPAL_ID||'').split('/').pop() || r.PRINCIPAL_ID || '—';
+      findings.push({ type:'Identity', title: label, weight, rawSeverity: (r.METRICS&&r.METRICS.risk_severity)||'—' });
     });
-    if(C+H+M+L===0) return null;
-    const log11 = n => Math.log(1+n)/Math.log(11);
-    const penalty = 40*log11(C)+30*log11(H)+20*log11(M)+10*log11(L);
-    return Math.max(0, Math.round(100-Math.min(100,penalty)));
+    const total = C+H+M+L;
+    if(total===0) return { score: null, findings: [] };
+    // Rate-based: each bucket's share of this cloud's total findings, not raw counts —
+    // see calcCspScore() client-side for the full rationale.
+    const penalty = 40*(C/total)+30*(H/total)+20*(M/total)+10*(L/total);
+    const score = Math.max(0, Math.round(100-penalty));
+    return { score, findings, counts: { C, H, M, L } };
   }
-  const cspScores = { aws: calcCspScoreReport('aws'), azure: calcCspScoreReport('azure'), gcp: calcCspScoreReport('gcp') };
+  const awsCalc = calcCspScore('aws'), azureCalc = calcCspScore('azure'), gcpCalc = calcCspScore('gcp');
+  const cspScores   = { aws: awsCalc.score, azure: azureCalc.score, gcp: gcpCalc.score };
+  const cspFindings = { aws: awsCalc.findings, azure: azureCalc.findings, gcp: gcpCalc.findings };
+  const cspCounts   = { aws: awsCalc.counts, azure: azureCalc.counts, gcp: gcpCalc.counts };
   const cspVals   = ['aws','azure','gcp'].map(c => cspScores[c] !== null ? cspScores[c] : 100);
   const score     = Math.round(cspVals.reduce((s,v)=>s+v,0)/cspVals.length);
   const sBand     = score>=90 ? 'Review Only Required – Least Vulnerable' : score>=50 ? 'Action Required – Vulnerable' : 'Immediate Action Required – Highly Vulnerable';
   const sColor    = score>=90 ? '#22c55e' : score>=50 ? '#f59e0b' : '#ef4444';
+  return { cspScores, cspFindings, cspCounts, score, sBand, sColor };
+}
+
+// Shared TOC card renderer — big colored count + category color-coding so the
+// "Discovered Risk Findings" contents pop, instead of uniform small-text cards.
+function tocCardHtml(href, count, color, numLabel, title, sub) {
+  return '<a href="'+href+'" class="toc-card" style="border-top-color:'+color+'">' +
+    '<div class="tc-num">'+numLabel+'</div>' +
+    '<div class="tc-count" style="color:'+color+'">'+count+'</div>' +
+    '<div class="tc-title">'+title+'</div>' +
+    '<div class="tc-sub">'+sub+'</div>' +
+  '</a>';
+}
+
+function assetRiskTier(score, exposed) {
+  if (score >= 75) return exposed ? { label: 'CRITICAL', color: '#DA291C' } : { label: 'MEDIUM', color: '#B7770D' };
+  if (score >= 50) return exposed ? { label: 'HIGH', color: '#CC4A1A' } : { label: 'LOW', color: '#5A5A5A' };
+  if (score >= 30) return { label: 'MEDIUM', color: '#B7770D' };
+  return { label: 'LOW', color: '#5A5A5A' };
+}
+
+// Static SVG risk-breakdown diagram for one host — a simplified stand-in for the
+// dashboard's interactive Exploit Graph (which depends on live browser globals + GeoIP).
+function hostRiskDiagramSvg(asset, esc) {
+  const tier = assetRiskTier(asset.normalizedScore, asset.internetExposed);
+  const factors = [
+    { label: 'CIEM Credentials',  value: asset.ciem,       max: 300, color: '#DA291C' },
+    { label: 'Exposed Secrets',   value: asset.secretRisk, max: 300, color: '#CC4A1A' },
+    { label: 'CVE Exposure',      value: asset.threatRisk, max: 300, color: '#B7770D' },
+    { label: 'Misconfigurations', value: asset.miscRisk,   max: 60,  color: '#2C5280' },
+  ];
+  const barW = 340, barH = 22, gap = 14, leftPad = 160, topPad = 56;
+  const svgH = topPad + factors.length * (barH + gap) + 20;
+  const bars = factors.map(function(f, i) {
+    const y = topPad + i * (barH + gap);
+    const w = Math.max(2, Math.round((Math.min(f.value, f.max) / f.max) * barW));
+    return '<text x="0" y="'+(y + barH * 0.7)+'" font-size="12" font-family="-apple-system,sans-serif" fill="#5A5A5A">'+esc(f.label)+'</text>'+
+      '<rect x="'+leftPad+'" y="'+y+'" width="'+barW+'" height="'+barH+'" rx="4" fill="#F5F5F5"/>'+
+      '<rect x="'+leftPad+'" y="'+y+'" width="'+w+'" height="'+barH+'" rx="4" fill="'+f.color+'"/>'+
+      '<text x="'+(leftPad + barW + 10)+'" y="'+(y + barH * 0.7)+'" font-size="11" font-family="-apple-system,sans-serif" fill="#1A1A1A" font-weight="700">'+Math.round(f.value)+'</text>';
+  }).join('');
+  return '<svg width="640" height="'+svgH+'" viewBox="0 0 640 '+svgH+'" xmlns="http://www.w3.org/2000/svg">'+
+    '<text x="0" y="20" font-size="14" font-family="-apple-system,sans-serif" font-weight="700" fill="#1A1A1A">'+esc(asset.name)+'</text>'+
+    '<text x="0" y="38" font-size="11" font-family="-apple-system,sans-serif" fill="'+tier.color+'" font-weight="700">'+
+      tier.label+' RISK TIER &middot; Score '+asset.normalizedScore+'/100'+(asset.internetExposed ? ' &middot; Internet Exposed' : ' &middot; Internal Only')+
+    '</text>'+
+    bars+
+  '</svg>';
+}
+
+// Converts the last-run Governance Report (named framework, e.g. "CIS AWS Foundations
+// Benchmark v1.4") into the same row shape as the ad-hoc Policies-based `compliance`
+// array, so both PDF builders can drop it in as a direct replacement. Scoped to
+// Medium/High/Critical NonCompliant findings only — same filter as the live panel.
+function governanceReportToComplianceRows(gov) {
+  if (!gov || !gov.data) return null;
+  const reportObj = Array.isArray(gov.data.data) ? (gov.data.data[0] || {}) : (gov.data.data || gov.data || {});
+  const allRecs = reportObj.recommendations || reportObj.Recommendations || [];
+  if (!Array.isArray(allRecs) || !allRecs.length) return null;
+  const SEV_LABEL = { 1: 'Critical', 2: 'High', 3: 'Medium', 4: 'Low', 5: 'Info' };
+  const rows = allRecs
+    .filter(r => r.STATUS === 'NonCompliant' && r.SEVERITY != null && r.SEVERITY <= 3)
+    .map(r => {
+      const viol = r.VIOLATIONS || r.violations || [];
+      return {
+        alertId: r.REC_ID || r.recommendationId || r.id || '',
+        cloud: gov.cloud || 'cloud',
+        title: r.TITLE || r.title || '—',
+        description: (r.CATEGORY || r.category || '') + (gov.frameworkLabel ? ' — ' + gov.frameworkLabel : ''),
+        severity: SEV_LABEL[r.SEVERITY] || 'High',
+        violations: r.RESOURCE_COUNT != null ? r.RESOURCE_COUNT : (Array.isArray(viol) ? viol.length : 0),
+        resources: Array.isArray(viol) ? viol : [],
+      };
+    });
+  return rows.length ? rows : null;
+}
+
+function buildReportHtml(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', {weekday:'long',year:'numeric',month:'long',day:'numeric'});
+
+  const alerts     = data.alerts     || [];
+  // "Critical CVE Vulnerabilities" report section — dashboard-wide fetch already caps at
+  // cveRiskScore>=8 (API hard filter), but this section is tighter: only the highest-risk
+  // CVEs (>=9) make the customer-facing report.
+  const vulns      = (data.vulns || []).filter(r => parseFloat(r.riskScore || 0) >= 9);
+  // governanceReportToComplianceRows() can surface Medium-severity recommendations (its
+  // own filter allows SEVERITY<=3, i.e. Critical/High/Medium) — this report section is
+  // titled "Critical Non-Compliance Findings", so narrow to Critical/High only here,
+  // regardless of which source (generic scan vs. named governance framework) produced it.
+  const compliance = (governanceReportToComplianceRows(lastGovernanceReport) || data.compliance || [])
+    .filter(r => ['critical','high'].includes((r.severity || '').toLowerCase()));
+  const secrets    = data.secrets    || [];
+  const secretsAll = data.secretsAll || [];
+
+  // Identity Risk report filter — every Cloud User (not role/service account) that is
+  // both High Privilege (full admin, can self-escalate, or holds excessive grants) AND
+  // has no MFA. Matches the dashboard's own Identity & Access Risk definition rather than
+  // the old narrower "literally named admin + ≥90% unused entitlements" rule.
+  const identities = (data.identities || []).filter(function(r) {
+    const pid = (r.PRINCIPAL_ID || '').toLowerCase();
+    const pt  = (r.PROVIDER_TYPE || '').toLowerCase();
+    const isRoleOrService = pid.includes(':role/') || pid.includes(':assumed-role/') ||
+      pid.includes('serviceaccount') || pid.includes('.iam.gserviceaccount.com') ||
+      pt.includes('serviceprincipal') || pt.includes('role');
+    const isCloudUser = !isRoleOrService;
+
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    const isHighPriv = risks.includes('ALLOWS_FULL_ADMIN') || risks.includes('ALLOWS_PRIVILEGE_ESCALATION') || risks.includes('EXCESSIVE_PERMISSIONS');
+    const noMfa = risks.includes('PASSWORD_LOGIN_NO_MFA') || risks.includes('AWS_ROOT_USER_PASSWORD_LOGIN_NO_MFA');
+
+    return isCloudUser && isHighPriv && noMfa;
+  });
+  // Cloud classification for grouping — same PROVIDER_TYPE heuristic used dashboard-wide.
+  function cspOfIdentity(r) {
+    const p = (r.PROVIDER_TYPE || r.CLOUD_PROVIDER || '').toUpperCase();
+    if (p.includes('AWS')) return 'aws';
+    if (p.includes('AZURE')) return 'azure';
+    if (p.includes('GCP') || p.includes('GOOGLE')) return 'gcp';
+    return 'other';
+  }
+
+  // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly
+  const { cspScores, score, sBand, sColor } = computeCspScores(data);
   const total  = alerts.length + vulns.length + compliance.length + identities.length;
 
   // Helpers
@@ -5765,14 +6824,18 @@ function buildReportHtml(data, meta) {
       '</tr>';
   }).join('') : '<tr><td colspan="10" style="text-align:center;color:#999;padding:1.5rem">No critical alerts</td></tr>';
 
-  // ── Vuln rows
-  const vulnRows = vulns.length ? vulns.map(function(r,i) {
+  // ── Vuln rows grouped by host, with Internet Exposure badge per host ─────────
+  function vulnRowCells(r, i) {
     const rs  = parseFloat(r.riskScore||0);
     const pkg = (r.featureKey && r.featureKey.name) || '—';
     const ver = (r.featureKey && r.featureKey.version) || '';
     const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
+    const fixAvailable = r.fixInfo && (r.fixInfo.fix_available === true || String(r.fixInfo.fix_available) === '1');
+    const fixVerCell = fixVer ? '<strong>'+esc(fixVer)+'</strong>' :
+                        fixAvailable ? '<span class="text-muted">Available — see vendor advisory</span>' :
+                        '<span class="text-muted">No fix available</span>';
     const fixCell = fixVer ? 'Update <strong>'+esc(pkg)+'</strong> to '+esc(fixVer) :
-                    (r.fixInfo && r.fixInfo.fix_available) ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
+                    fixAvailable ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
     const outcome = rs >= 10
       ? 'Full system compromise enabling ransomware deployment, data exfiltration, or lateral movement.'
       : 'Remote code execution enabling host compromise, data exfiltration, or privilege escalation.';
@@ -5781,15 +6844,47 @@ function buildReportHtml(data, meta) {
       '<td><span class="badge badge-critical">Critical</span></td>'+
       '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong><br><small class="text-muted">'+esc((r.evalCtx&&r.evalCtx.imageId)?'Container':'Host')+'</small></td>'+
       '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
-      '<td class="med">'+esc((r.evalCtx&&r.evalCtx.hostname)||r.mid||'—')+'</td>'+
       '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
+      '<td class="med">'+fixVerCell+'</td>'+
       '<td class="wide">'+esc(outcome)+'</td>'+
       '<td class="med">'+fixCell+'</td>'+
       '<td><span class="badge badge-critical">Immediate</span></td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No critical CVEs</td></tr>';
+  }
 
-  // ── Compliance rows
+  const { hosts: vulnHosts } = groupVulnsByHost(vulns);
+  // Exposed/Internal host counts reflect the FULL vuln population the server fetched
+  // (riskScore>=8, the API's own cap), not just the >=9 subset used for the CVE listing
+  // below — otherwise a host that's genuinely internet-exposed but has no single CVE
+  // scoring >=9 right now would silently disappear from "how many hosts are exposed"
+  // instead of just having no CVEs listed under it.
+  const { exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(data.vulns || []);
+
+  const vulnHostGroups = vulnHosts.map(function(h) {
+    const critCnt = h.rows.filter(function(r){ return parseFloat(r.riskScore||0) >= 10; }).length;
+    const badge = h.exposed
+      ? '<span class="badge badge-critical">&#9889; Internet Exposed</span>'
+      : '<span class="badge badge-info">Internal Only</span>';
+    return '<div class="host-group'+(h.exposed?' exposed':'')+'">' +
+      '<div class="host-group-header">' +
+        '<span class="host-name">'+esc(h.name)+'</span>' +
+        badge +
+        (h.pubIp ? '<span class="host-ip">'+esc(h.pubIp)+'</span>' : '') +
+        '<span class="host-cve-count">'+h.rows.length+' CVE'+(h.rows.length===1?'':'s')+(critCnt?' &middot; '+critCnt+' Risk Score ≥ 10.0':'')+'</span>' +
+      '</div>' +
+      '<table class="exec-table"><thead><tr>' +
+      '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+      '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th>' +
+      '<th style="width:110px">Fixed Version</th>' +
+      '<th style="width:190px">Attacker Outcome if Exploited</th>' +
+      '<th style="width:130px">Recommended Fix</th><th style="width:65px">Priority</th>' +
+      '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>' +
+    '</div>';
+  }).join('');
+
+  // ── Compliance rows, grouped by resource type (EC2, S3, Azure VM, ...) ──────
+  // Title-keyword fallback only — used when a finding's own resources don't carry a
+  // recognizable SERVICE/RESOURCE_TYPE (e.g. account-wide checks with no resource rows).
   function compServiceArea(title) {
     const t = (title||'').toLowerCase();
     if (/mfa|multi.factor|authenticat|iam|identity|access|password/.test(t)) return 'Identity &amp; Access';
@@ -5800,10 +6895,36 @@ function buildReportHtml(data, meta) {
     if (/backup|snapshot|recovery/.test(t)) return 'Resilience';
     return 'Cloud Security';
   }
-  const compRows = compliance.length ? compliance.map(function(r,i) {
+  // Real resource-type categorization — reads SERVICE/RESOURCE_TYPE straight off the
+  // finding's own violating resources (e.g. "ec2:security-group", "s3:bucket",
+  // "microsoft.storage/storageaccounts", "compute.googleapis.com/Instance") instead of
+  // guessing from the policy title. Falls back to compServiceArea() when a finding has
+  // no resource rows or an unrecognized type (e.g. account-wide/organization checks).
+  const AWS_SVC_LABELS = { ec2:'EC2', s3:'S3', iam:'IAM', rds:'RDS', kms:'KMS', lambda:'Lambda', cloudtrail:'CloudTrail', vpc:'VPC', eks:'EKS', ecs:'ECS', dynamodb:'DynamoDB', sns:'SNS', sqs:'SQS', elasticloadbalancing:'ELB', cloudfront:'CloudFront', route53:'Route 53', redshift:'Redshift', efs:'EFS', ecr:'ECR', secretsmanager:'Secrets Manager', apigateway:'API Gateway', autoscaling:'Auto Scaling', config:'AWS Config', guardduty:'GuardDuty', cloudwatch:'CloudWatch', organizations:'Organizations' };
+  const AZURE_SVC_LABELS = { compute:'Azure VM', storage:'Storage Account', network:'Network', keyvault:'Key Vault', sql:'Azure SQL', recoveryservices:'Recovery Services', authorization:'IAM (Azure AD)', web:'App Service', containerservice:'AKS', security:'Security Center', insights:'Monitor', dbforpostgresql:'PostgreSQL', dbformysql:'MySQL', documentdb:'Cosmos DB' };
+  const GCP_SVC_LABELS = { compute:'Compute Engine', storage:'Cloud Storage', iam:'IAM', container:'GKE', sqladmin:'Cloud SQL', bigquery:'BigQuery' };
+  function compResourceCategory(r) {
+    const r0 = (Array.isArray(r.resources) && r.resources[0]) || {};
+    const rt = String(r0.RESOURCE_TYPE || '').toLowerCase();
+    const svc = String(r0.SERVICE || '').toLowerCase();
+    if (rt.includes(':')) {                        // AWS: "ec2:security-group"
+      const service = rt.split(':')[0];
+      return AWS_SVC_LABELS[service] || service.toUpperCase();
+    }
+    if (rt.startsWith('microsoft.')) {              // Azure: "microsoft.compute/virtualmachines"
+      const provider = rt.split('/')[0].replace('microsoft.', '');
+      return AZURE_SVC_LABELS[provider] || (provider.charAt(0).toUpperCase() + provider.slice(1));
+    }
+    if (rt.includes('.googleapis.com')) {           // GCP: "compute.googleapis.com/Instance"
+      const service = rt.split('.')[0];
+      return GCP_SVC_LABELS[service] || service.toUpperCase();
+    }
+    if (svc && svc !== 'resource-graph') return GCP_SVC_LABELS[svc] || AWS_SVC_LABELS[svc] || svc.toUpperCase();
+    return compServiceArea(r.title);
+  }
+  function compRowHtml(r, i) {
     const isCrit = (r.severity||'').toLowerCase()==='critical';
     const bg = isCrit ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
-    const svcArea = compServiceArea(r.title);
     const ctxRisk = 'Misconfigured or non-compliant control expands the attack surface, enabling unauthorized access or data exposure across '+((r.cloud||'cloud').toUpperCase())+' resources.';
     const bizImpact = 'Regulatory non-compliance, potential data breach, audit failure, and reputational risk.';
     const recFix = (r.description||'').slice(0,200) || 'Remediate the control violation per the policy guidance and re-evaluate in FortiCNAPP.';
@@ -5821,8 +6942,8 @@ function buildReportHtml(data, meta) {
       var labelKey = labelKeys.find(function(k){ return firstRow[k] !== undefined; }) || '';
       if (urnKey) {
         var shown = rows.slice(0, 50);
-        resourceHtml = '<details style="margin-top:6px"><summary style="font-size:10px;font-weight:700;color:#DA291C;cursor:pointer;list-style:none">&#9660; '+rows.length+' Violating Resource'+(rows.length===1?'':'s')+'</summary>'+
-          '<div style="max-height:200px;overflow-y:auto;margin-top:4px;border:1px solid #e5e7eb;border-radius:4px">'+
+        resourceHtml = '<details open style="margin-top:6px"><summary style="font-size:10px;font-weight:700;color:#DA291C;cursor:pointer;list-style:none">&#9660; '+rows.length+' Violating Resource'+(rows.length===1?'':'s')+'</summary>'+
+          '<div style="margin-top:4px;border:1px solid #e5e7eb;border-radius:4px">'+
           '<table style="width:100%;font-size:9px;border-collapse:collapse">'+
           '<thead><tr style="background:#f1f5f9"><th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(urnKey)+'</th>'+
           (labelKey?'<th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(labelKey)+'</th>':'')+
@@ -5844,20 +6965,41 @@ function buildReportHtml(data, meta) {
       '<td>'+sevBadge(r.severity)+'</td>'+
       '<td class="wide"><strong>'+esc(r.title||'—')+'</strong>'+resourceHtml+'</td>'+
       '<td class="med">'+cspBadge(r.cloud)+'<br><small class="text-muted">'+esc(r.alertId||'')+'</small></td>'+
-      '<td class="med">'+svcArea+'</td>'+
       '<td class="wide">'+esc(ctxRisk)+'</td>'+
       '<td class="wide">'+esc(bizImpact)+'</td>'+
       '<td class="wide">'+esc(recFix)+'</td>'+
       '<td><span class="badge badge-critical">Immediate</span></td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="9" style="text-align:center;color:#999;padding:1.5rem">No compliance findings</td></tr>';
+  }
+  const COMP_TABLE_HEAD =
+    '<thead><tr>' +
+    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:220px">Finding</th>' +
+    '<th style="width:120px">Cloud Scope</th>' +
+    '<th style="width:190px">Contextual Risk</th><th style="width:190px">Business Impact</th>' +
+    '<th style="width:190px">Recommended Fix</th><th style="width:70px">Priority</th>' +
+    '</tr></thead>';
+  const compByCategory = {};
+  compliance.forEach(function(r) {
+    const cat = compResourceCategory(r);
+    (compByCategory[cat] = compByCategory[cat] || []).push(r);
+  });
+  const compCategoryGroups = compliance.length ? Object.keys(compByCategory).sort(function(a, b) {
+    const d = compByCategory[b].length - compByCategory[a].length;
+    return d !== 0 ? d : a.localeCompare(b);
+  }).map(function(cat) {
+    const rows = compByCategory[cat];
+    return '<div class="comp-category-group" style="margin-bottom:22px">' +
+      '<div style="padding:6px 0;margin-top:12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#1A1A1A;border-bottom:2px solid #DA291C">'+esc(cat)+' <span style="font-weight:400;color:#9ca3af">('+rows.length+' finding'+(rows.length===1?'':'s')+')</span></div>' +
+      '<table class="exec-table">'+COMP_TABLE_HEAD+'<tbody>'+rows.map(compRowHtml).join('')+'</tbody></table>' +
+    '</div>';
+  }).join('') : '<p style="text-align:center;color:#999;padding:1.5rem">No compliance findings</p>';
 
   // ── Identity rows
-  const idRows = identities.length ? identities.map(function(r,i) {
+  function idRowHtml(r, i) {
     const risks   = (r.METRICS && r.METRICS.risks) || [];
     const rs      = (r.METRICS && r.METRICS.risk_score) || 0;
     const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
-    const noMfa   = risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+    const noMfa   = risks.includes('PASSWORD_LOGIN_NO_MFA') || risks.includes('AWS_ROOT_USER_PASSWORD_LOGIN_NO_MFA');
     const ec = r.ENTITLEMENT_COUNTS || {};
     const unusedCnt = ec.entitlements_unused_count;
     const totalCnt  = ec.entitlements_total_count || ec.entitlements_count;
@@ -5887,7 +7029,27 @@ function buildReportHtml(data, meta) {
       '<td class="wide">'+riskNarr+'</td>'+
       '<td class="wide">'+esc(recFix)+'</td>'+
       '</tr>';
-  }).join('') : '<tr><td colspan="7" style="text-align:center;color:#999;padding:1.5rem">No identity risks</td></tr>';
+  }
+  const ID_TABLE_HEAD =
+    '<thead><tr>' +
+    '<th style="width:160px">Identity</th><th style="width:80px">Privilege</th><th style="width:65px">MFA</th>' +
+    '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
+    '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
+    '</tr></thead>';
+  // Grouped per cloud (AWS, then Azure, then GCP — fixed order, not by count) so each
+  // cloud's high-privilege, no-MFA users are reviewed as their own block.
+  const ID_CLOUD_LABELS = { aws: 'AWS', azure: 'Azure', gcp: 'GCP', other: 'Other' };
+  const idByCloud = { aws: [], azure: [], gcp: [], other: [] };
+  identities.forEach(function(r) { idByCloud[cspOfIdentity(r)].push(r); });
+  const idCategoryGroups = identities.length ? ['aws', 'azure', 'gcp', 'other'].filter(function(csp) {
+    return idByCloud[csp].length;
+  }).map(function(csp) {
+    const rows = idByCloud[csp];
+    return '<div class="id-cloud-group" style="margin-bottom:22px">' +
+      '<div style="padding:6px 0;margin-top:12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#1A1A1A;border-bottom:2px solid #DA291C">'+esc(ID_CLOUD_LABELS[csp])+' <span style="font-weight:400;color:#9ca3af">('+rows.length+' high-privilege user'+(rows.length===1?'':'s')+' &middot; no MFA)</span></div>' +
+      '<table class="exec-table">'+ID_TABLE_HEAD+'<tbody>'+rows.map(idRowHtml).join('')+'</tbody></table>' +
+    '</div>';
+  }).join('') : '<p style="text-align:center;color:#999;padding:1.5rem">No high-privilege, no-MFA cloud users found</p>';
 
   // ── Recommended Next Steps (mirrors mobile buildSteps logic) ────────────────
   const nextSteps = (function buildNextSteps() {
@@ -5926,12 +7088,12 @@ function buildReportHtml(data, meta) {
 
   // ── Build HTML ──────────────────────────────────────────────────────────────
   const tocCards = [
-    alerts.length     ? '<a href="#alerts" class="toc-card"><div class="tc-num">01 — Alerts</div><div class="tc-title">Critical Alerts</div><div class="tc-sub">'+alerts.length+' open critical alert'+(alerts.length===1?'':'s')+'.</div></a>' : '',
-    compliance.length ? '<a href="#compliance" class="toc-card"><div class="tc-num">02 — Compliance</div><div class="tc-title">Critical Non-Compliance</div><div class="tc-sub">'+compliance.length+' control failure'+(compliance.length===1?'':'s')+'.</div></a>' : '',
-    vulns.length      ? '<a href="#vulnerabilities" class="toc-card"><div class="tc-num">03 — CVEs</div><div class="tc-title">Critical Vulnerabilities</div><div class="tc-sub">'+vulns.length+' CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9.</div></a>' : '',
-    identities.length ? '<a href="#identity" class="toc-card"><div class="tc-num">04 — Identity</div><div class="tc-title">Identity Risk</div><div class="tc-sub">'+identities.length+' identity risk'+(identities.length===1?'':'s')+'.</div></a>' : '',
-    secretsAll.length ? '<a href="#secrets-all" class="toc-card"><div class="tc-num">05 — Secrets</div><div class="tc-title">Discovered Secrets</div><div class="tc-sub">'+secretsAll.length+' secret'+(secretsAll.length===1?'':'s')+' detected across hosts.</div></a>' : '',
-    '<a href="#next-steps" class="toc-card"><div class="tc-num">06 — Simulation</div><div class="tc-title">Exploit Simulation Layer</div><div class="tc-sub">'+nextSteps.length+' prioritised action'+(nextSteps.length===1?'':'s')+' to improve your posture.</div></a>',
+    alerts.length     ? tocCardHtml('#alerts', alerts.length, '#ef4444', '01 — Alerts', 'Critical Alerts', 'open critical alert'+(alerts.length===1?'':'s')) : '',
+    compliance.length ? tocCardHtml('#compliance', compliance.length, '#f59e0b', '02 — Compliance', 'Critical Non-Compliance', 'control failure'+(compliance.length===1?'':'s')) : '',
+    vulns.length      ? tocCardHtml('#vulnerabilities', vulns.length, '#f97316', '03 — CVEs', 'Critical Vulnerabilities', 'CVE'+(vulns.length===1?'':'s')+' with risk score ≥ 9') : '',
+    identities.length ? tocCardHtml('#identity', identities.length, '#8b5cf6', '04 — Identity', 'Identity Risk', 'identity risk'+(identities.length===1?'':'s')) : '',
+    secretsAll.length ? tocCardHtml('#secrets-all', secretsAll.length, '#0ea5e9', '05 — Secrets', 'Secrets Found', 'secret'+(secretsAll.length===1?'':'s')+' detected across hosts') : '',
+    tocCardHtml('#next-steps', nextSteps.length, '#6366f1', '06 — Simulation', 'Exploit Simulation Layer', 'prioritised action'+(nextSteps.length===1?'':'s')+' to improve your posture'),
   ].filter(Boolean).join('\n      ');
 
 
@@ -5946,32 +7108,26 @@ function buildReportHtml(data, meta) {
   ) : '';
 
   const compSection = compliance.length ? (
-    '<section id="compliance" class="pagebreak">\n<h2>2. Critical Non-Compliance Findings</h2>\n' +
-    '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:200px">Finding</th>' +
-    '<th style="width:120px">Cloud Scope</th><th style="width:90px">Service Area</th>' +
-    '<th style="width:180px">Contextual Risk</th><th style="width:180px">Business Impact</th>' +
-    '<th style="width:180px">Recommended Fix</th><th style="width:70px">Priority</th>' +
-    '</tr></thead><tbody>'+compRows+'</tbody></table>\n</section>'
+    '<section id="compliance" class="pagebreak">\n<h2>2. Critical Non-Compliance Findings — by Resource Type</h2>\n' +
+    compCategoryGroups +
+    '\n</section>'
   ) : '';
 
   const vulnSection = vulns.length ? (
-    '<section id="vulnerabilities" class="pagebreak">\n<h2>3. Critical CVE Vulnerabilities</h2>\n' +
-    '<table class="exec-table"><thead><tr>' +
-    '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
-    '<th style="width:60px">Risk Score</th><th style="width:140px">Affected Resource</th>' +
-    '<th style="width:130px">Package / Version</th><th style="width:200px">Attacker Outcome if Exploited</th>' +
-    '<th style="width:130px">Recommended Fix</th><th style="width:65px">Priority</th>' +
-    '</tr></thead><tbody>'+vulnRows+'</tbody></table>\n</section>'
+    '<section id="vulnerabilities" class="pagebreak">\n<h2>3. Critical CVE Vulnerabilities — by Host Internet Exposure</h2>\n' +
+    '<div class="host-exposure-summary">' +
+      '<span class="hes-item exposed"><strong>'+exposedHostCount+'</strong> Internet-Exposed Host'+(exposedHostCount===1?'':'s')+'</span>' +
+      '<span class="hes-item"><strong>'+internalHostCount+'</strong> Internal Host'+(internalHostCount===1?'':'s')+'</span>' +
+      '<span class="hes-item"><strong>'+vulns.length+'</strong> Total Critical CVE'+(vulns.length===1?'':'s')+'</span>' +
+    '</div>\n' +
+    vulnHostGroups +
+    '\n</section>'
   ) : '';
 
   const idSection = identities.length ? (
-    '<section id="identity" class="pagebreak">\n<h2>4. Identity Risk</h2>\n' +
-    '<table class="exec-table"><thead><tr>' +
-    '<th style="width:160px">Identity</th><th style="width:80px">Privilege</th><th style="width:65px">MFA</th>' +
-    '<th style="width:130px">Last Login</th><th style="width:100px">Idle Entitlements</th>' +
-    '<th style="width:220px">Risk</th><th style="width:180px">Recommended Fix</th>' +
-    '</tr></thead><tbody>'+idRows+'</tbody></table>\n</section>'
+    '<section id="identity" class="pagebreak">\n<h2>4. Identity Risk — High-Privilege Cloud Users Without MFA, by Cloud</h2>\n' +
+    idCategoryGroups +
+    '\n</section>'
   ) : '';
 
   const secretsAllRows = secretsAll.length ? secretsAll.map(function(r, i) {
@@ -5988,7 +7144,7 @@ function buildReportHtml(data, meta) {
   }).join('') : '';
 
   const secretsAllSection = secretsAll.length ? (
-    '<section id="secrets-all" class="pagebreak">\n<h2>5. Secrets — Discovered Secrets</h2>\n' +
+    '<section id="secrets-all" class="pagebreak">\n<h2>5. Secrets Found</h2>\n' +
     '<table class="exec-table"><thead><tr>' +
     '<th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th>' +
     '<th style="width:80px">OS</th><th style="width:120px">Secret Type</th>' +
@@ -6008,7 +7164,6 @@ function buildReportHtml(data, meta) {
   '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
   '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
-  '<div class="pdf-export-hint no-print">Landscape is pre-set. In "More settings," enable <strong>Background graphics</strong> so the cover gauge renders, then choose "Save as PDF."</div>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
   '  <h1>Cloud Security Posture Report</h1>\n' +
@@ -6104,18 +7259,6 @@ function buildReportHtml(data, meta) {
       '</div>\n'+
       '</section>\n';
   })()+
-  '<section id="exec-summary" class="pagebreak">\n<h2>Executive Summary</h2>\n' +
-  '<div class="kpi-grid">' +
-  '<div class="kpi-card critical"><div class="kpi-number">'+alerts.length+'</div><div class="kpi-label">Critical Alerts</div></div>' +
-  '<div class="kpi-card high"><div class="kpi-number">'+vulns.length+'</div><div class="kpi-label">Critical CVEs (Risk ≥ 9)</div></div>' +
-  '<div class="kpi-card medium"><div class="kpi-number">'+compliance.length+'</div><div class="kpi-label">Non-Compliance Findings</div></div>' +
-  '<div class="kpi-card info"><div class="kpi-number">'+identities.length+'</div><div class="kpi-label">Identity Risk Findings</div></div>' +
-  (secrets.length ? '<div class="kpi-card info"><div class="kpi-number">'+secrets.length+'</div><div class="kpi-label">Moderate to High Permissive Access SSH Keys</div></div>' : '') +
-  '</div>\n' +
-  '<div class="section-summary"><div class="ss-title">Overall Risk Assessment</div>' +
-  '<p>This assessment identified <strong style="color:#DA291C">'+total+' total findings</strong> across <strong>'+esc(customer)+'</strong>. ' +
-  'The Cloud Security Posture Score is <strong style="color:'+sColor+'">'+score+'/100 — '+esc(sBand)+'</strong>.</p></div>\n' +
-  '</section>\n' +
   alertSection + '\n' + compSection + '\n' + vulnSection + '\n' + idSection + '\n' + secretsAllSection + '\n' + nextStepsSection + '\n' +
   '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
   '<div style="text-align:center">' +
@@ -6144,6 +7287,388 @@ function buildReportHtml(data, meta) {
   '</div>' +
   '</div>' +
   '</div>\n</body>\n</html>';
+}
+
+// ── Report 2 (beta) — wider-scope assessment report ───────────────────────────
+// Sections: MultiCloud + per-Cloud risk score, Exploit Simulation Layer, per-host risk
+// diagrams, master Risk Findings list, non-compliance by cloud, admin/user MFA gaps,
+// Azure/GCP roles & service accounts with high unused privilege, vuln hosts by exposure,
+// loose-permission SSH keys, discovered secrets.
+function buildReportHtml2(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  const alerts      = data.alerts      || [];
+  const vulns       = data.vulns       || [];
+  const compliance  = governanceReportToComplianceRows(lastGovernanceReport) || data.compliance || [];
+  const identities  = data.identities  || [];
+  const sshKeys     = data.secrets     || []; // loose-permission SSH keys (chmod > 400)
+  const secretsAll  = data.secretsAll  || [];
+
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmt(ts) { if (!ts) return '—'; try { return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch(_) { return String(ts); } }
+  function sevBadge(s) { const m={critical:'badge-critical',high:'badge-high',medium:'badge-medium',low:'badge-low'}; return '<span class="badge '+(m[(s||'').toLowerCase()]||'badge-info')+'">'+esc(s||'—')+'</span>'; }
+  function cspBadge(c) { const m={aws:'badge-aws',azure:'badge-azure',gcp:'badge-gcp'}; return '<span class="badge '+(m[(c||'').toLowerCase()]||'badge-info')+'">'+esc((c||'').toUpperCase()||'—')+'</span>'; }
+
+  const { cspScores, cspFindings, cspCounts, score, sBand, sColor } = computeCspScores(data);
+  const total = alerts.length + vulns.length + compliance.length + identities.length;
+
+  // ── Identity classification helpers ───────────────────────────────────────
+  function cloudOfIdentity(r) {
+    const p = (r.PROVIDER_TYPE||'').toLowerCase(), pid = (r.PRINCIPAL_ID||'').toLowerCase();
+    if (p.includes('aws') || pid.includes('arn:aws')) return 'aws';
+    if (p.includes('azure') || p.includes('aad') || p.includes('serviceprincipal')) return 'azure';
+    if (p.includes('gcp') || p.includes('google') || pid.includes('.iam.gserviceaccount.com')) return 'gcp';
+    return 'other';
+  }
+  function isServiceAccount(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase(), p=(r.PROVIDER_TYPE||'').toLowerCase();
+    return pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||p.includes('serviceprincipal')||p.includes('aad');
+  }
+  function isRoleType(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase();
+    return (pid.includes(':role/')||pid.includes(':assumed-role/')||nm.includes('role')) && !isServiceAccount(r);
+  }
+  function unusedPctOf(r) {
+    const ec = r.ENTITLEMENT_COUNTS || {};
+    const unusedCnt = ec.entitlements_unused_count, totalCnt = ec.entitlements_total_count || ec.entitlements_count;
+    return ec.entitlements_unused_percentage != null ? ec.entitlements_unused_percentage
+      : (unusedCnt != null && totalCnt ? (unusedCnt/totalCnt)*100 : null);
+  }
+  function isHighPermissive(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    const sev = (r.METRICS && r.METRICS.risk_severity || '').toLowerCase();
+    return risks.includes('ALLOWS_FULL_ADMIN') || risks.includes('EXCESSIVE_PERMISSIONS') || sev === 'critical' || sev === 'high';
+  }
+  function isNoMfa(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    return risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+  }
+  function identityLabel(r) { return r.NAME || (r.PRINCIPAL_ID||'').split('/').pop() || r.PRINCIPAL_ID || '—'; }
+
+  // ── 7. Cloud Admin & Cloud User — High Permissive + No MFA ────────────────
+  const adminUserRows = identities.filter(r => !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r));
+
+  // ── 8. IAM / RBAC roles (AWS, Azure, GCP) — High Permissive + Unused Privilege ≥ 80% ─
+  const iamRoleRows = identities.filter(r => {
+    const up = unusedPctOf(r);
+    return isRoleType(r) && isHighPermissive(r) && up != null && up >= 80;
+  });
+  // Who can assume each role — parsed server-side from TRUST_POLICY (fetchIdentities)
+  function inboundLinkedIdentitiesHtml(r) {
+    const tp = r._trustPrincipals || [];
+    if (!tp.length) return '<span class="text-muted">No trust policy data available</span>';
+    return tp.map(p => {
+      const label = p.principal || '—';
+      const parts = String(label).split('/');
+      const short = parts.length > 2 ? '…/' + parts.slice(-2).join('/') : label;
+      return '<span class="badge badge-info" style="font-family:monospace;font-weight:500;margin:1px 3px 1px 0;display:inline-block" title="'+esc(label)+'">'+esc(p.type||'?')+' '+esc(short)+'</span>';
+    }).join(' ');
+  }
+
+  // ── 9. Cloud Service Accounts — High Permissive + Unused Privilege ≥ 80% ──
+  const serviceAccountRows = identities.filter(r => {
+    const up = unusedPctOf(r);
+    return isServiceAccount(r) && isHighPermissive(r) && up != null && up >= 80;
+  });
+
+  // ── 10/11. Vuln hosts grouped by internet exposure (shared with Report 1) ─
+  const { hosts: vulnHostsAll, exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(vulns);
+  const exposedVulnHosts = vulnHostsAll.filter(h => h.exposed);
+  const privateVulnHosts = vulnHostsAll.filter(h => !h.exposed);
+
+  function vulnRowCells(r, i) {
+    const rs = parseFloat(r.riskScore||0);
+    const pkg = (r.featureKey && r.featureKey.name) || '—';
+    const ver = (r.featureKey && r.featureKey.version) || '';
+    const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
+    const fixCell = fixVer ? 'Update <strong>'+esc(pkg)+'</strong> to '+esc(fixVer) :
+                    (r.fixInfo && r.fixInfo.fix_available) ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td class="narrow">'+(i+1)+'</td>'+
+      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong></td>'+
+      '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
+      '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
+      '<td class="med">'+fixCell+'</td>'+
+      '</tr>';
+  }
+  function hostGroupsHtml(hostList) {
+    return hostList.map(h => {
+      const badge = h.exposed ? '<span class="badge badge-critical">&#9889; Internet Exposed</span>' : '<span class="badge badge-info">Internal Only</span>';
+      return '<div class="host-group'+(h.exposed?' exposed':'')+'">' +
+        '<div class="host-group-header">' +
+          '<span class="host-name">'+esc(h.name)+'</span>' + badge +
+          (h.pubIp ? '<span class="host-ip">'+esc(h.pubIp)+'</span>' : '') +
+          '<span class="host-cve-count">'+h.rows.length+' CVE'+(h.rows.length===1?'':'s')+'</span>' +
+        '</div>' +
+        '<table class="exec-table"><thead><tr>' +
+        '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+        '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
+        '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>' +
+      '</div>';
+    }).join('');
+  }
+
+  // ── 12. SSH keys too open ───────────────────────────────────────────────────
+  const sshKeyRows = sshKeys.length ? sshKeys.map((r, i) => {
+    const mode = r.FILE_PERMISSIONS != null ? '0'+(Number(r.FILE_PERMISSIONS) & 0o777).toString(8).padStart(3,'0') : '—';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>'+
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.FILE_PATH||'—')+'</code></td>'+
+      '<td>'+esc(r.SSH_KEY_TYPE||'—')+'</td>'+
+      '<td style="text-align:center"><span class="badge badge-critical">'+esc(mode)+'</span></td>'+
+    '</tr>';
+  }).join('') : '';
+
+  // ── 6. Cloud Critical Non-Compliance — grouped by cloud (no verified framework mapping available) ─
+  const compByCloud = {};
+  compliance.forEach(r => { const c = (r.cloud||'other').toLowerCase(); (compByCloud[c] = compByCloud[c] || []).push(r); });
+  const compCloudGroups = Object.keys(compByCloud).sort().map(c => {
+    const rows = compByCloud[c];
+    return '<div class="host-group">' +
+      '<div class="host-group-header">' + cspBadge(c) + '<span class="host-cve-count">'+rows.length+' finding'+(rows.length===1?'':'s')+'</span></div>' +
+      '<table class="exec-table"><thead><tr><th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:220px">Finding</th><th style="width:280px">Description</th><th style="width:70px">Violations</th></tr></thead><tbody>' +
+      rows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+        '<td class="narrow">'+(i+1)+'</td><td>'+sevBadge(r.severity)+'</td>'+
+        '<td class="wide"><strong>'+esc(r.title||'—')+'</strong></td>'+
+        '<td class="wide">'+esc((r.description||'').slice(0,180))+'</td>'+
+        '<td style="text-align:center">'+esc(r.violations||0)+'</td></tr>').join('') +
+      '</tbody></table></div>';
+  }).join('');
+
+  // ── 5. Master List of Risk Findings ─────────────────────────────────────────
+  const riskFindingRows = [
+    ...alerts.map(r => ({ type: 'Alert', typeBadge: 'badge-critical', title: r.alertName||'—', severity: 'Critical', cloud: '', detail: r.alertType||'' })),
+    ...vulns.map(r => ({ type: 'CVE', typeBadge: 'badge-high', title: r.vulnId||r.cveId||'—', severity: 'Critical', cloud: '', detail: 'Risk Score '+parseFloat(r.riskScore||0).toFixed(1) })),
+    ...compliance.map(r => ({ type: 'Misconfiguration', typeBadge: 'badge-medium', title: r.title||'—', severity: r.severity||'—', cloud: (r.cloud||'').toUpperCase(), detail: (r.violations||0)+' violation(s)' })),
+    ...identities.map(r => ({ type: 'Identity', typeBadge: 'badge-info', title: identityLabel(r), severity: (r.METRICS&&r.METRICS.risk_severity)||'—', cloud: cloudOfIdentity(r).toUpperCase(), detail: isNoMfa(r)?'No MFA':'MFA enabled' })),
+    ...secretsAll.map(r => ({ type: 'Secret', typeBadge: 'badge-info', title: r.SECRET_TYPE||'—', severity: 'High', cloud: '', detail: r.HOSTNAME||'' })),
+  ];
+  const riskFindingsRowsHtml = riskFindingRows.length ? riskFindingRows.map((f,i) =>
+    '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+    '<td class="narrow">'+(i+1)+'</td>'+
+    '<td><span class="badge '+f.typeBadge+'">'+esc(f.type)+'</span></td>'+
+    '<td class="wide"><strong>'+esc(f.title)+'</strong></td>'+
+    '<td>'+sevBadge(f.severity)+'</td>'+
+    '<td>'+esc(f.cloud||'—')+'</td>'+
+    '<td class="med">'+esc(f.detail)+'</td>'+
+    '</tr>'
+  ).join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">No findings</td></tr>';
+
+  // ── 4. Host Exposure & Risk Diagrams — top 2 highest-risk hosts ────────────
+  const { map: assetMap } = computeAssetRiskMap(vulns, secretsAll, compliance);
+  const topAssets = Object.values(assetMap).sort((a,b) => b.normalizedScore - a.normalizedScore).slice(0, 2);
+  const hostDiagramsHtml = topAssets.length ? topAssets.map(a =>
+    '<div style="margin-bottom:2rem;padding:1.5rem;border:1px solid var(--color-border);border-radius:8px;background:#fff">' + hostRiskDiagramSvg(a, esc) + '</div>'
+  ).join('') : '<div class="section-summary"><p>No hosts with correlated risk data were found in this assessment window.</p></div>';
+
+  // ── 13. List of Secrets ──────────────────────────────────────────────────────
+  const secretsAllRows = secretsAll.length ? secretsAll.map((r,i) => {
+    const lastSeen = r.END_TIME ? new Date(r.END_TIME).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : '—';
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>'+
+      '<td><small class="text-muted">'+esc(r.MID||'—')+'</small></td>'+
+      '<td>'+esc(r.OS||'—')+'</td>'+
+      '<td><span class="badge badge-critical">'+esc(r.SECRET_TYPE||'—')+'</span></td>'+
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.SECRET_IDENTIFIER||'—')+'</code></td>'+
+      '<td><small>'+esc(lastSeen)+'</small></td>'+
+      '</tr>';
+  }).join('') : '';
+
+  // ── Identity table row renderer (shared shape for sections 7/8/9) ──────────
+  function identityRowsHtml(rows, includeUnused, includeInbound) {
+    const cols = 5 + (includeUnused?1:0) + (includeInbound?1:0);
+    return rows.length ? rows.map((r,i) => {
+      const risks = (r.METRICS && r.METRICS.risks) || [];
+      const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
+      const noMfa = isNoMfa(r);
+      const up = unusedPctOf(r);
+      const bg = isAdmin && noMfa ? ' style="background:#FDECEA;"' : (i%2===1?' style="background:#FAFAFA;"':'');
+      return '<tr'+bg+'>'+
+        '<td><strong>'+esc(identityLabel(r))+'</strong><br><small class="text-muted">'+esc(r.PRINCIPAL_ID||'')+'</small></td>'+
+        '<td>'+cspBadge(cloudOfIdentity(r))+'</td>'+
+        '<td>'+(isAdmin?'<span class="badge badge-critical">Admin</span>':'<span class="badge badge-high">Privileged</span>')+'</td>'+
+        '<td>'+(noMfa?'<span class="badge badge-mfa-off">No MFA</span>':'<span class="badge badge-mfa-on">MFA ON</span>')+'</td>'+
+        '<td>'+(r.LAST_USED_TIME?fmt(r.LAST_USED_TIME):'<span class="text-muted">Never / Unknown</span>')+'</td>'+
+        (includeUnused ? '<td style="text-align:center">'+(up!=null?Math.round(up)+'%':'—')+'</td>' : '') +
+        (includeInbound ? '<td class="wide">'+inboundLinkedIdentitiesHtml(r)+'</td>' : '') +
+        '</tr>';
+    }).join('') : '<tr><td colspan="'+cols+'" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
+  }
+
+  // ── Sections ──────────────────────────────────────────────────────────────
+  const riskFindingsSection =
+    '<section id="risk-findings" class="pagebreak">\n<h2>5. List of Risk Findings</h2>\n' +
+    '<table class="exec-table"><thead><tr><th class="narrow">#</th><th style="width:120px">Type</th><th style="width:220px">Finding</th><th style="width:90px">Severity</th><th style="width:90px">Cloud</th><th style="width:200px">Detail</th></tr></thead><tbody>' +
+    riskFindingsRowsHtml + '</tbody></table>\n</section>';
+
+  const nonComplianceSection = compliance.length ? (
+    '<section id="non-compliance" class="pagebreak">\n<h2>6. Cloud Critical Non-Compliance Findings</h2>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Grouped by cloud provider. Findings are not currently mapped to a named compliance framework (CIS/NIST/PCI) in this integration — severity and policy title are shown as-is from FortiCNAPP.</p>' +
+    compCloudGroups + '\n</section>'
+  ) : '';
+
+  const hostDiagramsSection =
+    '<section id="host-diagrams" class="pagebreak">\n<h2>4. Host Internet and Lateral Exposure &amp; Risk Diagram</h2>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Simplified risk-factor breakdown for the two highest correlated-risk hosts in this assessment.</p>' +
+    hostDiagramsHtml + '\n</section>';
+
+  const adminUserSection =
+    '<section id="admin-user" class="pagebreak">\n<h2>7. Cloud Admin &amp; Cloud User — High Permissive, No MFA</h2>\n' +
+    '<table class="exec-table"><thead><tr><th style="width:180px">Identity</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Login</th></tr></thead><tbody>' +
+    identityRowsHtml(adminUserRows, false) + '</tbody></table>\n</section>';
+
+  const iamRolesSection =
+    '<section id="iam-roles" class="pagebreak">\n<h2>8. IAM / RBAC Roles — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">"Linked Identities — Inbound" lists every principal (AWS account/user/role, Azure service principal, GCP service account, or federated identity) whose trust policy allows it to assume this role.</p>' +
+    '<table class="exec-table"><thead><tr><th style="width:150px">Role</th><th style="width:60px">Cloud</th><th style="width:70px">Privilege</th><th style="width:55px">MFA</th><th style="width:100px">Last Used</th><th style="width:75px">Unused Entitlements</th><th>Linked Identities — Inbound</th></tr></thead><tbody>' +
+    identityRowsHtml(iamRoleRows, true, true) + '</tbody></table>\n</section>';
+
+  const serviceAccountsSection =
+    '<section id="service-accounts" class="pagebreak">\n<h2>9. Cloud Service Accounts — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
+    '<table class="exec-table"><thead><tr><th style="width:180px">Service Account</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Used</th><th style="width:90px">Unused Entitlements</th></tr></thead><tbody>' +
+    identityRowsHtml(serviceAccountRows, true) + '</tbody></table>\n</section>';
+
+  const exposedVulnSection = exposedVulnHosts.length ? (
+    '<section id="vuln-exposed" class="pagebreak">\n<h2>10. High Vulnerability — Internet-Exposed Hosts</h2>\n' +
+    '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+exposedVulnHosts.length+'</strong> Host'+(exposedVulnHosts.length===1?'':'s')+'</span></div>\n' +
+    hostGroupsHtml(exposedVulnHosts) + '\n</section>'
+  ) : '';
+
+  const privateVulnSection = privateVulnHosts.length ? (
+    '<section id="vuln-private" class="pagebreak">\n<h2>11. High Vulnerability — Private Hosts</h2>\n' +
+    '<div class="host-exposure-summary"><span class="hes-item"><strong>'+privateVulnHosts.length+'</strong> Host'+(privateVulnHosts.length===1?'':'s')+'</span></div>\n' +
+    hostGroupsHtml(privateVulnHosts) + '\n</section>'
+  ) : '';
+
+  const sshKeysSection = sshKeys.length ? (
+    '<section id="ssh-keys" class="pagebreak">\n<h2>12. SSH Keys — Too Open</h2>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Private key files with permissions looser than chmod 400 — readable/writable beyond the owner.</p>' +
+    '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:280px">File Path</th><th style="width:100px">Key Type</th><th style="width:90px">Permissions</th></tr></thead><tbody>' +
+    sshKeyRows + '</tbody></table>\n</section>'
+  ) : '';
+
+  const secretsSection = secretsAll.length ? (
+    '<section id="secrets" class="pagebreak">\n<h2>13. Secrets Found</h2>\n' +
+    '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th><th style="width:80px">OS</th><th style="width:120px">Secret Type</th><th style="width:220px">Secret Identifier</th><th style="width:130px">Last Seen</th></tr></thead><tbody>' +
+    secretsAllRows + '</tbody></table>\n</section>'
+  ) : '';
+
+  const tocCards = [
+    tocCardHtml('#admin-user', adminUserRows.length, '#ef4444', '07 — Admin/User', 'Admin &amp; User MFA Gaps', 'identit'+(adminUserRows.length===1?'y':'ies')),
+    tocCardHtml('#iam-roles', iamRoleRows.length, '#8b5cf6', '08 — Roles', 'High-Permissive IAM / RBAC Roles', 'role'+(iamRoleRows.length===1?'':'s')),
+    tocCardHtml('#service-accounts', serviceAccountRows.length, '#7c3aed', '09 — Service Accts', 'High-Permissive Service Accounts', 'account'+(serviceAccountRows.length===1?'':'s')),
+    exposedVulnHosts.length ? tocCardHtml('#vuln-exposed', exposedVulnHosts.length, '#f97316', '10 — Exposed', 'Internet-Exposed Vuln Hosts', 'host'+(exposedVulnHosts.length===1?'':'s')) : '',
+    privateVulnHosts.length ? tocCardHtml('#vuln-private', privateVulnHosts.length, '#CC4A1A', '11 — Private', 'Private Vuln Hosts', 'host'+(privateVulnHosts.length===1?'':'s')) : '',
+    sshKeys.length ? tocCardHtml('#ssh-keys', sshKeys.length, '#b45309', '12 — SSH', 'SSH Keys Too Open', 'key'+(sshKeys.length===1?'':'s')) : '',
+    secretsAll.length ? tocCardHtml('#secrets', secretsAll.length, '#0ea5e9', '13 — Secrets', 'Secrets Found', 'secret'+(secretsAll.length===1?'':'s')) : '',
+  ].filter(Boolean).join('\n      ');
+
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+  '  <meta charset="UTF-8">\n' +
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+  '  <title>Rapid Cloud Assessment (Beta) – '+esc(customer)+'</title>\n' +
+  '  <style type="text/css">\n' + REPORT_CSS + '\n' +
+  '  </style>\n</head>\n<body>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
+  '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT — BETA REPORT 2</span></header>\n' +
+  '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
+  '<div class="report-cover">\n' +
+  '  <div class="report-type">Rapid Cloud Assessment · Beta Report 2</div>\n' +
+  '  <h1>Cloud Security Posture Report</h1>\n' +
+  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  (function() {
+    const arcLen=550, fill=Math.round((score/100)*arcLen);
+    return '  <div id="risk-score" style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
+      '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
+      '    <defs><linearGradient id="rg2" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
+      '<stop offset="0%" stop-color="#ef4444"/><stop offset="50%" stop-color="#ef4444"/>'+
+      '<stop offset="50%" stop-color="#f59e0b"/><stop offset="97.5%" stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#22c55e"/><stop offset="100%" stop-color="#22c55e"/>'+
+      '</linearGradient></defs>\n'+
+      '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <path fill="none" stroke="url(#rg2)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
+      '  </svg>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">Risk Score — MultiCloud &middot; '+esc(sBand)+'</div>\n'+
+      '  </div>\n';
+  })() +
+  '  <div class="meta-row">\n' +
+  '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
+  '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
+  '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential (Beta Report)</div>\n' +
+  '  </div>\n</div>\n' +
+  '<div class="toc"><h3>Report Contents</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  (function() {
+    function cspBand(p){ return p>=90?'Review Only':p>=50?'Vulnerable':'High Risk'; }
+    function cspColor(p){ return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444'; }
+    function weightBadge(w) {
+      const m={Critical:'badge-critical',High:'badge-high',Medium:'badge-medium',Low:'badge-low'};
+      return '<span class="badge '+(m[w]||'badge-info')+'">'+esc(w)+'</span>';
+    }
+    function bigGauge(label, bgColor, p) {
+      const arcL=314, f=Math.round((p/100)*arcL);
+      const c=cspColor(p), band=cspBand(p);
+      return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px">'+
+        '<div style="font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
+        '<svg viewBox="-10 -10 270 160" style="width:200px;overflow:visible">'+
+          '<path fill="none" stroke="#e2e8f0" stroke-width="18" stroke-linecap="round" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
+          '<path fill="none" stroke="'+c+'" stroke-width="18" stroke-linecap="round" stroke-dasharray="'+f+' '+arcL+'" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
+          '<text x="125" y="108" text-anchor="middle" font-size="52" font-weight="900" font-family="-apple-system,Inter,sans-serif" fill="'+c+'">'+p+'</text>'+
+          '<text x="125" y="128" text-anchor="middle" font-size="10" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#64748b" letter-spacing=".08em">'+band.toUpperCase()+'</text>'+
+        '</svg>'+
+        '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:-4px">CSPM Security Score — <span style="color:'+c+';font-weight:700">'+p+'/100</span></div>'+
+      '</div>';
+    }
+    function cspCard(label, bgColor, cspKey) {
+      const p = cspScores[cspKey];
+      const findings = cspFindings[cspKey] || [];
+      const counts = cspCounts[cspKey] || { C:0, H:0, M:0, L:0 };
+      const findingsHtml = findings.length ?
+        '<table class="exec-table" style="margin-top:10px;table-layout:fixed;width:100%"><thead><tr>'+
+        '<th style="width:9%">#</th><th style="width:23%">Type</th><th style="width:46%">Finding</th><th style="width:22%">Weight</th>'+
+        '</tr></thead><tbody>'+
+        findings.map((f,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+          '<td class="narrow">'+(i+1)+'</td>'+
+          '<td style="word-break:break-word">'+esc(f.type)+'</td>'+
+          '<td class="wide" style="word-break:break-word">'+esc(f.title)+'</td>'+
+          '<td>'+weightBadge(f.weight)+'</td>'+
+          '</tr>').join('') +
+        '</tbody></table>' :
+        '<p style="text-align:center;color:#999;font-size:11px;margin-top:10px">No contributing findings detected for '+esc(label)+'.</p>';
+      return '<div style="min-width:0">'+
+        '<div style="display:flex;flex-direction:column;align-items:center">'+bigGauge(label, bgColor, p)+'</div>'+
+        '<div style="font-size:10px;color:#64748b;text-align:center;margin-top:6px">'+
+          counts.C+' Critical &middot; '+counts.H+' High &middot; '+counts.M+' Medium &middot; '+counts.L+' Low'+
+        '</div>'+
+        findingsHtml+
+      '</div>';
+    }
+    const hasAws=cspScores.aws!==null, hasAzure=cspScores.azure!==null, hasGcp=cspScores.gcp!==null;
+    return '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:60vh;display:flex;flex-direction:column">\n'+
+      '<h2>2. Risk Score per Cloud</h2>\n'+
+      '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Each provider score is 100 minus a severity-weighted, log-scaled penalty across every Alert, Misconfiguration and Identity finding attributed to that cloud (Critical&nbsp;&times;&nbsp;40, High&nbsp;&times;&nbsp;30, Medium&nbsp;&times;&nbsp;20, Low&nbsp;&times;&nbsp;10). The findings driving each score are listed below its gauge.</p>'+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));align-items:start;gap:32px;flex:1;padding:1rem 0">\n'+
+        (hasAws   ? cspCard('AWS',   '#232F3E', 'aws')   : '')+
+        (hasAzure ? cspCard('Azure', '#0078D4', 'azure') : '')+
+        (hasGcp   ? cspCard('GCP',   '#1a73e8', 'gcp')   : '')+
+        (!hasAws && !hasAzure && !hasGcp ? '<div class="section-summary"><p>No per-cloud data detected in this assessment window.</p></div>' : '')+
+      '</div>\n</section>\n';
+  })() +
+  hostDiagramsSection + '\n' + riskFindingsSection + '\n' + nonComplianceSection + '\n' +
+  adminUserSection + '\n' + iamRolesSection + '\n' + serviceAccountsSection + '\n' +
+  exposedVulnSection + '\n' + privateVulnSection + '\n' + sshKeysSection + '\n' + secretsSection + '\n' +
+  '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
+  '<div style="text-align:center">' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT REPORT (BETA) &mdash; Powered by FortiCNAPP</div>' +
+  '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
+  '<div style="font-size:11px;color:#6b7280">This is a beta report format and its layout/sections may change. Confidential — intended solely for the named recipient.</div>' +
+  '</div></div>\n</body>\n</html>';
 }
 
 
@@ -6399,6 +7924,50 @@ function requestHandler(req, res) {
     return;
   }
 
+  if (req.url.startsWith('/api/governance/targets') && req.method === 'GET') {
+    (async () => {
+      try {
+        const targets = await fetchGovernanceTargets();
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ targets, reportTypes: GOVERNANCE_REPORT_TYPES }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
+  if (req.url.startsWith('/api/governance/report') && req.method === 'GET') {
+    (async () => {
+      try {
+        const qs = new URL(req.url, 'http://localhost').searchParams;
+        const reportType        = qs.get('reportType') || '';
+        const primaryQueryId    = qs.get('primaryQueryId') || '';
+        const secondaryQueryId  = qs.get('secondaryQueryId') || '';
+        const cloud             = qs.get('cloud') || '';
+        const frameworkLabel    = qs.get('frameworkLabel') || reportType;
+        const accountLabel      = qs.get('accountLabel') || '';
+        if (!reportType || !primaryQueryId) {
+          res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: 'reportType and primaryQueryId are required' }));
+          return;
+        }
+        let path = `Reports?primaryQueryId=${encodeURIComponent(primaryQueryId)}&format=json&reportType=${encodeURIComponent(reportType)}`;
+        if (secondaryQueryId) path += `&secondaryQueryId=${encodeURIComponent(secondaryQueryId)}`;
+        const resp = await get(path);
+        // Persist as the "last governance report" — reused by Generate Report / Report 2.
+        lastGovernanceReport = { data: resp, cloud, reportType, frameworkLabel, accountLabel, fetchedAt: new Date().toISOString() };
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify(resp ?? {}));
+      } catch (err) {
+        res.writeHead(502, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    })();
+    return;
+  }
+
   if (req.url === '/api/ai/rate' && req.method === 'POST') {
     let body = '';
     req.on('data', c => body += c);
@@ -6452,6 +8021,40 @@ function requestHandler(req, res) {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
+  } else if (req.url.startsWith('/report2')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer = (qs.get('customer') || 'Customer').trim();
+    const author   = (qs.get('author')   || 'Fortinet').trim();
+    const sanitize = /^(1|true|yes)$/i.test(qs.get('sanitize') || '');
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    const reportData = sanitize ? sanitizeCacheData(cache) : cache;
+    const reportHtml = buildReportHtml2(reportData, { customer, author });
+    const reportPath = path.join(__dirname, 'rca2.html');
+    const pdfPath    = path.join(__dirname, 'rca2.pdf');
+    fs.writeFile(reportPath, reportHtml, err => {
+      if (err) { console.error('[report2] html save failed:', err.message); return; }
+      console.log('[report2] saved html to', reportPath);
+      const { execFile } = require('child_process');
+      execFile('chromium-browser', [
+        '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+        '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+      ], (err2) => {
+        if (err2) execFile('chromium', [
+          '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+          '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+        ], (err3) => {
+          if (err3) console.error('[report2] pdf generation failed:', err3.message);
+          else console.log('[report2] saved pdf to', pdfPath);
+        });
+        else console.log('[report2] saved pdf to', pdfPath);
+      });
+    });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+    res.end(reportHtml);
   } else if (req.url.startsWith('/report')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
