@@ -6683,6 +6683,120 @@ function assetRiskTier(score, exposed) {
   return { label: 'LOW', color: '#5A5A5A' };
 }
 
+// Shared "Exploit Simulation Layer" attack-path diagram — dark "Deep Space" hex-panel
+// style, left-to-right: Attacker -> Network boundary -> Risk-factor nodes (1-5, fanned
+// vertically) -> Target. One canonical definition: called directly here (Node, PDF
+// report) and embedded byte-identical into the client <script> via
+// hexKillChainSvg.toString() (see buildHtml()). Must stay a pure function of `spec` —
+// no DOM, no fetch, no closures over anything outside its own parameters — or the
+// client embed silently breaks.
+// See docs/superpowers/specs/2026-07-16-exploit-simulation-diagram-revamp-design.md
+function hexKillChainSvg(spec) {
+  function hexPoints(cx, cy, w, h) {
+    var half = w / 2, tip = h * 0.3;
+    return [
+      [cx - half, cy],
+      [cx - half + tip, cy - h / 2],
+      [cx + half - tip, cy - h / 2],
+      [cx + half, cy],
+      [cx + half - tip, cy + h / 2],
+      [cx - half + tip, cy + h / 2],
+    ].map(function (p) { return p[0] + ',' + p[1]; }).join(' ');
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  var attacker = spec.attacker || { label: 'ATTACKER', color: '#ff5e3a' };
+  var network  = spec.network  || { label: 'Internet', color: '#3b82f6' };
+  var factors  = spec.factors  || [];
+  var target   = spec.target   || { label: 'TARGET', tier: 'LOW', tierColor: '#3b82f6' };
+  var lineColor = spec.lineColor || attacker.color;
+  var animate  = spec.animate !== false;
+
+  var n = Math.max(1, factors.length);
+  var W = 1000;
+  var H = Math.max(340, n * 108 + 90);
+  var CY = H / 2;
+  var AX = 90, NX = 300, FX = 620, TX = 900;
+  var AW = 108, AH = 68;
+  var FW = 168, FH = 78;
+  var TW = 150, TH = 96;
+  var NR = 56;
+  var spacing = 108;
+
+  var fy = [];
+  for (var i = 0; i < n; i++) fy.push(CY + (i - (n - 1) / 2) * spacing);
+
+  var sid = 'hkc' + Math.abs(Math.round(H * 7 + n * 13)).toString(36);
+
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" ' +
+    'style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif" ' +
+    'xmlns="http://www.w3.org/2000/svg">';
+
+  svg += '<defs>' +
+    '<radialGradient id="' + sid + 'bg" cx="30%" cy="35%" r="85%">' +
+    '<stop offset="0%" stop-color="#101c3d"/><stop offset="100%" stop-color="#050914"/>' +
+    '</radialGradient>' +
+    '<filter id="' + sid + 'd" x="-40%" y="-40%" width="180%" height="180%">' +
+    '<feDropShadow dx="0" dy="3" stdDeviation="7" flood-color="rgba(0,0,0,.45)"/>' +
+    '</filter>' +
+    '</defs>';
+
+  svg += '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="url(#' + sid + 'bg)"/>';
+
+  svg += '<g stroke="rgba(148,163,184,.08)" stroke-width="1">';
+  for (var gx = 0; gx <= W; gx += 50) svg += '<line x1="' + gx + '" y1="0" x2="' + gx + '" y2="' + H + '"/>';
+  svg += '</g>';
+
+  svg += '<rect x="0" y="0" width="' + (NX - 40) + '" height="' + H + '" fill="' + attacker.color + '" opacity=".05"/>';
+  svg += '<rect x="' + (NX - 40) + '" y="0" width="' + (FX - NX - 20) + '" height="' + H + '" fill="' + network.color + '" opacity=".04"/>';
+  svg += '<rect x="' + (FX - 20) + '" y="0" width="' + (TX - FX) + '" height="' + H + '" fill="#94a3b8" opacity=".04"/>';
+  svg += '<rect x="' + TX + '" y="0" width="' + (W - TX) + '" height="' + H + '" fill="' + target.tierColor + '" opacity=".06"/>';
+
+  var dash = animate ? ' stroke-dasharray="6 14"' : '';
+  function animAttr(delay) { return animate ? ' style="animation:path-flow 1.1s linear infinite ' + delay + 's"' : ''; }
+
+  svg += '<g stroke="' + lineColor + '" stroke-width="2.5" stroke-linecap="round" fill="none"' + dash + '>';
+  svg += '<line x1="' + (AX + AW / 2) + '" y1="' + CY + '" x2="' + (NX - NR) + '" y2="' + CY + '"' + animAttr(0) + '/>';
+  for (var j = 0; j < n; j++) {
+    svg += '<line x1="' + (NX + NR) + '" y1="' + CY + '" x2="' + (FX - FW / 2) + '" y2="' + fy[j] + '"' + animAttr(0.15 * j) + '/>';
+    svg += '<line x1="' + (FX + FW / 2) + '" y1="' + fy[j] + '" x2="' + (TX - TW / 2) + '" y2="' + CY + '"' + animAttr(0.15 * j + 0.3) + '/>';
+  }
+  svg += '</g>';
+
+  svg += '<polygon points="' + hexPoints(AX, CY, AW, AH) + '" fill="' + attacker.color + '" filter="url(#' + sid + 'd)"/>';
+  svg += '<text x="' + AX + '" y="' + (CY + AH / 2 + 16) + '" text-anchor="middle" font-size="9" font-weight="700" fill="#cbd5e1" letter-spacing="1.5">' + esc(attacker.label) + '</text>';
+
+  svg += '<circle cx="' + NX + '" cy="' + CY + '" r="' + NR + '" fill="rgba(59,130,246,.08)" stroke="' + network.color + '" stroke-width="2" stroke-dasharray="9 5"/>';
+  svg += '<text x="' + NX + '" y="' + (CY + 5) + '" text-anchor="middle" font-size="13" fill="' + network.color + '" font-style="italic" font-family="Georgia,serif">' + esc(network.label) + '</text>';
+
+  factors.forEach(function (f, idx) {
+    var navAttr = f.nav ? ' class="hg-nav-node" data-nav="' + esc(f.nav) + '" style="cursor:pointer"' : '';
+    svg += '<polygon points="' + hexPoints(FX, fy[idx], FW, FH) + '" fill="' + f.color + '" filter="url(#' + sid + 'd)"' + navAttr + '/>';
+    if (f.tooltip) svg += '<title>' + esc(f.tooltip) + '</title>';
+    svg += '<text x="' + FX + '" y="' + (fy[idx] - 8) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white" style="pointer-events:none">' + esc(f.label) + '</text>';
+    svg += '<text x="' + FX + '" y="' + (fy[idx] + 20) + '" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">' + f.count + '</text>';
+    if (f.mitre) {
+      svg += '<text x="' + FX + '" y="' + (fy[idx] + FH / 2 + 16) + '" text-anchor="middle" font-size="7.5" font-weight="700" fill="' + (f.mitre.c || '#94a3b8') + '" opacity=".85" letter-spacing=".04em">' + esc(f.mitre.tactic) + ' &middot; ' + esc(f.mitre.id) + '</text>';
+    }
+    if (f.badge) {
+      svg += '<circle cx="' + (FX + FW / 2 - 10) + '" cy="' + (fy[idx] - FH / 2 + 8) + '" r="9" fill="#FCD34D"/>';
+      svg += '<text x="' + (FX + FW / 2 - 10) + '" y="' + (fy[idx] - FH / 2 + 12) + '" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>';
+    }
+  });
+
+  svg += '<polygon points="' + hexPoints(TX, CY, TW, TH) + '" fill="' + target.tierColor + '" filter="url(#' + sid + 'd)"/>';
+  svg += '<text x="' + TX + '" y="' + (CY - TH / 2 + 22) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white">' + esc(target.label) + '</text>';
+  if (target.subLabel) svg += '<text id="hg-geo-txt" x="' + TX + '" y="' + CY + '" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-style="italic">' + esc(target.subLabel) + '</text>';
+  svg += '<text x="' + TX + '" y="' + (CY + TH / 2 - 14) + '" text-anchor="middle" font-size="9" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">' + esc(target.tier) + '</text>';
+  if (target.badge) {
+    svg += '<circle cx="' + (TX + TW / 2 - 6) + '" cy="' + (CY - TH / 2 + 6) + '" r="11" fill="#FCD34D"/>';
+    svg += '<text x="' + (TX + TW / 2 - 6) + '" y="' + (CY - TH / 2 + 11) + '" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
+  }
+
+  svg += '</svg>';
+  return svg;
+}
+
 // Static SVG risk-breakdown diagram for one host — a simplified stand-in for the
 // dashboard's interactive Exploit Graph (which depends on live browser globals + GeoIP).
 function hostRiskDiagramSvg(asset, esc) {
