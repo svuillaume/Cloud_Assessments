@@ -6643,8 +6643,9 @@ function hexKillChainSvg(spec) {
 
   factors.forEach(function (f, idx) {
     var navAttr = f.nav ? ' class="hg-nav-node" data-nav="' + esc(f.nav) + '" style="cursor:pointer"' : '';
-    svg += '<polygon points="' + hexPoints(FX, fy[idx], FW, FH) + '" fill="' + f.color + '" filter="url(#' + sid + 'd)"' + navAttr + '/>';
+    svg += '<polygon points="' + hexPoints(FX, fy[idx], FW, FH) + '" fill="' + f.color + '" filter="url(#' + sid + 'd)"' + navAttr + '>';
     if (f.tooltip) svg += '<title>' + esc(f.tooltip) + '</title>';
+    svg += '</polygon>';
     svg += '<text x="' + FX + '" y="' + (fy[idx] - 8) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white" style="pointer-events:none">' + esc(f.label) + '</text>';
     svg += '<text x="' + FX + '" y="' + (fy[idx] + 20) + '" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">' + f.count + '</text>';
     if (f.mitre) {
