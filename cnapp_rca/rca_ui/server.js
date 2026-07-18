@@ -4007,21 +4007,7 @@ function openHostGraph(hostName){
   }
   if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
 
-  // ── SVG: top-down layered kill chain ──────────────────────────────────────
-  var n=factors.length;
-  var W=860,CX=430,H=526;
-  var L1Y=57,L2Y=185,L3Y=330,L4Y=467;
-  var rT=36,rN=50,rF=42,rH=52;
-  var sid='hgl_'+hostName.replace(/[^a-zA-Z0-9]/g,'_');
-  var aC=isPrivate?'#f97316':'#ef4444';
-  var nCol=isPrivate?'#ea580c':'#ef4444';
-  var nFill=isPrivate?'rgba(234,88,12,.07)':'rgba(239,68,68,.07)';
-  var fx=n===1?[CX]:n===2?[CX-145,CX+145]:[CX-190,CX,CX+190];
-
-  // MITRE tactic labels per layer
-  var mL1=isPrivate?{t:'Lateral Movement',id:'TA0008',c:'#f97316'}:{t:'Initial Access',id:'TA0001',c:'#ef4444'};
-  var mL2=isPrivate?{t:'Discovery',id:'TA0007',c:'#f59e0b'}:{t:'Reconnaissance',id:'TA0043',c:'#6366f1'};
-  var mL4=isPrivate?{t:'Collection',id:'TA0009',c:'#475569'}:{t:'Impact',id:'TA0040',c:'#dc2626'};
+  // ── Deep Space hex diagram ──────────────────────────────────────────────
   var mFact=factors.map(function(f){
     if(f.label==='CVEs')return{t:'Exploitation',id:'T1203',c:'#f97316'};
     if(f.label.indexOf('Cred')>=0)return{t:'Credential Access',id:'T1552',c:'#eab308'};
@@ -4029,112 +4015,23 @@ function openHostGraph(hostName){
     if(f.label==='Non-Compliance')return{t:'Priv. Escalation',id:'T1078',c:'#8b5cf6'};
     return{t:'Persistence',id:'TA0003',c:'#6b7280'};
   });
-
-  var svg='<svg viewBox="0 0 860 526" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
-    +'<defs><filter id="'+sid+'d" x="-30%" y="-30%" width="160%" height="160%">'
-    +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
-    +'</filter></defs>';
-
-  // Layer bands
-  svg+='<rect x="4" y="4" width="852" height="106" rx="10" fill="rgba(239,68,68,.05)" stroke="rgba(239,68,68,.15)" stroke-width="1"/>';
-  svg+='<rect x="4" y="122" width="852" height="126" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>';
-  svg+='<rect x="4" y="260" width="852" height="140" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>';
-  svg+='<rect x="4" y="412" width="852" height="110" rx="10" fill="rgba(71,85,105,.04)" stroke="rgba(71,85,105,.13)" stroke-width="1"/>';
-
-  // Layer number chips (left side)
-  [[L1Y,'01','#ef4444'],[L2Y,'02','#f97316'],[L3Y,'03','#f59e0b'],[L4Y,'04','#475569']].forEach(function(l){
-    svg+='<circle cx="24" cy="'+l[0]+'" r="12" fill="'+l[2]+'" opacity=".18"/>';
-    svg+='<text x="24" y="'+(l[0]+4)+'" text-anchor="middle" font-size="9" font-weight="800" fill="'+l[2]+'" letter-spacing=".5">'+l[1]+'</text>';
+  var hexFactors=factors.map(function(f,i){
+    return{label:f.label,count:f.count,color:f.color,nav:f.nav,mitre:mFact[i]};
   });
-
-  // MITRE tactic labels (right side)
-  [[L1Y,mL1],[L2Y,mL2],[L4Y,mL4]].forEach(function(m){
-    var mi=m[1];
-    svg+='<text x="851" y="'+(m[0]+4)+'" text-anchor="end" font-size="8" font-weight="700" fill="'+mi.c+'" opacity=".8" letter-spacing=".06em">'+mi.t+' · <tspan opacity=".55">'+mi.id+'</tspan></text>';
-  });
-
-  // Gray tracks (underlay, drawn before animated lines)
-  svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">';
-  svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'"/>';
-  factors.forEach(function(f,i){
-    svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'"/>';
-    svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'"/>';
-  });
-  svg+='</g>';
-
-  // Animated attack flow
-  svg+='<g stroke="'+aC+'" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">';
-  svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'" style="animation:path-flow 1s linear infinite 0s"/>';
-  factors.forEach(function(f,i){
-    svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i)+'s"/>';
-    svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i+0.35)+'s"/>';
-  });
-  svg+='</g>';
-
-  // LAYER 1: Threat source node
-  if(!isPrivate){
-    // Bug icon — internet attacker
-    svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#ef4444" filter="url(#'+sid+'d)"/>';
-    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y-8)+'" rx="9" ry="6" fill="white"/>';
-    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+3)+'" rx="11" ry="8" fill="white"/>';
-    svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+15)+'" rx="8" ry="6" fill="white"/>';
-    svg+='<line x1="'+(CX-5)+'" y1="'+(L1Y-24)+'" x2="'+(CX-9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-    svg+='<line x1="'+(CX+5)+'" y1="'+(L1Y-24)+'" x2="'+(CX+9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-    [[-4,-2],[3,3],[10,13]].forEach(function(lo){
-      svg+='<line x1="'+(CX-11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX-25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="'+(CX+11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX+25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-    });
-    svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5">ATTACKER</text>';
-  } else {
-    // Lateral movement — two servers + arrow
-    svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#f97316" filter="url(#'+sid+'d)"/>';
-    svg+='<rect x="'+(CX-21)+'" y="'+(L1Y-14)+'" width="13" height="17" rx="2" fill="white" opacity=".9"/>';
-    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-10)+'" x2="'+(CX-10)+'" y2="'+(L1Y-10)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-6)+'" x2="'+(CX-10)+'" y2="'+(L1Y-6)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<line x1="'+(CX-19)+'" y1="'+(L1Y-2)+'" x2="'+(CX-10)+'" y2="'+(L1Y-2)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<line x1="'+(CX-6)+'" y1="'+L1Y+'" x2="'+(CX+6)+'" y2="'+L1Y+'" stroke="white" stroke-width="2.5" stroke-linecap="round"/>';
-    svg+='<polyline points="'+(CX+2)+','+(L1Y-5)+' '+(CX+6)+','+L1Y+' '+(CX+2)+','+(L1Y+5)+'" stroke="white" stroke-width="2.5" stroke-linejoin="round" fill="none" stroke-linecap="round"/>';
-    svg+='<rect x="'+(CX+8)+'" y="'+(L1Y-14)+'" width="13" height="17" rx="2" fill="white" opacity=".9"/>';
-    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-10)+'" x2="'+(CX+19)+'" y2="'+(L1Y-10)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-6)+'" x2="'+(CX+19)+'" y2="'+(L1Y-6)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<line x1="'+(CX+10)+'" y1="'+(L1Y-2)+'" x2="'+(CX+19)+'" y2="'+(L1Y-2)+'" stroke="#f97316" stroke-width="1.5"/>';
-    svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1">LATERAL ATTACK</text>';
-  }
-
-  // LAYER 2: Network ingress bubble
-  svg+='<circle cx="'+CX+'" cy="'+L2Y+'" r="'+rN+'" fill="'+nFill+'" stroke="'+nCol+'" stroke-width="2" stroke-dasharray="9 5"/>';
-  if(!isPrivate){
-    svg+='<text x="'+CX+'" y="'+(L2Y+6)+'" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>';
-  } else {
-    svg+='<text x="'+CX+'" y="'+(L2Y-2)+'" text-anchor="middle" font-size="13" fill="#ea580c" font-style="italic" font-family="Georgia,serif">Private</text>';
-    svg+='<text x="'+CX+'" y="'+(L2Y+15)+'" text-anchor="middle" font-size="13" fill="#ea580c" font-style="italic" font-family="Georgia,serif">Network</text>';
-  }
-
-  // LAYER 3: Attack surface factor nodes
-  factors.forEach(function(f,i){
-    var mf=mFact[i];
-    svg+='<circle cx="'+fx[i]+'" cy="'+L3Y+'" r="'+rF+'" fill="'+f.color+'" filter="url(#'+sid+'d)" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-    svg+='<text x="'+fx[i]+'" y="'+(L3Y-9)+'" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">'+e(f.label)+'</text>';
-    svg+='<text x="'+fx[i]+'" y="'+(L3Y+15)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">'+f.count+'</text>';
-    svg+='<text x="'+fx[i]+'" y="'+(L3Y+rF+15)+'" text-anchor="middle" font-size="7.5" font-weight="700" fill="'+mf.c+'" opacity=".85" letter-spacing=".04em">'+mf.t+' · '+mf.id+'</text>';
-    svg+='<circle cx="'+fx[i]+'" cy="'+(L3Y+rF)+'" r="4" fill="#22c55e" stroke="white" stroke-width="1" style="pointer-events:none"/>';
-  });
-
-  // LAYER 4: Target host node
   var hn=hostName.length>20?hostName.substring(0,19)+'…':hostName;
-  svg+='<circle cx="'+CX+'" cy="'+L4Y+'" r="'+rH+'" fill="'+tc+'" filter="url(#'+sid+'d)"/>';
-  svg+='<text x="'+CX+'" y="'+(L4Y-22)+'" text-anchor="middle" font-size="9.5" font-weight="700" fill="white">'+e(hn)+'</text>';
-  if(!isPrivate){
-    svg+='<text id="hg-geo-txt" x="'+CX+'" y="'+(L4Y-7)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.8)" font-style="italic">'+(host.publicIP?'…':'—')+'</text>';
-    svg+='<text x="'+CX+'" y="'+(L4Y+8)+'" text-anchor="middle" font-size="6" font-weight="700" fill="rgba(255,255,255,.55)" letter-spacing="1.5">EXPOSED TO INTERNET</text>';
-  } else {
-    svg+='<text x="'+CX+'" y="'+(L4Y-4)+'" text-anchor="middle" font-size="7" fill="rgba(255,255,255,.65)">private host</text>';
-    svg+='<text x="'+CX+'" y="'+(L4Y+8)+'" text-anchor="middle" font-size="6" font-weight="700" fill="rgba(255,255,255,.55)" letter-spacing="1.5">PRIVATE NETWORK</text>';
-  }
-  svg+='<text x="'+CX+'" y="'+(L4Y+24)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">'+tier+'</text>';
-  svg+='<circle cx="'+(CX+rH-6)+'" cy="'+(L4Y-rH+6)+'" r="11" fill="#FCD34D"/>';
-  svg+='<text x="'+(CX+rH-6)+'" y="'+(L4Y-rH+11)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
-  svg+='</svg>';
+  var svg=hexKillChainSvg({
+    attacker:{label:isPrivate?'LATERAL ATTACK':'ATTACKER',color:isPrivate?'#ea580c':'#ff5e3a'},
+    network:{label:isPrivate?'Private Network':'Internet',color:isPrivate?'#ea580c':'#3b82f6'},
+    factors:hexFactors,
+    target:{
+      label:hn,
+      subLabel:!isPrivate&&host.publicIP?'…':null,
+      tier:tier,
+      tierColor:tc,
+      badge:true,
+    },
+    animate:true,
+  });
 
   // ── Remediation footer ─────────────────────────────────────────────────────
   var remItems=[];
