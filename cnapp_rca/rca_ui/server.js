@@ -2166,136 +2166,14 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="jnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
   </div><!-- /lab-global-panel -->
 
-  <!-- ── Per-CSP diagram (shared SVG, re-rendered per active tab) ── -->
+  <!-- ── Per-CSP diagram (Deep Space hex diagram, re-rendered per active tab by renderCspLab()) ── -->
   <div id="lab-csp-panel" style="display:none">
     <!-- CSP header row -->
     <div style="padding:14px 24px 0;display:flex;align-items:center;gap:10px">
       <span id="clab-csp-badge" style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:3px 12px;border-radius:5px;color:#fff;background:#94a3b8">—</span>
       <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</span>
     </div>
-    <!-- CSP snake diagram -->
-    <div class="cjmap-outer">
-    <svg class="cjmap-svg" viewBox="0 0 700 480" preserveAspectRatio="xMidYMid meet">
-      <defs>
-        <filter id="cjnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>
-        </filter>
-      </defs>
-
-      <!-- Top status banner: CRITICAL (left) | GOAL/score (right) -->
-      <rect id="cjph1" x="0"   y="0" width="350" height="46" fill="#ef4444"/>
-      <text x="175" y="29" text-anchor="middle" font-size="11" font-weight="800" fill="white" letter-spacing="2.5" font-family="-apple-system,sans-serif">CRITICAL</text>
-      <rect id="cjph2" x="350" y="0" width="350" height="46" fill="#94a3b8"/>
-      <text id="cjph2-txt" x="525" y="29" text-anchor="middle" font-size="10" font-weight="800" fill="white" letter-spacing="2" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
-      <!-- Banner divider chevron -->
-      <polygon points="350,0 374,23 350,46" fill="white" opacity=".18"/>
-
-      <!-- Layer bands -->
-      <rect x="4" y="50"  width="692" height="96"  rx="8" fill="rgba(239,68,68,.05)"  stroke="rgba(239,68,68,.15)"  stroke-width="1"/>
-      <rect x="4" y="156" width="692" height="86"  rx="8" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>
-      <rect x="4" y="252" width="692" height="120" rx="8" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>
-      <rect x="4" y="382" width="692" height="94"  rx="8" fill="rgba(71,85,105,.04)"  stroke="rgba(71,85,105,.13)"  stroke-width="1"/>
-
-      <!-- Layer number chips -->
-      <circle cx="22" cy="98"  r="10" fill="#ef4444" opacity=".2"/>
-      <text   x="22"  y="102" text-anchor="middle" font-size="8" font-weight="800" fill="#ef4444" font-family="-apple-system,sans-serif">01</text>
-      <circle cx="22" cy="199" r="10" fill="#f97316" opacity=".2"/>
-      <text   x="22"  y="203" text-anchor="middle" font-size="8" font-weight="800" fill="#f97316" font-family="-apple-system,sans-serif">02</text>
-      <circle cx="22" cy="312" r="10" fill="#f59e0b" opacity=".2"/>
-      <text   x="22"  y="316" text-anchor="middle" font-size="8" font-weight="800" fill="#f59e0b" font-family="-apple-system,sans-serif">03</text>
-      <circle cx="22" cy="429" r="10" fill="#475569" opacity=".2"/>
-      <text   x="22"  y="433" text-anchor="middle" font-size="8" font-weight="800" fill="#475569" font-family="-apple-system,sans-serif">04</text>
-
-      <!-- MITRE labels (right) -->
-      <text x="694" y="102" text-anchor="end" font-size="7.5" font-weight="700" fill="#ef4444" opacity=".8" font-family="-apple-system,sans-serif">Initial Access · <tspan opacity=".55">TA0001</tspan></text>
-      <text x="694" y="203" text-anchor="end" font-size="7.5" font-weight="700" fill="#6366f1" opacity=".8" font-family="-apple-system,sans-serif">Reconnaissance · <tspan opacity=".55">TA0043</tspan></text>
-      <text x="694" y="433" text-anchor="end" font-size="7.5" font-weight="700" fill="#dc2626" opacity=".8" font-family="-apple-system,sans-serif">Impact · <tspan opacity=".55">TA0040</tspan></text>
-
-      <!-- Gray tracks -->
-      <g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">
-        <line x1="350" y1="130" x2="350" y2="157"/>
-        <line x1="350" y1="241" x2="91"  y2="274"/>
-        <line x1="350" y1="241" x2="264" y2="274"/>
-        <line x1="350" y1="241" x2="437" y2="274"/>
-        <line x1="350" y1="241" x2="610" y2="274"/>
-        <line x1="91"  y1="352" x2="350" y2="387"/>
-        <line x1="264" y1="352" x2="350" y2="387"/>
-        <line x1="437" y1="352" x2="350" y2="387"/>
-        <line x1="610" y1="352" x2="350" y2="387"/>
-      </g>
-
-      <!-- Animated attack flow (stroke color set by JS via cjsnake) -->
-      <g id="cjsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">
-        <line x1="350" y1="130" x2="350" y2="157" style="animation:path-flow 1s   linear infinite 0s"/>
-        <line x1="350" y1="241" x2="91"  y2="274" style="animation:path-flow 1.1s linear infinite 0s"/>
-        <line x1="350" y1="241" x2="264" y2="274" style="animation:path-flow 1.1s linear infinite .15s"/>
-        <line x1="350" y1="241" x2="437" y2="274" style="animation:path-flow 1.1s linear infinite .3s"/>
-        <line x1="350" y1="241" x2="610" y2="274" style="animation:path-flow 1.1s linear infinite .45s"/>
-        <line x1="91"  y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .1s"/>
-        <line x1="264" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .25s"/>
-        <line x1="437" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .4s"/>
-        <line x1="610" y1="352" x2="350" y2="387" style="animation:path-flow 1.1s linear infinite .55s"/>
-      </g>
-
-      <!-- LAYER 1: Attacker -->
-      <circle cx="350" cy="98" r="30" fill="#ef4444" filter="url(#cjnd-shadow)"/>
-      <ellipse cx="350" cy="91" rx="8"  ry="5.5" fill="white"/>
-      <ellipse cx="350" cy="100" rx="10" ry="7"   fill="white"/>
-      <ellipse cx="350" cy="111" rx="7"  ry="5.5" fill="white"/>
-      <line x1="346" y1="78" x2="343" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
-      <line x1="354" y1="78" x2="357" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
-      <line x1="340" y1="95"  x2="328" y2="93"  stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="340" y1="100" x2="328" y2="100" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="340" y1="107" x2="328" y2="109" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="360" y1="95"  x2="372" y2="93"  stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="360" y1="100" x2="372" y2="100" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <line x1="360" y1="107" x2="372" y2="109" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <text x="350" y="143" text-anchor="middle" font-size="8.5" font-weight="700" fill="#64748b" letter-spacing="1.5" font-family="-apple-system,sans-serif">ATTACKER</text>
-
-      <!-- LAYER 2: Internet bubble -->
-      <circle cx="350" cy="199" r="42" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>
-      <text x="350" y="205" text-anchor="middle" font-size="14" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>
-
-      <!-- LAYER 3: 4 factor nodes -->
-      <!-- Node 1 — Identities -->
-      <circle id="cjnd1" cx="91" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-      <text   x="91" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-      <text id="cjnd1-cnt" x="91" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="91" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
-      <circle cx="115" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="115" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-      <!-- Node 2 — Alerts -->
-      <circle id="cjnd2" cx="264" cy="313" r="38" fill="#ef4444" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-      <text   x="264" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
-      <text id="cjnd2-cnt" x="264" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="264" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
-      <circle cx="288" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="288" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-      <!-- Node 3 — Exposed Hosts -->
-      <circle id="cjnd3" cx="437" cy="313" r="38" fill="#f97316" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"><title id="cjnd3-title">Exposed Hosts</title></circle>
-      <text   x="437" y="304" text-anchor="middle" font-size="7.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
-      <text   x="437" y="316" text-anchor="middle" font-size="7.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
-      <text id="cjnd3-cnt" x="437" y="332" text-anchor="middle" font-size="18" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="437" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#ef4444" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Initial Access · TA0001</text>
-      <circle cx="461" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="461" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-      <!-- Node 4 — Compliance -->
-      <circle id="cjnd4" cx="610" cy="313" r="38" fill="#f59e0b" filter="url(#cjnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-      <text   x="610" y="305" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-      <text id="cjnd4-cnt" x="610" y="328" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-      <text x="610" y="366" text-anchor="middle" font-size="6.5" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
-      <circle cx="634" cy="286" r="10" fill="#FCD34D"/>
-      <text   x="634" y="290" text-anchor="middle" font-size="11" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-      <!-- LAYER 4: Cloud posture goal -->
-      <circle id="cjnd-goal" cx="350" cy="429" r="38" fill="#22c55e" filter="url(#cjnd-shadow)"/>
-      <text x="350" y="419" text-anchor="middle" font-size="8" font-weight="700" fill="rgba(255,255,255,.65)" letter-spacing="2" font-family="-apple-system,sans-serif">YOUR CLOUD</text>
-      <text id="cjnd-goal-cnt" x="350" y="440" text-anchor="middle" font-size="10" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
-    </svg>
-    </div>
+    <div class="cjmap-outer" id="lab-csp-diagram"></div>
     <div id="cjnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
   </div>
 
@@ -3954,29 +3832,23 @@ function renderCspLab(d,csp){
   if(scoreEl){scoreEl.textContent=p;scoreEl.style.color=color;}
   const bandEl=document.getElementById('clab-band-txt');
   if(bandEl)bandEl.textContent=band;
-  const nodes=[
-    {nd:'cjnd1',cnt:'cjnd1-cnt',count:identities.length,   activeClr:'#ef4444'},
-    {nd:'cjnd2',cnt:'cjnd2-cnt',count:alerts.length,       activeClr:'#ef4444'},
-    {nd:'cjnd3',cnt:'cjnd3-cnt',count:exposedHosts.length, activeClr:'#f97316'},
-    {nd:'cjnd4',cnt:'cjnd4-cnt',count:compliance.length,   activeClr:'#f59e0b'},
+  const goalTier=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';
+  const factors=[
+    {label:'Identities',   count:identities.length,   color:identities.length>0?'#ef4444':'#22c55e',   nav:'identities', mitre:{tactic:'Priv. Escalation',id:'TA0004',c:'#8b5cf6'}, badge:true},
+    {label:'Crit. Alerts', count:alerts.length,        color:alerts.length>0?'#ef4444':'#22c55e',        nav:'alerts',     mitre:{tactic:'Discovery',id:'TA0007',c:'#f97316'},        badge:true},
+    {label:'Exposed Hosts',count:exposedHosts.length,  color:exposedHosts.length>0?'#f97316':'#22c55e',  nav:'vulns',      mitre:{tactic:'Initial Access',id:'TA0001',c:'#ef4444'},   badge:true, tooltip:exposedHostsTooltip(exposedHosts)},
+    {label:'Compliance',   count:compliance.length,    color:compliance.length>0?'#f59e0b':'#22c55e',    nav:'compliance', mitre:{tactic:'Lateral Movement',id:'TA0008',c:'#f59e0b'}, badge:true},
   ];
-  nodes.forEach(n=>{
-    const el=document.getElementById(n.nd),ct=document.getElementById(n.cnt);
-    if(ct)ct.textContent=n.count;
-    if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
+  const diagram=document.getElementById('lab-csp-diagram');
+  if(diagram)diagram.innerHTML=hexKillChainSvg({
+    attacker:{label:'ATTACKER',color:'#ff5e3a'},
+    network:{label:'Internet',color:'#3b82f6'},
+    factors,
+    target:{label:'YOUR CLOUD',tier:goalTier,tierColor:color},
+    lineColor:color,
+    animate:true,
   });
-  renderExposedHostsInfo(exposedHosts,'cjnd3-title','cjnd3-ip-row');
-  const goal=document.getElementById('cjnd-goal');
-  const goalCnt=document.getElementById('cjnd-goal-cnt');
-  if(goal)goal.setAttribute('fill',color);
-  // Show current band in goal node (not the score — counts in step nodes are findings, not score points)
-  if(goalCnt){goalCnt.setAttribute('font-size','9');goalCnt.textContent=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';}
-  const ph2=document.getElementById('cjph2');
-  const ph2txt=document.getElementById('cjph2-txt');
-  if(ph2)ph2.setAttribute('fill',color);
-  if(ph2txt){ph2txt.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph2txt.setAttribute('fill',p>=90?color:'#22c55e');}
-  const snake=document.getElementById('cjsnake');
-  if(snake)snake.setAttribute('stroke',color);
+  renderExposedHostsCapRow(exposedHosts,'cjnd3-ip-row');
 }
 
 function switchVTab(tab){
@@ -4043,14 +3915,6 @@ function renderExposedHostsCapRow(exposedHosts,capRowId){
     capRow.style.display='none';
   }
 }
-// Backward compatibility: renderExposedHostsInfo used by per-CSP panel (renderCspLab)
-// until Task 4 updates it. Combines tooltip + cap-row rendering.
-function renderExposedHostsInfo(exposedHosts,titleId,capRowId){
-  const titleEl=document.getElementById(titleId);
-  if(titleEl)titleEl.textContent=exposedHostsTooltip(exposedHosts);
-  renderExposedHostsCapRow(exposedHosts,capRowId);
-}
-
 function renderLab(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
