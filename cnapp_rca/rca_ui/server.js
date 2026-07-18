@@ -2160,137 +2160,9 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <button class="lab-tab" id="labtab-gcp" data-csp="gcp" onclick="switchLabTab('gcp')">GCP</button>
   </div>
 
-  <!-- Global — 5 Layers of Risk Assessment (Exploit Simulation) -->
+  <!-- Global — Exploit Simulation Layer (Deep Space hex diagram, rendered by renderLab()) -->
   <div id="lab-global-panel">
-  <div class="jmap-outer">
-  <svg class="jmap-svg" viewBox="0 0 900 540" preserveAspectRatio="xMidYMid meet">
-    <defs>
-      <filter id="jnd-shadow" x="-30%" y="-30%" width="160%" height="160%">
-        <feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>
-      </filter>
-    </defs>
-
-    <!-- Layer bands -->
-    <rect x="4" y="4"   width="892" height="106" rx="10" fill="rgba(239,68,68,.05)"  stroke="rgba(239,68,68,.15)"  stroke-width="1"/>
-    <rect x="4" y="122" width="892" height="128" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>
-    <rect x="4" y="262" width="892" height="148" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>
-    <rect x="4" y="422" width="892" height="114" rx="10" fill="rgba(71,85,105,.04)"  stroke="rgba(71,85,105,.13)"  stroke-width="1"/>
-
-    <!-- Layer number chips (left) -->
-    <circle cx="24" cy="57"  r="12" fill="#ef4444" opacity=".18"/>
-    <text   x="24"  y="61"  text-anchor="middle" font-size="9" font-weight="800" fill="#ef4444" letter-spacing=".5" font-family="-apple-system,sans-serif">01</text>
-    <circle cx="24" cy="187" r="12" fill="#f97316" opacity=".18"/>
-    <text   x="24"  y="191" text-anchor="middle" font-size="9" font-weight="800" fill="#f97316" letter-spacing=".5" font-family="-apple-system,sans-serif">02</text>
-    <circle cx="24" cy="338" r="12" fill="#f59e0b" opacity=".18"/>
-    <text   x="24"  y="342" text-anchor="middle" font-size="9" font-weight="800" fill="#f59e0b" letter-spacing=".5" font-family="-apple-system,sans-serif">03</text>
-    <circle cx="24" cy="469" r="12" fill="#475569" opacity=".18"/>
-    <text   x="24"  y="473" text-anchor="middle" font-size="9" font-weight="800" fill="#475569" letter-spacing=".5" font-family="-apple-system,sans-serif">04</text>
-
-    <!-- MITRE tactic labels (right) -->
-    <text x="892" y="61"  text-anchor="end" font-size="8" font-weight="700" fill="#ef4444" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Initial Access · <tspan opacity=".55">TA0001</tspan></text>
-    <text x="892" y="191" text-anchor="end" font-size="8" font-weight="700" fill="#6366f1" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Reconnaissance · <tspan opacity=".55">TA0043</tspan></text>
-    <text x="892" y="473" text-anchor="end" font-size="8" font-weight="700" fill="#dc2626" opacity=".8" letter-spacing=".05em" font-family="-apple-system,sans-serif">Impact · <tspan opacity=".55">TA0040</tspan></text>
-
-    <!-- Gray track underlay -->
-    <g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">
-      <line x1="450" y1="93"  x2="450" y2="139"/>
-      <line x1="450" y1="235" x2="94"  y2="300"/>
-      <line x1="450" y1="235" x2="267" y2="300"/>
-      <line x1="450" y1="235" x2="450" y2="300"/>
-      <line x1="450" y1="235" x2="633" y2="300"/>
-      <line x1="450" y1="235" x2="806" y2="300"/>
-      <line x1="94"  y1="376" x2="450" y2="425"/>
-      <line x1="267" y1="376" x2="450" y2="425"/>
-      <line x1="450" y1="376" x2="450" y2="425"/>
-      <line x1="633" y1="376" x2="450" y2="425"/>
-      <line x1="806" y1="376" x2="450" y2="425"/>
-    </g>
-
-    <!-- Animated attack flow — stroke color driven by JS (jsnake) -->
-    <g id="jsnake" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">
-      <line x1="450" y1="93"  x2="450" y2="139" style="animation:path-flow 1s   linear infinite 0s"/>
-      <line x1="450" y1="235" x2="94"  y2="300" style="animation:path-flow 1.1s linear infinite 0s"/>
-      <line x1="450" y1="235" x2="267" y2="300" style="animation:path-flow 1.1s linear infinite .15s"/>
-      <line x1="450" y1="235" x2="450" y2="300" style="animation:path-flow 1.1s linear infinite .3s"/>
-      <line x1="450" y1="235" x2="633" y2="300" style="animation:path-flow 1.1s linear infinite .45s"/>
-      <line x1="450" y1="235" x2="806" y2="300" style="animation:path-flow 1.1s linear infinite .6s"/>
-      <line x1="94"  y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .1s"/>
-      <line x1="267" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .25s"/>
-      <line x1="450" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .4s"/>
-      <line x1="633" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .55s"/>
-      <line x1="806" y1="376" x2="450" y2="425" style="animation:path-flow 1.1s linear infinite .7s"/>
-    </g>
-
-    <!-- LAYER 1: Attacker -->
-    <circle cx="450" cy="57" r="36" fill="#ef4444" filter="url(#jnd-shadow)"/>
-    <ellipse cx="450" cy="49" rx="9"  ry="6" fill="white"/>
-    <ellipse cx="450" cy="60" rx="11" ry="8" fill="white"/>
-    <ellipse cx="450" cy="72" rx="8"  ry="6" fill="white"/>
-    <line x1="445" y1="33" x2="441" y2="24" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="455" y1="33" x2="459" y2="24" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="439" y1="55" x2="425" y2="53" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="439" y1="60" x2="425" y2="60" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="439" y1="68" x2="425" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="461" y1="55" x2="475" y2="53" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="461" y1="60" x2="475" y2="60" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <line x1="461" y1="68" x2="475" y2="70" stroke="white" stroke-width="2" stroke-linecap="round"/>
-    <text x="450" y="107" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5" font-family="-apple-system,sans-serif">ATTACKER</text>
-
-    <!-- LAYER 2: Internet ingress -->
-    <circle cx="450" cy="187" r="48" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>
-    <text x="450" y="193" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>
-
-    <!-- LAYER 3: 5 attack surface nodes -->
-    <!-- Node 1 — Identities -->
-    <circle id="jnd1" cx="94"  cy="338" r="38" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('identities')"/>
-    <text   x="94"  y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Identities</text>
-    <text id="jnd1-cnt" x="94" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <text x="94" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#8b5cf6" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Priv. Escalation · TA0004</text>
-    <circle cx="120" cy="311" r="10" fill="#FCD34D"/>
-    <text   x="120" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- Node 2 — Crit. Alerts -->
-    <circle id="jnd2" cx="267" cy="338" r="38" fill="#ef4444" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('alerts')"/>
-    <text   x="267" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Crit. Alerts</text>
-    <text id="jnd2-cnt" x="267" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <text x="267" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#f97316" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Discovery · TA0007</text>
-    <circle cx="293" cy="311" r="10" fill="#FCD34D"/>
-    <text   x="293" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- Node 3 — Exposed Hosts -->
-    <circle id="jnd3" cx="450" cy="338" r="38" fill="#f97316" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('vulns')"><title id="jnd3-title">Exposed Hosts</title></circle>
-    <text   x="450" y="329" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Exposed</text>
-    <text   x="450" y="341" text-anchor="middle" font-size="8"   font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Hosts</text>
-    <text id="jnd3-cnt" x="450" y="357" text-anchor="middle" font-size="18" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <text x="450" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#ef4444" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Initial Access · TA0001</text>
-    <circle cx="476" cy="311" r="10" fill="#FCD34D"/>
-    <text   x="476" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- Node 4 — Compliance -->
-    <circle id="jnd4" cx="633" cy="338" r="38" fill="#f59e0b" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('compliance')"/>
-    <text   x="633" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Compliance</text>
-    <text id="jnd4-cnt" x="633" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <text x="633" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#f59e0b" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Lateral Movement · TA0008</text>
-    <circle cx="659" cy="311" r="10" fill="#FCD34D"/>
-    <text   x="659" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- Node 5 — Secrets -->
-    <circle id="jnd5" cx="806" cy="338" r="38" fill="#eab308" filter="url(#jnd-shadow)" style="cursor:pointer" onclick="nav('secrets-all')"/>
-    <text   x="806" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="white" font-family="-apple-system,sans-serif" style="pointer-events:none">Secrets</text>
-    <text id="jnd5-cnt" x="806" y="353" text-anchor="middle" font-size="22" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif" style="pointer-events:none">—</text>
-    <text x="806" y="392" text-anchor="middle" font-size="7" font-weight="700" fill="#eab308" opacity=".85" letter-spacing=".04em" font-family="-apple-system,sans-serif">Credential Access · T1552</text>
-    <circle cx="832" cy="311" r="10" fill="#FCD34D"/>
-    <text   x="832" y="315" text-anchor="middle" font-size="12" font-weight="900" fill="#92400E" style="pointer-events:none">!</text>
-
-    <!-- LAYER 4: Cloud environment target / posture score -->
-    <circle id="jnd6" cx="450" cy="469" r="44" fill="#ef4444" filter="url(#jnd-shadow)"/>
-    <text x="450" y="458" text-anchor="middle" font-size="7.5" font-weight="700" fill="rgba(255,255,255,.6)" letter-spacing="2" font-family="-apple-system,sans-serif">YOUR CLOUD</text>
-    <text id="jnd6-cnt" x="450" y="477" text-anchor="middle" font-size="11" font-weight="900" fill="white" font-family="-apple-system,BlinkMacSystemFont,sans-serif">—</text>
-    <rect id="jph3" x="398" y="519" width="104" height="17" rx="8.5" fill="#94a3b8"/>
-    <text id="jph3-txt" x="450" y="531" text-anchor="middle" font-size="7.5" font-weight="800" fill="white" letter-spacing="1" font-family="-apple-system,sans-serif">TARGET ≥ 90</text>
-
-  </svg>
-  </div>
+  <div class="jmap-outer" id="lab-global-diagram"></div>
   <div id="jnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
   </div><!-- /lab-global-panel -->
 
@@ -2518,6 +2390,7 @@ function setFooterInterval(sec){
 }
 
 const e=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+${hexKillChainSvg.toString()}
 const tr=(s,n)=>{s=String(s||'');return s.length>n?s.slice(0,n)+'\\u2026':s||'\\u2014'};
 function fmtDate(t){
   if(!t)return'\\u2014';
@@ -4150,27 +4023,32 @@ function switchLabTab(tab){
   }
 }
 
-// Populates an exposed-hosts node's hover tooltip (<title>) + the visible IP caption row
-// below the diagram — shared by the Global panel (jnd3) and each per-CSP panel (cjnd3),
-// which both need "which host, which public IP" surfaced, not just a bare count.
+// Hover-tooltip text for the Exposed-Hosts diagram node — computed up front and passed
+// as factors[].tooltip into hexKillChainSvg (the node is re-rendered from scratch each
+// load(), so there's no persistent <title> element left to patch after the fact).
+function exposedHostsTooltip(exposedHosts){
+  if(!exposedHosts.length)return'No internet-exposed hosts detected';
+  return exposedHosts.map(h=>h.name+(h.publicIP?' ('+h.publicIP+')':'')).join(', ');
+}
+// Visible IP-caption row below the diagram — shared by the Global panel (jnd3-ip-row)
+// and each per-CSP panel (cjnd3-ip-row).
+function renderExposedHostsCapRow(exposedHosts,capRowId){
+  const capRow=document.getElementById(capRowId);
+  if(!capRow)return;
+  const withIp=exposedHosts.filter(h=>h.publicIP);
+  if(withIp.length){
+    capRow.style.display='';
+    capRow.innerHTML=withIp.map(h=>'<b style="font-family:SFMono-Regular,Consolas,monospace">'+e(h.publicIP)+'</b> <span style="color:#9ca3af">('+e(h.name)+')</span>').join('&nbsp;&nbsp;·&nbsp;&nbsp;');
+  }else{
+    capRow.style.display='none';
+  }
+}
+// Backward compatibility: renderExposedHostsInfo used by per-CSP panel (renderCspLab)
+// until Task 4 updates it. Combines tooltip + cap-row rendering.
 function renderExposedHostsInfo(exposedHosts,titleId,capRowId){
   const titleEl=document.getElementById(titleId);
-  const capRow=document.getElementById(capRowId);
-  if(exposedHosts.length){
-    const withIp=exposedHosts.filter(h=>h.publicIP);
-    if(titleEl)titleEl.textContent=exposedHosts.map(h=>h.name+(h.publicIP?' ('+h.publicIP+')':'')).join(', ');
-    if(capRow){
-      if(withIp.length){
-        capRow.style.display='';
-        capRow.innerHTML=withIp.map(h=>'<b style="font-family:SFMono-Regular,Consolas,monospace">'+e(h.publicIP)+'</b> <span style="color:#9ca3af">('+e(h.name)+')</span>').join('&nbsp;&nbsp;·&nbsp;&nbsp;');
-      }else{
-        capRow.style.display='none';
-      }
-    }
-  }else{
-    if(titleEl)titleEl.textContent='No internet-exposed hosts detected';
-    if(capRow)capRow.style.display='none';
-  }
+  if(titleEl)titleEl.textContent=exposedHostsTooltip(exposedHosts);
+  renderExposedHostsCapRow(exposedHosts,capRowId);
 }
 
 function renderLab(d){
@@ -4179,7 +4057,7 @@ function renderLab(d){
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
   document.getElementById('lab-band-txt').textContent=band;
-  // Compute internet-exposed hosts for jnd3 and per-host graphs
+  // Compute internet-exposed hosts for the Exposed Hosts node and per-host graphs
   const {map:_hmap,critMisc:_critMisc}=buildAssetRiskMap(d);
   const _allHosts=Object.values(_hmap);
   const _maxRisk=_allHosts.reduce(function(m,a){return Math.max(m,a.risk);},1);
@@ -4192,20 +4070,24 @@ function renderLab(d){
   // which already lists every internetExposed host with no score gate.
   const _exposedHosts=_allHosts.filter(function(h){return h.internetExposed===true;})
     .sort(function(a,b){return b.normalizedScore-a.normalizedScore;});
-  // ── Snake journey map: update SVG elements ──
-  const nodes=[
-    {nd:'jnd1',cnt:'jnd1-cnt',count:(d.identities||[]).length, activeClr:'#ef4444'},
-    {nd:'jnd2',cnt:'jnd2-cnt',count:(d.alerts||[]).length,     activeClr:'#ef4444'},
-    {nd:'jnd3',cnt:'jnd3-cnt',count:_exposedHosts.length,      activeClr:'#f97316'},
-    {nd:'jnd4',cnt:'jnd4-cnt',count:(d.compliance||[]).length, activeClr:'#f59e0b'},
-    {nd:'jnd5',cnt:'jnd5-cnt',count:(d.secretsAll||[]).length, activeClr:'#eab308'},
+  const goalTier=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';
+  const factors=[
+    {label:'Identities',   count:(d.identities||[]).length, color:(d.identities||[]).length>0?'#ef4444':'#22c55e', nav:'identities', mitre:{tactic:'Priv. Escalation',id:'TA0004',c:'#8b5cf6'}, badge:true},
+    {label:'Crit. Alerts', count:(d.alerts||[]).length,      color:(d.alerts||[]).length>0?'#ef4444':'#22c55e',     nav:'alerts',     mitre:{tactic:'Discovery',id:'TA0007',c:'#f97316'},        badge:true},
+    {label:'Exposed Hosts',count:_exposedHosts.length,       color:_exposedHosts.length>0?'#f97316':'#22c55e',      nav:'vulns',      mitre:{tactic:'Initial Access',id:'TA0001',c:'#ef4444'},   badge:true, tooltip:exposedHostsTooltip(_exposedHosts)},
+    {label:'Compliance',   count:(d.compliance||[]).length,  color:(d.compliance||[]).length>0?'#f59e0b':'#22c55e', nav:'compliance', mitre:{tactic:'Lateral Movement',id:'TA0008',c:'#f59e0b'}, badge:true},
+    {label:'Secrets',      count:(d.secretsAll||[]).length,  color:(d.secretsAll||[]).length>0?'#eab308':'#22c55e', nav:'secrets-all',mitre:{tactic:'Credential Access',id:'T1552',c:'#eab308'}, badge:true},
   ];
-  nodes.forEach(n=>{
-    const el=document.getElementById(n.nd), ct=document.getElementById(n.cnt);
-    if(ct)ct.textContent=n.count;
-    if(el)el.setAttribute('fill',n.count>0?n.activeClr:'#22c55e');
+  const diagram=document.getElementById('lab-global-diagram');
+  if(diagram)diagram.innerHTML=hexKillChainSvg({
+    attacker:{label:'ATTACKER',color:'#ff5e3a'},
+    network:{label:'Internet',color:'#3b82f6'},
+    factors,
+    target:{label:'YOUR CLOUD',tier:goalTier,tierColor:color},
+    lineColor:color,
+    animate:true,
   });
-  renderExposedHostsInfo(_exposedHosts,'jnd3-title','jnd3-ip-row');
+  renderExposedHostsCapRow(_exposedHosts,'jnd3-ip-row');
   // Public Storage badge — separate stat, not one of the 5 attack-chain nodes above
   const storageCount=(d.publicStorage||[]).length;
   const sBadge=document.getElementById('lab-storage-badge');
@@ -4214,16 +4096,6 @@ function renderLab(d){
     document.getElementById('lab-storage-cnt').textContent=storageCount;
     document.getElementById('lab-storage-plural').textContent=storageCount===1?'':'s';
   }
-  // Goal node
-  const g6=document.getElementById('jnd6'),g6c=document.getElementById('jnd6-cnt');
-  const ph3=document.getElementById('jph3'),ph3t=document.getElementById('jph3-txt');
-  if(g6)g6.setAttribute('fill',color);
-  if(g6c){g6c.setAttribute('font-size','9');g6c.textContent=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';}
-  if(ph3)ph3.setAttribute('fill',color);
-  if(ph3t){ph3t.textContent=p>=90?'ACHIEVED':'TARGET ≥ 90';ph3t.setAttribute('fill',p>=90?color:'#22c55e');}
-  // Snake path color tracks score band
-  const snake=document.getElementById('jsnake');
-  if(snake)snake.setAttribute('stroke',color);
 }
 
 function closeHostGraph(){
