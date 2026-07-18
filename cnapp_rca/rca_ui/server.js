@@ -6801,29 +6801,31 @@ function hexKillChainSvg(spec) {
 // dashboard's interactive Exploit Graph (which depends on live browser globals + GeoIP).
 function hostRiskDiagramSvg(asset, esc) {
   const tier = assetRiskTier(asset.normalizedScore, asset.internetExposed);
-  const factors = [
-    { label: 'CIEM Credentials',  value: asset.ciem,       max: 300, color: '#DA291C' },
-    { label: 'Exposed Secrets',   value: asset.secretRisk, max: 300, color: '#CC4A1A' },
-    { label: 'CVE Exposure',      value: asset.threatRisk, max: 300, color: '#B7770D' },
-    { label: 'Misconfigurations', value: asset.miscRisk,   max: 60,  color: '#2C5280' },
-  ];
-  const barW = 340, barH = 22, gap = 14, leftPad = 160, topPad = 56;
-  const svgH = topPad + factors.length * (barH + gap) + 20;
-  const bars = factors.map(function(f, i) {
-    const y = topPad + i * (barH + gap);
-    const w = Math.max(2, Math.round((Math.min(f.value, f.max) / f.max) * barW));
-    return '<text x="0" y="'+(y + barH * 0.7)+'" font-size="12" font-family="-apple-system,sans-serif" fill="#5A5A5A">'+esc(f.label)+'</text>'+
-      '<rect x="'+leftPad+'" y="'+y+'" width="'+barW+'" height="'+barH+'" rx="4" fill="#F5F5F5"/>'+
-      '<rect x="'+leftPad+'" y="'+y+'" width="'+w+'" height="'+barH+'" rx="4" fill="'+f.color+'"/>'+
-      '<text x="'+(leftPad + barW + 10)+'" y="'+(y + barH * 0.7)+'" font-size="11" font-family="-apple-system,sans-serif" fill="#1A1A1A" font-weight="700">'+Math.round(f.value)+'</text>';
-  }).join('');
-  return '<svg width="640" height="'+svgH+'" viewBox="0 0 640 '+svgH+'" xmlns="http://www.w3.org/2000/svg">'+
-    '<text x="0" y="20" font-size="14" font-family="-apple-system,sans-serif" font-weight="700" fill="#1A1A1A">'+esc(asset.name)+'</text>'+
-    '<text x="0" y="38" font-size="11" font-family="-apple-system,sans-serif" fill="'+tier.color+'" font-weight="700">'+
-      tier.label+' RISK TIER &middot; Score '+asset.normalizedScore+'/100'+(asset.internetExposed ? ' &middot; Internet Exposed' : ' &middot; Internal Only')+
-    '</text>'+
-    bars+
-  '</svg>';
+  const factors = [];
+  if (asset.ciem > 0) factors.push({ label: 'CIEM Credentials', count: Math.round(asset.ciem / 100), color: '#DA291C', mitre: { tactic: 'Credential Access', id: 'T1552', c: '#eab308' }, badge: true });
+  if (asset.secretRisk > 0) factors.push({ label: 'Exposed Secrets', count: Math.round(asset.secretRisk / 50), color: '#CC4A1A', mitre: { tactic: 'Credential Access', id: 'T1552', c: '#eab308' }, badge: true });
+  if ((asset.vulns || []).length) factors.push({ label: 'CVE Exposure', count: asset.vulns.length, color: '#B7770D', mitre: { tactic: 'Exploitation', id: 'T1203', c: '#f97316' }, badge: true });
+  if (asset.miscRisk > 0) factors.push({ label: 'Misconfigurations', count: Math.round(asset.miscRisk / 10), color: '#2C5280', mitre: { tactic: 'Priv. Escalation', id: 'T1078', c: '#8b5cf6' }, badge: true });
+  if (!factors.length) factors.push({ label: 'At Risk', count: 1, color: '#6b7280', badge: true });
+
+  const svg = hexKillChainSvg({
+    attacker: { label: 'ATTACKER', color: '#ff5e3a' },
+    network: { label: asset.internetExposed ? 'Internet' : 'Private Network', color: '#3b82f6' },
+    factors,
+    target: {
+      // Do not pre-escape here — hexKillChainSvg escapes target.label internally;
+      // escaping twice would turn "&" into "&amp;amp;" in any hostname containing one.
+      label: asset.name.length > 20 ? asset.name.substring(0, 19) + '…' : asset.name,
+      tier: tier.label,
+      tierColor: tier.color,
+      badge: true,
+    },
+    animate: false,
+  });
+  return '<div style="font-size:11px;color:#5A5A5A;margin-bottom:6px;font-family:-apple-system,sans-serif">' +
+    tier.label + ' RISK TIER &middot; Score ' + asset.normalizedScore + '/100' +
+    (asset.internetExposed ? ' &middot; Internet Exposed' : ' &middot; Internal Only') +
+    '</div>' + svg;
 }
 
 // Converts the last-run Governance Report (named framework, e.g. "CIS AWS Foundations
