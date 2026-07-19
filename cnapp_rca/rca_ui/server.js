@@ -3434,13 +3434,6 @@ function renderAssetRisk(d){
         factors.push({label:'Secrets',count:secCnt,color:'#eab308',nav:'secrets-all'});
       if(!factors.length)factors.push({label:'At Risk',count:1,color:'#6b7280',nav:'asset-risk'});
 
-      var n=factors.length;
-      var W=860,CX=430,H=526;
-      var L1Y=57,L2Y=185,L3Y=330,L4Y=467;
-      var rT=36,rN=50,rF=42,rH=52;
-      var sid='hpi_'+a.name.replace(/[^a-zA-Z0-9]/g,'_');
-      var fx=n===1?[CX]:n===2?[CX-145,CX+145]:[CX-190,CX,CX+190];
-
       // MITRE tactic per factor
       var mFact=factors.map(function(f){
         if(f.label==='CVEs')return{t:'Exploitation',id:'T1203',c:'#f97316'};
@@ -3448,86 +3441,17 @@ function renderAssetRisk(d){
         if(f.label==='Non-Compliance')return{t:'Priv. Escalation',id:'T1078',c:'#8b5cf6'};
         return{t:'Persistence',id:'TA0003',c:'#6b7280'};
       });
-
-      // Top-down layered kill chain SVG
-      var svg='<svg viewBox="0 0 860 526" preserveAspectRatio="xMidYMid meet" style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif">'
-        +'<defs><filter id="'+sid+'d" x="-30%" y="-30%" width="160%" height="160%">'
-        +'<feDropShadow dx="0" dy="3" stdDeviation="6" flood-color="rgba(0,0,0,.18)"/>'
-        +'</filter></defs>';
-
-      // Layer bands
-      svg+='<rect x="4" y="4" width="852" height="106" rx="10" fill="rgba(239,68,68,.05)" stroke="rgba(239,68,68,.15)" stroke-width="1"/>';
-      svg+='<rect x="4" y="122" width="852" height="126" rx="10" fill="rgba(249,115,22,.04)" stroke="rgba(249,115,22,.13)" stroke-width="1"/>';
-      svg+='<rect x="4" y="260" width="852" height="140" rx="10" fill="rgba(245,158,11,.04)" stroke="rgba(245,158,11,.13)" stroke-width="1"/>';
-      svg+='<rect x="4" y="412" width="852" height="110" rx="10" fill="rgba(71,85,105,.04)" stroke="rgba(71,85,105,.13)" stroke-width="1"/>';
-
-      // Layer number chips (left side)
-      [[L1Y,'01','#ef4444'],[L2Y,'02','#f97316'],[L3Y,'03','#f59e0b'],[L4Y,'04','#475569']].forEach(function(l){
-        svg+='<circle cx="24" cy="'+l[0]+'" r="12" fill="'+l[2]+'" opacity=".18"/>';
-        svg+='<text x="24" y="'+(l[0]+4)+'" text-anchor="middle" font-size="9" font-weight="800" fill="'+l[2]+'" letter-spacing=".5">'+l[1]+'</text>';
+      var hexFactors=factors.map(function(f,i){
+        return{label:f.label,count:f.count,color:f.color,nav:f.nav,mitre:mFact[i]};
       });
-
-      // MITRE tactic labels (right side)
-      [[L1Y,{t:'Initial Access',id:'TA0001',c:'#ef4444'}],[L2Y,{t:'Reconnaissance',id:'TA0043',c:'#6366f1'}],[L4Y,{t:'Impact',id:'TA0040',c:'#dc2626'}]].forEach(function(m){
-        var mi=m[1];
-        svg+='<text x="851" y="'+(m[0]+4)+'" text-anchor="end" font-size="8" font-weight="700" fill="'+mi.c+'" opacity=".8" letter-spacing=".06em">'+mi.t+' · <tspan opacity=".55">'+mi.id+'</tspan></text>';
-      });
-
-      // Gray tracks (underlay)
-      svg+='<g stroke="#e2e8f0" stroke-width="2" stroke-linecap="round" fill="none">';
-      svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'"/>';
-      factors.forEach(function(f,i){
-        svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'"/>';
-        svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'"/>';
-      });
-      svg+='</g>';
-
-      // Animated attack flow
-      svg+='<g stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" fill="none" stroke-dasharray="6 14">';
-      svg+='<line x1="'+CX+'" y1="'+(L1Y+rT)+'" x2="'+CX+'" y2="'+(L2Y-rN)+'" style="animation:path-flow 1s linear infinite 0s"/>';
-      factors.forEach(function(f,i){
-        svg+='<line x1="'+CX+'" y1="'+(L2Y+rN)+'" x2="'+fx[i]+'" y2="'+(L3Y-rF)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i)+'s"/>';
-        svg+='<line x1="'+fx[i]+'" y1="'+(L3Y+rF)+'" x2="'+CX+'" y2="'+(L4Y-rH)+'" style="animation:path-flow 1.1s linear infinite '+(0.2*i+0.35)+'s"/>';
-      });
-      svg+='</g>';
-
-      // LAYER 1: Attacker bug icon
-      svg+='<circle cx="'+CX+'" cy="'+L1Y+'" r="'+rT+'" fill="#ef4444" filter="url(#'+sid+'d)"/>';
-      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y-8)+'" rx="9" ry="6" fill="white"/>';
-      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+3)+'" rx="11" ry="8" fill="white"/>';
-      svg+='<ellipse cx="'+CX+'" cy="'+(L1Y+15)+'" rx="8" ry="6" fill="white"/>';
-      svg+='<line x1="'+(CX-5)+'" y1="'+(L1Y-24)+'" x2="'+(CX-9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      svg+='<line x1="'+(CX+5)+'" y1="'+(L1Y-24)+'" x2="'+(CX+9)+'" y2="'+(L1Y-33)+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      [[-4,-2],[3,3],[10,13]].forEach(function(lo){
-        svg+='<line x1="'+(CX-11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX-25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-        svg+='<line x1="'+(CX+11)+'" y1="'+(L1Y+lo[0])+'" x2="'+(CX+25)+'" y2="'+(L1Y+lo[1])+'" stroke="white" stroke-width="2" stroke-linecap="round"/>';
-      });
-      svg+='<text x="'+CX+'" y="'+(L1Y+rT+15)+'" text-anchor="middle" font-size="9" font-weight="700" fill="#64748b" letter-spacing="1.5">ATTACKER</text>';
-
-      // LAYER 2: Internet bubble
-      svg+='<circle cx="'+CX+'" cy="'+L2Y+'" r="'+rN+'" fill="rgba(239,68,68,.07)" stroke="#ef4444" stroke-width="2" stroke-dasharray="9 5"/>';
-      svg+='<text x="'+CX+'" y="'+(L2Y+6)+'" text-anchor="middle" font-size="16" fill="#ef4444" font-style="italic" font-family="Georgia,serif">Internet</text>';
-
-      // LAYER 3: Attack surface factor nodes
       var hn=a.name.length>20?a.name.substring(0,19)+'…':a.name;
-      factors.forEach(function(f,i){
-        var mf=mFact[i];
-        svg+='<circle cx="'+fx[i]+'" cy="'+L3Y+'" r="'+rF+'" fill="'+f.color+'" filter="url(#'+sid+'d)" class="hg-nav-node" data-nav="'+f.nav+'" style="cursor:pointer"/>';
-        svg+='<text x="'+fx[i]+'" y="'+(L3Y-9)+'" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">'+e(f.label)+'</text>';
-        svg+='<text x="'+fx[i]+'" y="'+(L3Y+15)+'" text-anchor="middle" font-size="24" font-weight="900" fill="white" style="pointer-events:none">'+f.count+'</text>';
-        svg+='<text x="'+fx[i]+'" y="'+(L3Y+rF+15)+'" text-anchor="middle" font-size="7.5" font-weight="700" fill="'+mf.c+'" opacity=".85" letter-spacing=".04em">'+mf.t+' · '+mf.id+'</text>';
-        svg+='<circle cx="'+fx[i]+'" cy="'+(L3Y+rF)+'" r="4" fill="#22c55e" stroke="white" stroke-width="1" style="pointer-events:none"/>';
+      var svg=hexKillChainSvg({
+        attacker:{label:'ATTACKER',color:'#ff5e3a'},
+        network:{label:'Internet',color:'#3b82f6'},
+        factors:hexFactors,
+        target:{label:hn,subLabel:a.publicIP||null,tier:tier,tierColor:tc,badge:true},
+        animate:true,
       });
-
-      // LAYER 4: Target host node
-      svg+='<circle cx="'+CX+'" cy="'+L4Y+'" r="'+rH+'" fill="'+tc+'" filter="url(#'+sid+'d)"/>';
-      svg+='<text x="'+CX+'" y="'+(L4Y-18)+'" text-anchor="middle" font-size="7" font-weight="700" fill="rgba(255,255,255,.6)" letter-spacing="1.5">EXPOSED TO INTERNET</text>';
-      svg+='<text x="'+CX+'" y="'+(L4Y-3)+'" text-anchor="middle" font-size="10" font-weight="700" fill="white">'+e(hn)+'</text>';
-      if(a.publicIP)svg+='<text x="'+CX+'" y="'+(L4Y+12)+'" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.7)" font-family="SFMono-Regular,Consolas,monospace">'+e(a.publicIP)+'</text>';
-      svg+='<text x="'+CX+'" y="'+(L4Y+27)+'" text-anchor="middle" font-size="8" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">'+tier+'</text>';
-      svg+='<circle cx="'+(CX+rH-6)+'" cy="'+(L4Y-rH+6)+'" r="11" fill="#FCD34D"/>';
-      svg+='<text x="'+(CX+rH-6)+'" y="'+(L4Y-rH+11)+'" text-anchor="middle" font-size="13" font-weight="900" fill="#92400E">!</text>';
-      svg+='</svg>';
 
       // Risk findings list
       var findings='';
