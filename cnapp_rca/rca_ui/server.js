@@ -3738,7 +3738,11 @@ function calcCspScore(d,csp){
 function cspBadgeColor(csp){return{aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[csp]||'#94a3b8';}
 
 function renderCspLab(d,csp){
-  const alerts=(d.alerts||[]).filter(r=>cspOfAlert(r)===csp);
+  // Crit. Alerts is intentionally not a factor node here (unlike the Global panel):
+  // cspOfAlert() classifies by keyword-matching alertType/alertName, which works for
+  // control-plane alerts (CloudTrail etc.) but many alert categories (agent/anomaly —
+  // e.g. NewExternalClientBadIp) carry no cloud-provider signal at all, so per-CSP
+  // counts would silently undercount to 0 rather than reflect real attribution.
   const compliance=(d.compliance||[]).filter(r=>(r.cloud||'')===csp);
   const identities=(d.identities||[]).filter(r=>cspOfIdentity(r)===csp);
   // Same exposure logic as the Global panel's jnd3 (no relative-risk-score gate — see
@@ -3759,7 +3763,6 @@ function renderCspLab(d,csp){
   const goalTier=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';
   const factors=[
     {label:'Identities',   count:identities.length,   color:identities.length>0?'#ef4444':'#22c55e',   nav:'identities', mitre:{tactic:'Priv. Escalation',id:'TA0004',c:'#8b5cf6'}, badge:true},
-    {label:'Crit. Alerts', count:alerts.length,        color:alerts.length>0?'#ef4444':'#22c55e',        nav:'alerts',     mitre:{tactic:'Discovery',id:'TA0007',c:'#f97316'},        badge:true},
     {label:'Exposed Hosts',count:exposedHosts.length,  color:exposedHosts.length>0?'#f97316':'#22c55e',  nav:'vulns',      mitre:{tactic:'Initial Access',id:'TA0001',c:'#ef4444'},   badge:true, tooltip:exposedHostsTooltip(exposedHosts)},
     {label:'Compliance',   count:compliance.length,    color:compliance.length>0?'#f59e0b':'#22c55e',    nav:'compliance', mitre:{tactic:'Lateral Movement',id:'TA0008',c:'#f59e0b'}, badge:true},
   ];
