@@ -4,6 +4,10 @@
 *.json
 
 # OS
+.DS_Store
+
+# Superpowers brainstorming scratch
+.superpowers/
 
 
 # Runtime data
@@ -14,4 +18,5 @@ contacts.csv
 *.png
 *.pdf
 rca.html
+rca2.html
 
