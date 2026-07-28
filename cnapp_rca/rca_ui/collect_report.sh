@@ -1,8 +1,7 @@
 #!/bin/bash
 set -e
 
-docker cp rca:/app/rca.html ./rca.html
-docker cp rca:/app/rca.pdf  ./rca.pdf
+docker cp rca:/app/contacts.csv ./contacts.csv
 
 echo "Reports collected:"
-ls -lh ./rca.html ./rca.pdf
+ls -lh ./contacts.csv
