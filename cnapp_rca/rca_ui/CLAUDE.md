@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`rca_ui/` is the FortiCNAPP Rapid Cloud Assessment tool — a live security dashboard and two customer-ready HTML/PDF report generators, powered by FortiCNAPP (Lacework) API data. The entire app is one Node.js file, `server.js` (~8,200 lines), with **no npm dependencies** (no `package.json`, no `node_modules`).
+`rca_ui/` is the FortiCNAPP Rapid Cloud Assessment tool — a live security dashboard and two customer-ready HTML/PDF report generators, powered by FortiCNAPP (Lacework) API data. The entire app is one Node.js file, `server.js` (~8,020 lines), with **no npm dependencies** (no `package.json`, no `node_modules`).
 
 > Ancestor `CLAUDE.md` files (`../CLAUDE.md`, `../../CLAUDE.md`, etc.) describe an older ~3,150-line version of `server.js` and are stale on route lists, the posture-score formula, and several features added since (true internet-exposure verification, public storage exposure, governance reports, role-trust correlation, per-CSP scores, in-dashboard AI assistant, report sanitization, a second report format). Treat *this* file as authoritative for `rca_ui/`.
 
@@ -40,6 +40,8 @@ node --check server.js
 docker cp server.js rca:/app/server.js && docker restart rca
 ```
 
+**Every restart wipes the entire in-memory `cache` object** (it's never persisted to disk) and immediately re-triggers a full `refreshData()` from scratch — including the compliance scan, which evaluates up to `COMPLIANCE_POLICY_CAP` policies in batches of 3 with gaps between batches and can take several minutes. Expect Critical Misconfigurations (and briefly, other panels) to look empty/stale for a bit after every hot-deploy — this is normal, not a bug, and self-resolves once that cycle's fetchers finish. Also expect the *browser* to keep serving its previously-loaded page/JS after a deploy — a hard reload (not just a normal refresh) is usually needed to pick up server-side changes.
+
 ## Docker (production)
 
 ```bash
@@ -58,6 +60,8 @@ sudo docker run --rm -d --name rca \
 
 Copy `.env.example` → `.env` and fill in credentials. Values must NOT be quoted (Docker reads the file literally). `SELF_SIGNED=true` generates a local cert when DNS isn't propagated yet; supplying `TLS_CERT`/`TLS_KEY` skips both certbot and self-signed. The Dockerfile installs `certbot`, `openssl`, and `chromium` (headless Chromium is invoked by both report builders to render PDFs — `entrypoint.sh` handles the TLS branch at container start).
 
+`entrypoint.sh`'s self-signed cert (`/tmp/selfsigned/`) is reused across `docker restart` if it already exists — it's only (re)generated once, on first boot of a given container. This matters because a browser's "proceed anyway" click on a self-signed cert isn't durably remembered the way a real CA cert is; if the cert changed on every restart (the original behavior), every hot-deploy would force re-clicking through the warning. A full container recreation (`docker rm` + fresh `docker run`, e.g. via `deploy.sh`) still generates a new cert on its first boot, as expected.
+
 ## Architecture of server.js
 
 Everything lives in one file. Rough layout, in order:
@@ -66,24 +70,26 @@ Everything lives in one file. Rough layout, in order:
 
 | Section | ~Lines | What it does |
 |---|---|---|
-| Config | 1–45 | Env vars: `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, `LW_SUBACCOUNT`, `LW_KEY_FILE`, `PORT`, `PORT_TLS`, `TLS_CERT`, `TLS_KEY`, `MOCK_FILE` |
-| HTTP + DNS helpers | 71–270 | `tcpReachable`, `resolveReachableIP`, `request`, `ensureToken`, `withRetry`, `get`/`post`/`postRaw`/`putRaw` |
-| API fetchers | 300–1191 | `fetchAlerts`, `fetchTrueExposure`, `fetchVulns`, `fetchCompliance`, `fetchIdentities`, `fetchGovernanceTargets`, `fetchSecretsAll`/`fetchSecrets`, `fetchPublicStorage`, `fetchCveDetails` |
-| `refreshData()` | 1198 | Orchestrates the fetchers into the in-memory `cache` object |
-| `buildHtml()` | 1291–5606 | Returns the full desktop dashboard as one template literal (CSS + HTML + inline client `<script>`) |
-| `MOBILE_HTML` | 5607–~6465 | Static single-scroll mobile view, its own scoring/step logic duplicated inline |
-| `sanitizeCacheData()` | 6466 | Deterministically replaces hostnames/ARNs/IPs/emails/account IDs/secret IDs with stable fake values — used by `?sanitize=1` on both report routes |
-| Shared report helpers | 6545–6741 | `groupVulnsByHost`, `computeAssetRiskMap`, `computeCspScores`, `tocCardHtml`, `assetRiskTier`, `hostRiskDiagramSvg`, `governanceReportToComplianceRows` |
-| `buildReportHtml()` | 6742 | Original customer report → `/report`, saves `rca.html`/`rca.pdf` |
-| `buildReportHtml2()` | 7297 | **Beta** wider-scope report → `/report2`, saves `rca2.html`/`rca2.pdf`. Adds per-cloud risk score, exploit-simulation layer, per-host risk diagrams, MFA gaps, high-privilege role/service-account findings |
-| `requestHandler()` + routing | 7684–8125 | All HTTP routes (table below) |
-| `startApp()` | 8126 | Picks HTTP-only / HTTP+TLS / self-signed based on env, starts listeners |
+| Config | 1–70 | Env vars: `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, `LW_SUBACCOUNT`, `LW_KEY_FILE`, `PORT`, `PORT_TLS`, `TLS_CERT`, `TLS_KEY`, `MOCK_FILE` |
+| HTTP + DNS helpers | 71–270 | `tcpReachable`, `resolveReachableIP`, `request`, `fetchCveDetails`, `ensureToken`, `withRetry`, `get`/`post`/`postRaw`/`putRaw` |
+| API fetchers | 271–1247 | `fetchAlerts`, `fetchTrueExposure`, `fetchExposurePaths`, `fetchVulns`, `fetchCompliance`, `fetchIdentities`, `fetchGovernanceTargets`, `fetchSecretsAll`/`fetchSecrets`, `fetchPublicStorage` |
+| `refreshData()` | 1248 | Orchestrates the fetchers into the in-memory `cache` object |
+| `buildHtml()` | 1343–5329 | Returns the full desktop dashboard as one template literal (CSS + HTML + inline client `<script>`) |
+| `MOBILE_HTML` | 5330–6188 | Static single-scroll mobile view, its own scoring/step logic duplicated inline |
+| `sanitizeCacheData()` | 6189 | Deterministically replaces hostnames/ARNs/IPs/emails/account IDs/secret IDs with stable fake values — used by `?sanitize=1` on both report routes |
+| Shared report helpers | 6268–6595 | `groupVulnsByHost`, `computeAssetRiskMap`, `computeCspScores`, `tocCardHtml`, `assetRiskTier`, `hexKillChainSvg`, `hostRiskDiagramSvg`, `governanceReportToComplianceRows` |
+| `buildReportHtml()` | 6596 | Original customer report → `/report`, saves `rca.html`/`rca.pdf` |
+| `buildReportHtml2()` | 7151 | **Beta** wider-scope report → `/report2`, saves `rca2.html`/`rca2.pdf`. Adds per-cloud risk score, exploit-simulation layer, per-host risk diagrams, MFA gaps, high-privilege role/service-account findings |
+| `requestHandler()` + routing | 7518–7959 | All HTTP routes (table below) |
+| `startApp()` | 7960 | Picks HTTP-only / HTTP+TLS / self-signed based on env, starts listeners |
 
 ### Client-side (inline in `buildHtml`, starting ~line 2510)
 
-- `load()` (4453) — fetches `/api/data`, calls all `render*()` functions
+- `load()` (4176) — fetches `/api/data`, calls all `render*()` functions
 - `renderAlerts/Vulns/Compliance/PublicStorage/Identities/SecretsAll/AssetRisk/Lab()` — populate their panels
-- `calcPostureScore(d)` (3968) — mirrors the posture-score formula below
+- `calcPostureScore(d)` (3799) — mirrors the posture-score formula below
+- `computeEffectivePublicStorage(d)` (2859) — merges `publicStorage` policy/ACL findings with `exposurePaths` (s3/azureBlob) traced-path findings, minus a hardcoded known-stale-CSPM-snapshot exclusion list; shared by `renderPublicStorage()` and the Exploit Simulation Layer's storage-exposed badge so both always agree on the same count
+- `exposurePathHopsStr(rec)` (2343) / `exposurePathChips(epRecs)` (2604) — render a traced `LW_APA_EXPOSURE_PATHS` hop chain (e.g. `internet → sg-xxx → i-xxx`) as a "Verified Path" chip, used by both the Host Internet Exposure panel and Public Storage Exposure panel
 - `calcGlobalScoreFromCsp(d)` / `calcCspScore(d,csp)` / `renderCspLab` — per-cloud (AWS/Azure/GCP) score gauges
 - `buildAssetRiskMap(d)` / `renderAssetRisk(d)` / `openHostGraph()` — Correlated Risk Findings per Asset + interactive exploit graph
 - `nav(name)` — switches dashboard sections (alerts, vulns, compliance, identities, secrets-all, asset-risk, lab)
@@ -133,11 +139,29 @@ Everything lives in one file. Rough layout, in order:
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache — the fastest way to iterate on dashboard/report UI without live credentials
 
+**Verified Exposure Paths (`fetchExposurePaths`, `cache.exposurePaths = {s3, ec2, azureVm, azureBlob}`)**
+- Queries `LW_APA_EXPOSURE_PATHS` (Lacework's own graph-traced Internet→Target attack-path engine) for four target types: `s3:bucket`, `ec2:instance`, `microsoft.compute/virtualmachines`, `microsoft.storage/storageaccounts/blobservices`. Each record's `TARGET` field (capitalized in the API response despite being aliased `target` in the query) carries a `PATH` (hop-by-hop Internet→Gateway→SG/NSG→resource chain) and `METRICS.path_length` (hop count)
+- Purely additive: does **not** feed `fetchTrueExposure`'s SG/NSG/FW-rule detection, dashboard counts, posture score, or reports — it's a second, independently-computed signal
+- Matched onto existing rows client-side (not server-side) and rendered as a green "Verified Path" chip: in Host Internet Exposure by EC2 instance ID (`TARGET.key.id` ↔ `machineTags.InstanceId`) or Azure VM name (`TARGET.displayName` ↔ `machineTags.Hostname`, case-insensitive); in Public Storage Exposure by bucket/container name. A bucket/VM with no traced path just shows nothing — not every asset has API coverage (e.g. this table can return as few as 1 row for `ec2:instance` tenant-wide)
+- Buckets found *only* via a traced path (not by the existing policy/ACL check) are added as their own Public Storage Exposure row at severity `high` (vs `critical` for confirmed-public policy/ACL findings) — a real network path was confirmed, not that the bucket's own policy grants public access
+
+**Resource ID / Resource Name (`fetchTrueExposure`'s `azureComputerNames`)**
+- `fetchTrueExposure()` returns `{getExposureEvidence, azureComputerNames}` (not just the evidence function) — the latter maps Azure VM ARM resource name (lowercase) → OS computer name, from `LW_CFG_AZURE_COMPUTE_VIRTUALMACHINES`'s `RESOURCE_CONFIG.extended.instanceView.computerName`. `fetchVulns()` uses it to backfill `machineTags.Name` for Azure hosts, which otherwise have no equivalent to AWS's Name tag
+- Matters because Azure's ARM resource name (`machineTags.Hostname`, e.g. `RJ-EMSONPREM`) can differ from the actual OS computer name FortiCNAPP's own console displays/searches by (e.g. `EMS-FranLab`) — without this, a host findable in this dashboard could appear unfindable when searching the FortiCNAPP console directly
+- The Host Internet Exposure panel shows both `machineTags.InstanceId` (Resource ID) and `machineTags.Name` (Resource Name) per host, uniformly for both clouds
+
+**Known-stale CSPM findings**
+- `STALE_STORAGE_FINDINGS` (inside `computeEffectivePublicStorage`, client-side) hardcodes an exclusion list for public-storage findings confirmed to reference resources no longer existing in the live cloud account (verify via a live anonymous HTTP request to the resource — Azure returns `ResourceNotFound`, not a public-access-denied error, when the container itself is gone). This is a workaround for FortiCNAPP CSPM scan staleness, not a detection-logic bug — the real fix is a fresh CSPM re-scan in FortiCNAPP itself. Don't add entries here without confirming via a live check first (a resource can also legitimately still be public)
+
 **Report sanitization**
 - `?sanitize=1` on `/report` or `/report2` runs `sanitizeCacheData()` first, deterministically replacing real hostnames, ARNs, account IDs, IPs, emails, and secret IDs with stable fake values (same real value → same fake value within one render) — for sharing screenshots/demos without leaking customer data
 
 **Two report formats, not two phases**
 - `/report` and `/report2` are independently maintained builders reading the same `cache`; `/report2` is explicitly commented as beta/wider-scope. Changes to shared logic (asset risk, CSP scores, host grouping) belong in the shared helpers (`computeAssetRiskMap`, `computeCspScores`, `groupVulnsByHost`, `assetRiskTier`), not duplicated per-builder.
+- `groupVulnsByHost()` and `buildReportHtml2()`'s "High Vulnerability — Internet-Exposed Hosts" section sort/filter on `cveRiskScore` (falling back to `riskScore`), not `riskScore` alone — `riskScore` is a broader composite metric that can diverge significantly from a CVE's actual severity (seen live: one CVE at `cveRiskScore` 9.95 had `riskScore` 6.3), which previously caused genuinely-critical, internet-exposed hosts to be silently dropped from that report section entirely. `computeAssetRiskMap`'s own CVE-factor scoring intentionally still uses `riskScore` (a separate, unrelated code path) — don't conflate the two when touching either.
+
+**SVG diagram element IDs must be globally unique per render**
+- `hexKillChainSvg()` (used by the Exploit Simulation Layer's Global tab, each per-CSP tab, and the per-host Attack Path modal) generates its own `<defs>` gradient/filter IDs via a running counter (`hexKillChainSvg._seq`), not a hash of the diagram's shape. Inactive tabs'/panels' SVGs are hidden via CSS, not removed from the DOM, so multiple diagram instances can coexist on the page at once — if two of them ever computed the same ID again (as a shape-based hash briefly did, since every per-CSP tab has the same factor count), the browser resolves `url(#id)` fill/filter references against whichever matching element it finds first in document order, silently breaking the *other* diagram's rendering (transparent/unreadable hexagons). Keep ID generation counter-based, not derived from renderable content.
 
 **Posture score formula** (server `calcRiskScore` is a *different*, cheaper approximation used only during `refreshData()` logging — the score shown in the UI is `calcPostureScore`, computed client-side and mirrored nowhere server-side):
 ```

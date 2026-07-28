@@ -11,19 +11,23 @@ CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 
 # ── Option 1: self-signed ─────────────────────────────────────────────────────
 if [ "${SELF_SIGNED}" = "true" ] && [ -z "$TLS_CERT" ]; then
-  echo "[tls] SELF_SIGNED=true — generating self-signed certificate …"
-  mkdir -p "$SS_DIR"
-  CN="${DOMAIN:-localhost}"
-  openssl req -x509 -newkey rsa:2048 \
-    -keyout "${SS_DIR}/privkey.pem" \
-    -out    "${SS_DIR}/fullchain.pem" \
-    -days 3650 -nodes \
-    -subj "/C=US/ST=CA/O=Fortinet/CN=${CN}" \
-    -addext "subjectAltName=DNS:${CN},IP:127.0.0.1" \
-    2>/dev/null
+  if [ -f "${SS_DIR}/fullchain.pem" ] && [ -f "${SS_DIR}/privkey.pem" ]; then
+    echo "[tls] SELF_SIGNED=true — reusing existing self-signed certificate (${SS_DIR})"
+  else
+    echo "[tls] SELF_SIGNED=true — generating self-signed certificate …"
+    mkdir -p "$SS_DIR"
+    CN="${DOMAIN:-localhost}"
+    openssl req -x509 -newkey rsa:2048 \
+      -keyout "${SS_DIR}/privkey.pem" \
+      -out    "${SS_DIR}/fullchain.pem" \
+      -days 3650 -nodes \
+      -subj "/C=US/ST=CA/O=Fortinet/CN=${CN}" \
+      -addext "subjectAltName=DNS:${CN},IP:127.0.0.1" \
+      2>/dev/null
+    echo "[tls] Self-signed cert ready (CN=${CN}) — browser will warn once, click Advanced → Proceed"
+  fi
   export TLS_CERT="${SS_DIR}/fullchain.pem"
   export TLS_KEY="${SS_DIR}/privkey.pem"
-  echo "[tls] Self-signed cert ready (CN=${CN}) — browser will warn, click Advanced → Proceed"
 
 # ── Option 2: Let's Encrypt ───────────────────────────────────────────────────
 elif [ -n "$DOMAIN" ] && [ -z "$TLS_CERT" ]; then
