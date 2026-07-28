@@ -374,14 +374,26 @@ function isPublicSource(cidr) {
   return true;
 }
 async function fetchTrueExposure() {
-  const [awsInstanceRows, awsSgRows, azureNicRows, azureNsgRows, gcpInstanceRows, gcpFwRows] = await Promise.all([
+  const [awsInstanceRows, awsSgRows, azureNicRows, azureNsgRows, gcpInstanceRows, gcpFwRows, azureVmRows] = await Promise.all([
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_AWS_EC2_INSTANCES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_AWS_EC2_SECURITY_GROUPS } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_AZURE_NETWORK_NETWORKINTERFACES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_AZURE_NETWORK_NETWORKSECURITYGROUPS } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_GCP_COMPUTE_INSTANCE } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_GCP_COMPUTE_FIREWALL } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
+    post('Queries/execute', { query: { queryText: `{source { LW_CFG_AZURE_COMPUTE_VIRTUALMACHINES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
   ]);
+
+  // Azure VMs carry no "Name" tag the way AWS does — machineTags.Hostname for Azure is the
+  // ARM resource name (e.g. "RJ-EMSONPREM"), which can differ from the actual OS computer
+  // name Lacework's own console displays/searches by (e.g. "EMS-FranLab"). Map ARM resource
+  // name (lowercase) → OS computer name so vuln rows can carry the console-matching name.
+  const azureComputerNames = {};
+  azureVmRows.forEach(v => {
+    const cfg = v.RESOURCE_CONFIG || {};
+    const name = cfg.extended?.instanceView?.computerName || cfg.osProfile?.computerName || '';
+    if (name) azureComputerNames[(v.RESOURCE_ID || '').toLowerCase()] = name;
+  });
 
   const portRangeStr = (from, to) => (from == null ? '*' : from === to ? String(from) : `${from}-${to}`);
 
@@ -494,7 +506,7 @@ async function fetchTrueExposure() {
   // `exposed` = has an 'open' (wildcard) rule — the real "Internet Exposed" signal.
   // `restricted` = has only 'restricted' (specific-public-IP) rules — real but narrower
   // blast radius; surfaced separately, not folded into the main Exposed tally.
-  return function getExposureEvidence(machineTags) {
+  const getExposureEvidence = function(machineTags) {
     const mt = machineTags && typeof machineTags === 'object' && !Array.isArray(machineTags) ? machineTags : {};
     const publicIp = String(mt.ExternalIp || '').trim();
     if (!publicIp) return { exposed: false, restricted: false, publicIp: '', reasons: [] };
@@ -507,6 +519,34 @@ async function fetchTrueExposure() {
     const exposed = reasons.some(r => r.tier === 'open');
     return { exposed, restricted: !exposed && reasons.length > 0, publicIp, reasons };
   };
+  return { getExposureEvidence, azureComputerNames };
+}
+
+// ── Verified Exposure Paths — LW_APA_EXPOSURE_PATHS (Attack Path Analysis) ──────
+// Lacework's own graph-traced Internet→Target paths (Internet → Gateway → Security
+// Group/NSG → target resource) for the resource types the dashboard already enriches
+// with CVE/machine detail or public-storage findings: S3 buckets, EC2 instances, Azure
+// VMs, Azure Blob storage. Purely additive — does NOT feed fetchTrueExposure's SG/NSG/
+// FW-rule detection, dashboard counts, posture score, or reports. Matched onto existing
+// panel rows client-side and rendered as a "Verified Path" chip alongside the existing
+// evidence. azureBlob's target type traces the storage account's blob SERVICE, not
+// individual containers — 0 rows in this tenant as of writing, kept for when data appears.
+async function fetchExposurePaths() {
+  const RETURN = 'RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, target';
+  const SOURCE = 'LW_APA_EXPOSURE_PATHS a, array_to_rows(a.TARGETS) as (target)';
+  function q(targetType) {
+    const queryText = `{ source { ${SOURCE} } FILTER { target:"type" = "${targetType}" } return distinct { ${RETURN} } }`;
+    return post('Queries/execute', { query: { queryText }, arguments: timeArgs(7) }, 60000)
+      .catch(e => { console.log(`  [exposure-paths] ${targetType} ERR:`, e.message.slice(0, 150)); return []; });
+  }
+  const [s3, ec2, azureVm, azureBlob] = await Promise.all([
+    q('s3:bucket'),
+    q('ec2:instance'),
+    q('microsoft.compute/virtualmachines'),
+    q('microsoft.storage/storageaccounts/blobservices'),
+  ]);
+  console.log(`  [exposure-paths] s3:${s3.length} ec2:${ec2.length} azureVm:${azureVm.length} azureBlob:${azureBlob.length}`);
+  return { s3, ec2, azureVm, azureBlob };
 }
 
 async function fetchVulns() {
@@ -526,11 +566,12 @@ async function fetchVulns() {
     }, 60000);
   }
 
-  const [crits, highs, getExposureEvidence] = await Promise.all([
+  const [crits, highs, trueExposure] = await Promise.all([
     vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); return []; }),
     vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); return []; }),
-    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }); }),
+    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return { getExposureEvidence: () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }), azureComputerNames: {} }; }),
   ]);
+  const { getExposureEvidence, azureComputerNames } = trueExposure;
 
   const rows = [...crits, ...highs];
 
@@ -549,6 +590,15 @@ async function fetchVulns() {
       mt.lw_InternetExposure = ev.exposed ? 'Yes' : 'No';
       mt.lw_RestrictedExternalAccess = ev.restricted ? 'Yes' : 'No';
       r._exposureEvidence = ev;
+      // Normalize "Resource Name" across clouds so the dashboard shows the same identifier
+      // FortiCNAPP's own console does. AWS already carries this natively (machineTags.Name,
+      // the EC2 Name tag). Azure has no equivalent — machineTags.Hostname is the ARM resource
+      // name, which can differ from the OS computer name Lacework's console searches/displays
+      // by (e.g. ARM name "RJ-EMSONPREM" vs OS computer name "EMS-FranLab").
+      if (!mt.Name && mt.Hostname) {
+        const cn = azureComputerNames[mt.Hostname.toLowerCase()];
+        if (cn) mt.Name = cn;
+      }
     }
   }
 
@@ -1204,11 +1254,12 @@ async function refreshData() {
   // the concurrent Queries/execute burst at the exact moment this fires, which is enough by
   // itself to trip this tenant's rate limit before compliance even gets a turn. It runs in
   // Phase 2 instead, after Phase 1's fetchers have already completed and freed up quota.
-  const [a, v, i, s] = await Promise.allSettled([
+  const [a, v, i, s, ep] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
     fetchSecrets(),
+    fetchExposurePaths(),
   ]);
 
   function unwrap(res, key) {
@@ -1222,12 +1273,13 @@ async function refreshData() {
   const vulns        = unwrap(v,  'vulns');
   const identities    = unwrap(i,  'identities');
   const secrets      = unwrap(s,  'secrets');
+  const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [] });
 
   // Publish fast data right away; compliance + secretsAll + publicStorage update the cache
   // as each becomes ready
   cache = {
     ...cache,
-    alerts, vulns, identities, secrets,
+    alerts, vulns, identities, secrets, exposurePaths,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
@@ -1696,7 +1748,6 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="sb-item" id="nav-storage" onclick="nav('storage')">
     <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
     Public Storage Exposure
-    <span style="margin-left:auto;font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:#7c3aed;border-radius:8px;padding:1px 6px">BETA</span>
   </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
@@ -2021,7 +2072,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Public Storage Exposure <span style="font-size:9px;font-weight:800;letter-spacing:.04em;color:#fff;background:#7c3aed;border-radius:8px;padding:2px 7px;vertical-align:middle;margin-left:4px">BETA</span></div>
+      <div class="vh-title">Public Storage Exposure</div>
       <div class="vh-sub">S3 / Blob / Cloud Storage with public access, across AWS, Azure &amp; GCP</div>
     </div>
     <span class="vh-badge" id="cnt-storage">—</span>
@@ -2284,6 +2335,14 @@ function status(s){
 }
 function cloud(c){const m={aws:'b-ok',azure:'b-hi',gcp:'b-cr'};return'<span class="b '+(m[c]||'b-nt')+'">'+(c||'').toUpperCase()+'</span>';}
 function strip(s){return(s||'').toLowerCase()==='critical'?'strip-cr':'strip-hi';}
+// Verified Exposure Path (LW_APA_EXPOSURE_PATHS) hop label — shared by the Host Internet
+// Exposure panel and the Public Storage Exposure panel.
+function pathHopLabel(node){
+  return(node&&(node.displayName||(node.key&&(node.key.id||node.key.arn))||node.type))||'?';
+}
+function exposurePathHopsStr(rec){
+  return(rec.PATH||[]).map(function(hopArr){return(hopArr||[]).map(pathHopLabel).join('/');}).map(e).join(' &rarr; ');
+}
 function shortenAlertDesc(d){
   if(!d)return'—';
   const t=d.toLowerCase();
@@ -2422,7 +2481,9 @@ function _renderVulns(rows,err){
       var cloud=cloudRaw?cloudRaw.toLowerCase():'';
       if(cloud==='google')cloud='gcp';
       var mt2Obj=(mt2&&typeof mt2==='object'&&!Array.isArray(mt2))?mt2:null;
-      hostMap[h]={name:h,pubIp:pubIp,cloud:cloud,
+      var instanceId=(mt&&typeof mt==='object'&&!Array.isArray(mt)&&mt.InstanceId)||'';
+      var resourceName=(mt&&typeof mt==='object'&&!Array.isArray(mt)&&mt.Name)||'';
+      hostMap[h]={name:h,pubIp:pubIp,cloud:cloud,instanceId:instanceId,resourceName:resourceName,
         reach:(mt2Obj&&mt2Obj.lw_InternetExposure==='Yes'?'Internet Exposed':null)||'',
         restricted:!!(mt2Obj&&mt2Obj.lw_RestrictedExternalAccess==='Yes'),
         vulns:[],maxRisk:0,crit:0,high:0,fixable:0,
@@ -2523,6 +2584,35 @@ function _renderVulns(rows,err){
   });
 
   // ── Per-host sections (internet exposed) ───────────────────────────────────
+  // ── Verified Exposure Paths (LW_APA_EXPOSURE_PATHS) — Lacework's own graph-traced
+  // Internet→Target route, independent of the SG/NSG/FW-rule evidence above. Matched by
+  // instance ID (AWS) / VM name (Azure); a target can have more than one traced route.
+  var _epRaw=(_ld.exposurePaths)||{};
+  var _epByInstance={};
+  (_epRaw.ec2||[]).forEach(function(r){
+    var id=r.TARGET&&r.TARGET.key&&r.TARGET.key.id;
+    if(!id)return;
+    (_epByInstance[id]=_epByInstance[id]||[]).push(r);
+  });
+  var _epByAzureVm={};
+  (_epRaw.azureVm||[]).forEach(function(r){
+    var nm=r.TARGET&&r.TARGET.displayName;
+    if(!nm)return;
+    var k=nm.toLowerCase();
+    (_epByAzureVm[k]=_epByAzureVm[k]||[]).push(r);
+  });
+  function exposurePathChips(epRecs){
+    if(!epRecs||!epRecs.length)return'';
+    var shown=epRecs.slice(0,2).map(function(rec){
+      var hopN=rec.METRICS&&rec.METRICS.path_length;
+      return'<span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'
+        +'<b>Verified Path</b> &nbsp;'+exposurePathHopsStr(rec)+(hopN?' &nbsp;('+hopN+' hops)':'')
+      +'</span>';
+    }).join('');
+    var more=epRecs.length>2?'<span style="font-size:9px;color:var(--muted)">+'+(epRecs.length-2)+' more</span>':'';
+    return shown+more;
+  }
+
   var hosts=inetHosts;
   hosts.forEach(function(host,idx){
     var rsCol=host.maxRisk>=9.5?'#b91c1c':host.maxRisk>=8.5?'#c2410c':'#92400e';
@@ -2559,6 +2649,15 @@ function _renderVulns(rows,err){
 
     var cloudTagInet=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
 
+    var epMatch=(host.instanceId&&_epByInstance[host.instanceId])||_epByAzureVm[host.name.toLowerCase()]||null;
+    var epChips=exposurePathChips(epMatch);
+
+    // Resource ID / Resource Name — matches what FortiCNAPP's own console shows/searches by,
+    // so a host found here can be located in the console too. For Azure, Resource Name is the
+    // OS computer name (may differ from the ARM resource name shown as the header above).
+    var idNameLine=(host.instanceId?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource ID <b style="color:var(--text)">'+e(host.instanceId)+'</b></span>':'')
+      +(host.resourceName?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource Name <b style="color:var(--text)">'+e(host.resourceName)+'</b></span>':'');
+
     html+='<div style="padding:11px 16px 10px;border-bottom:1px solid var(--border)">'
       // ── Host header row — same chip layout as the Private Hosts panel ───────
       +'<div style="display:flex;align-items:center;gap:10px">'
@@ -2568,7 +2667,9 @@ function _renderVulns(rows,err){
             +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
             +cloudTagInet
           +'</span>'
+          +(idNameLine?'<span style="display:flex;gap:10px;align-items:center;margin-top:3px;flex-wrap:wrap">'+idNameLine+'</span>':'')
           +(expBadges?'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'+expBadges+'</span>':'')
+          +(epChips?'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'+epChips+'</span>':'')
           +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
             +(hasCiemInet?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+arEntry.ciemSecrets.length+' credential'+(arEntry.ciemSecrets.length!==1?'s':'')+'</span>':'')
             +(hasCiemInet?arEntry.ciemSecrets.map(function(t){return'<span style="font-size:8px;font-weight:600;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(ciemCategoryLabel(t))+'</span>';}).join(''):'')
@@ -2752,8 +2853,61 @@ function renderCompliance(rows,err){
 // comment on fetchPublicStorage() for why this isn't inferred from compliance policy titles.
 // "Content" still cross-references whatever DSPM data-classification fields a compliance
 // finding's resource row happens to carry for the same bucket/container name, best-effort.
+// Effective Public Storage Exposure findings — shared by the Public Storage Exposure panel
+// and the Exploit Simulation Layer's "N Public Storage Resources Exposed" badge, so both
+// always agree on the same count.
+function computeEffectivePublicStorage(d){
+  // Known-stale CSPM snapshot entries: resources FortiCNAPP's last scan captured as public
+  // but that no longer exist in the live cloud account (confirmed 2026-07-27 — Azure
+  // returns ResourceNotFound, not a public-access-denied error, for this container). Not a
+  // detection-logic bug; the fix is a fresh FortiCNAPP Azure CSPM re-scan. This list should
+  // shrink to empty once that happens — remove entries here as they're confirmed stale, or
+  // drop this filter entirely once verified clean.
+  var STALE_STORAGE_FINDINGS=['juiceshopswagger'];
+  var findings=((d&&d.publicStorage)||[]).filter(function(f){return STALE_STORAGE_FINDINGS.indexOf(f.name)===-1;});
+
+  // ── Verified Exposure Paths (LW_APA_EXPOSURE_PATHS, s3:bucket + Azure Blob) — buckets/
+  // containers aren't hosts, so no CVE/machine enrichment applies, just the traced
+  // Internet→Target route. A bucket already found via policy/ACL analysis gets the path
+  // cross-linked onto its existing row (kept at 'critical' — the policy/ACL check proved
+  // actual public access). A bucket found ONLY via a traced path is added as its own row
+  // at 'high' — a real network-reachable route was confirmed, but not that the bucket
+  // policy itself grants public access, so it's a weaker signal than the policy/ACL
+  // findings above and is labeled distinctly. Azure Blob's target type traces the storage
+  // account's blob SERVICE, not individual containers, so its displayName may match a
+  // storage account name rather than a specific container.
+  var epByBucket={};
+  [['s3','S3 Bucket'],['azureBlob','Azure Blob Storage']].forEach(function(src){
+    ((d&&d.exposurePaths&&d.exposurePaths[src[0]])||[]).forEach(function(r){
+      var nm=r.TARGET&&r.TARGET.displayName;
+      if(!nm)return;
+      r._resourceLabel=src[1];
+      (epByBucket[nm]=epByBucket[nm]||[]).push(r);
+    });
+  });
+  var existingNames={};
+  findings.forEach(function(f){f.severity=f.severity||'critical';existingNames[f.name]=true;});
+  Object.keys(epByBucket).forEach(function(nm){
+    if(existingNames[nm])return;
+    var rec=epByBucket[nm][0];
+    findings.push({
+      cloud:(rec.PROVIDER_TYPE||'aws').toLowerCase(),
+      name:nm,
+      account:rec.DOMAIN_ID||'—',
+      region:'—',
+      resourceType:rec._resourceLabel+' (Verified Internet Path)',
+      severity:'high',
+      urn:(rec.TARGET&&rec.TARGET.key&&(rec.TARGET.key.arn||rec.TARGET.key.id))||nm,
+    });
+  });
+  return {findings, epByBucket};
+}
+
 function renderPublicStorage(d){
-  var findings=(d&&d.publicStorage)||[];
+  var _eff=computeEffectivePublicStorage(d);
+  var findings=_eff.findings;
+  var epByBucket=_eff.epByBucket;
+
   if(!findings.length){setCount('cnt-storage',0,true);state('body-storage','','No public object storage exposure found (S3 buckets, Azure Blob containers, GCS buckets)');return}
 
   var CONTENT_KEYS=['DATA_CATEGORIES','SENSITIVE_DATA_TYPES','DATA_CLASSIFICATION','DATA_CLASSIFICATIONS','SENSITIVITY','PII_TYPES','CONTENT_TYPES','CLASSIFICATION','DATA_TYPES'];
@@ -2771,6 +2925,14 @@ function renderPublicStorage(d){
     if(v==null)return'<span style="color:#94a3b8;font-size:10.5px">No data classification available</span>';
     var vals=Array.isArray(v)?v:[v];
     return vals.map(function(x){return'<span class="b b-hi" style="margin:1px">'+e(String(x))+'</span>';}).join(' ');
+  }
+
+  function verifiedPathCell(name){
+    var recs=epByBucket[name];
+    if(!recs||!recs.length)return'<span style="color:#94a3b8;font-size:10.5px">&mdash;</span>';
+    return'<span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'
+      +exposurePathHopsStr(recs[0])
+    +'</span>';
   }
 
   var groups={aws:[],azure:[],gcp:[]};
@@ -2791,12 +2953,13 @@ function renderPublicStorage(d){
         +'<td class="p">'+e(String(f.account||'—'))+'</td>'
         +'<td class="p">'+e(String(f.region||'—'))+'</td>'
         +'<td class="desc">'+e(f.resourceType||'—')+'</td>'
-        +'<td>'+sev('critical')+'</td>'
+        +'<td>'+sev(f.severity||'critical')+'</td>'
         +'<td>'+contentHtml(f.name)+'</td>'
+        +'<td>'+verifiedPathCell(f.name)+'</td>'
       +'</tr>';
     }).join('');
     return'<div style="padding:6px 0 8px;margin-top:16px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#111827;border-bottom:2px solid #11182733;margin-bottom:4px">'+cloud(c)+' <span style="font-weight:400;color:#9ca3af">('+items.length+' resource'+(items.length===1?'':'s')+')</span></div>'
-      +'<div class="tbl-wrap"><table><thead><tr><th>Bucket / Container</th><th>Account / Project</th><th>Region</th><th>Resource Type</th><th>Severity</th><th>Content — Data Classification (DSPM)</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
+      +'<div class="tbl-wrap"><table><thead><tr><th>Bucket / Container</th><th>Account / Project</th><th>Region</th><th>Resource Type</th><th>Severity</th><th>Content — Data Classification (DSPM)</th><th>Verified Internet Path</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
   }).join('');
 
   setBody('body-storage',html);
@@ -3764,11 +3927,10 @@ function renderCspLab(d,csp){
     attacker:{label:'ATTACKER',color:'#ff5e3a'},
     network:{label:'Internet',color:'#3b82f6'},
     factors,
-    target:{label:'YOUR CLOUD',tier:goalTier,tierColor:color},
+    target:{label:'YOUR CLOUD',subLabel:exposedHostsSubLabel(exposedHosts),tooltip:exposedHostsTooltip(exposedHosts),tier:goalTier,tierColor:color},
     lineColor:color,
     animate:true,
   });
-  renderExposedHostsCapRow(exposedHosts,'cjnd3-ip-row');
 }
 
 function switchVTab(tab){
@@ -3822,6 +3984,15 @@ function exposedHostsTooltip(exposedHosts){
   if(!exposedHosts.length)return'No internet-exposed hosts detected';
   return exposedHosts.map(h=>h.name+(h.publicIP?' ('+h.publicIP+')':'')).join(', ');
 }
+// Compact IP list shown directly inside the "YOUR CLOUD" hex on the kill-chain diagram —
+// short enough to fit the shape; full name+IP detail is on the hex's hover tooltip instead
+// (was previously a separate caption row below the whole diagram, disconnected from it).
+function exposedHostsSubLabel(exposedHosts){
+  const withIp=exposedHosts.filter(h=>h.publicIP);
+  if(!withIp.length)return null;
+  if(withIp.length<=2)return withIp.map(h=>h.publicIP).join('  ·  ');
+  return withIp.length+' exposed IPs';
+}
 // Visible IP-caption row below the diagram — shared by the Global panel (jnd3-ip-row)
 // and each per-CSP panel (cjnd3-ip-row).
 function renderExposedHostsCapRow(exposedHosts,capRowId){
@@ -3867,13 +4038,12 @@ function renderLab(d){
     attacker:{label:'ATTACKER',color:'#ff5e3a'},
     network:{label:'Internet',color:'#3b82f6'},
     factors,
-    target:{label:'YOUR CLOUD',tier:goalTier,tierColor:color},
+    target:{label:'YOUR CLOUD',subLabel:exposedHostsSubLabel(_exposedHosts),tooltip:exposedHostsTooltip(_exposedHosts),tier:goalTier,tierColor:color},
     lineColor:color,
     animate:true,
   });
-  renderExposedHostsCapRow(_exposedHosts,'jnd3-ip-row');
   // Public Storage badge — separate stat, not one of the 5 attack-chain nodes above
-  const storageCount=(d.publicStorage||[]).length;
+  const storageCount=computeEffectivePublicStorage(d).findings.length;
   const sBadge=document.getElementById('lab-storage-badge');
   if(sBadge){
     sBadge.style.display=storageCount>0?'flex':'none';
@@ -6106,7 +6276,11 @@ function groupVulnsByHost(vulns) {
       map[host] = { name: host, exposed: !!(mtObj && mtObj.lw_InternetExposure === 'Yes'), pubIp, rows: [], maxRisk: 0 };
     }
     const g = map[host];
-    const rs = parseFloat(r.riskScore || 0);
+    // cveRiskScore is the CVE's own severity score; riskScore is a broader composite that
+    // can diverge significantly (e.g. a CVE at cveRiskScore 9.95 with riskScore 6.3) — use
+    // cveRiskScore first so host sort order reflects actual CVE severity, matching how
+    // fetchVulns() itself defines "CVE risk" (see its NOTE comment above).
+    const rs = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
     if (rs > g.maxRisk) g.maxRisk = rs;
     g.rows.push(r);
   });
@@ -6279,7 +6453,15 @@ function hexKillChainSvg(spec) {
   var fy = [];
   for (var i = 0; i < n; i++) fy.push(CY + (i - (n - 1) / 2) * spacing);
 
-  var sid = 'hkc' + Math.abs(Math.round(H * 7 + n * 13)).toString(36);
+  // Must be unique per call, not just per shape: the Global diagram, each per-CSP tab, and
+  // the per-host Attack Path modal can all have SVGs sitting in the DOM at once (inactive
+  // tabs/panels are hidden via CSS, not removed). Two diagrams with the same factor count
+  // produced the same id here before, so their <defs> (gradient/filter) collided — the
+  // browser resolves url(#id) against whichever element it finds first in document order,
+  // silently breaking the fill/drop-shadow on the other one. A running counter guarantees
+  // every call gets its own id regardless of shape.
+  hexKillChainSvg._seq = (hexKillChainSvg._seq || 0) + 1;
+  var sid = 'hkc' + hexKillChainSvg._seq.toString(36);
 
   var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" ' +
     'style="width:100%;display:block;font-family:-apple-system,BlinkMacSystemFont,sans-serif" ' +
@@ -6338,7 +6520,9 @@ function hexKillChainSvg(spec) {
     }
   });
 
-  svg += '<polygon points="' + hexPoints(TX, CY, TW, TH) + '" fill="' + target.tierColor + '" filter="url(#' + sid + 'd)"/>';
+  svg += '<polygon points="' + hexPoints(TX, CY, TW, TH) + '" fill="' + target.tierColor + '" filter="url(#' + sid + 'd)">';
+  if (target.tooltip) svg += '<title>' + esc(target.tooltip) + '</title>';
+  svg += '</polygon>';
   svg += '<text x="' + TX + '" y="' + (CY - TH / 2 + 22) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white">' + esc(target.label) + '</text>';
   if (target.subLabel) svg += '<text id="hg-geo-txt" x="' + TX + '" y="' + CY + '" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-style="italic">' + esc(target.subLabel) + '</text>';
   svg += '<text x="' + TX + '" y="' + (CY + TH / 2 - 14) + '" text-anchor="middle" font-size="9" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">' + esc(target.tier) + '</text>';
@@ -7047,12 +7231,12 @@ function buildReportHtml2(data, meta) {
   const { hosts: vulnHostsAll, exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(vulns);
   const exposedVulnHosts = vulnHostsAll
     .filter(h => h.exposed)
-    .map(h => ({ ...h, rows: h.rows.filter(r => parseFloat(r.riskScore||0) >= 9) }))
+    .map(h => ({ ...h, rows: h.rows.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? 0) >= 9) }))
     .filter(h => h.rows.length > 0);
   const privateVulnHosts = vulnHostsAll.filter(h => !h.exposed);
 
   function vulnRowCells(r, i) {
-    const rs = parseFloat(r.riskScore||0);
+    const rs = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
     const pkg = (r.featureKey && r.featureKey.name) || '—';
     const ver = (r.featureKey && r.featureKey.version) || '';
     const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
