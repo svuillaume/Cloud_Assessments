@@ -2230,7 +2230,21 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <div class="vh-sub">Configure dashboard behaviour</div>
     </div>
   </div>
-  <div style="padding:24px 20px;max-width:520px">
+
+  <div id="admin-settings-lock" style="padding:60px 20px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+    <div style="width:52px;height:52px;border-radius:50%;background:#f1f5f9;display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#64748b" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    </div>
+    <div style="font-size:13px;font-weight:700;color:#0f172a">Admin Settings is locked</div>
+    <div style="font-size:11px;color:#64748b;max-width:280px;text-align:center">Enter the admin password to view and change dashboard settings.</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+      <input type="password" id="admin-settings-pwd" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter')unlockAdminSettings()" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;color:#0f172a;background:#f8fafc;outline:none;width:180px">
+      <button onclick="unlockAdminSettings()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Unlock</button>
+    </div>
+    <div id="admin-settings-pwd-err" style="font-size:11px;color:#ef4444;font-weight:600;display:none">Incorrect password</div>
+  </div>
+
+  <div id="admin-settings-content" style="display:none;padding:24px 20px;max-width:520px">
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:22px 24px;margin-bottom:16px">
       <div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:4px">Data Refresh Interval</div>
       <div style="font-size:11px;color:#64748b;margin-bottom:14px">How often the server re-fetches data from FortiCNAPP. Min 6 h · Max 48 h.</div>
@@ -4366,6 +4380,24 @@ startupSequence();
 loadAdminSettings();
 
 
+
+const ADMIN_SETTINGS_PWD='fortinetadmin';
+let _adminUnlocked=false;
+function unlockAdminSettings(){
+  const inp=document.getElementById('admin-settings-pwd');
+  const err=document.getElementById('admin-settings-pwd-err');
+  if(!inp)return;
+  if(inp.value===ADMIN_SETTINGS_PWD){
+    _adminUnlocked=true;
+    document.getElementById('admin-settings-lock').style.display='none';
+    document.getElementById('admin-settings-content').style.display='block';
+    if(err)err.style.display='none';
+  }else{
+    if(err)err.style.display='block';
+    inp.value='';
+    inp.focus();
+  }
+}
 
 async function loadAdminSettings(){
   try{
@@ -7406,8 +7438,7 @@ function buildReportHtml2(data, meta) {
   '  <title>Rapid Cloud Assessment (Beta) – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
-  '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT — BETA REPORT 2</span></header>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Beta Report 2</div>\n' +
