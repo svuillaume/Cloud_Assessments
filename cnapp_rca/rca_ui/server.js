@@ -97,7 +97,7 @@ function request(method, hostname, path, headers, body, timeoutMs = 30000) {
     const resolvedIP = hostname === LW_ACCOUNT ? accountIP : null;
     const opts = {
       hostname, port: 443, path, method,
-      ...(resolvedIP ? { lookup: (_h, _o, cb) => cb(null, resolvedIP, 4) } : {}),
+      ...(resolvedIP ? { lookup: (_h, o, cb) => (o && o.all) ? cb(null, [{ address: resolvedIP, family: 4 }]) : cb(null, resolvedIP, 4) } : {}),
       headers: {
         'Content-Type': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
