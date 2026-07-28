@@ -39,7 +39,7 @@ function startRefreshTimer() {
   if (_refreshTimer) clearInterval(_refreshTimer);
   _refreshTimer = setInterval(() => refreshData().catch(e => console.error('[refresh]', e.message)), dynamicInterval * 1000);
 }
-const DAYS_BACK        = 30;   // look-back window default
+const DAYS_BACK        = 15;   // look-back window default
 const ALERT_DAYS_BACK  = 14;   // High Fidelity Alerts fixed window
 let dynamicDaysBack = DAYS_BACK;
 const MOCK_FILE  = process.env.MOCK_FILE  || '';   // set to mock_data.json to skip API calls
@@ -1762,7 +1762,14 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div style="padding:0 0 6px">
     <a id="rpt2-btn-link" href="/report2" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-      Generate Report
+      Generate Cloud Security Report
+    </a>
+  </div>
+  <!-- Condensed, chart-first executive summary — /report3 -->
+  <div style="padding:0 0 6px">
+    <a id="rpt3-btn-link" href="/report3" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
+      <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.1-3-3-4 4"/></svg>
+      Generate Cloud Overview Report
     </a>
   </div>
   <!-- Sidebar meta -->
@@ -1799,7 +1806,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:20px 24px 16px;gap:0">
 
     <!-- Title -->
-    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:12px">Cloud Security Posture Management Score</div>
+    <div style="font-size:16px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:#DA291C;margin-bottom:12px">Cloud Security Risk Score</div>
     <div style="font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#64748b;text-align:center;max-width:560px;margin-bottom:10px;line-height:1.5"><span style="color:#15803d;font-weight:800">Accelerating Risk Reduction</span> while strengthening cloud security posture, improving configuration hygiene &amp; enhancing runtime threat detection</div>
 
     <!-- Centering wrapper: responsive — fills available space up to a comfortable max -->
@@ -2295,7 +2302,8 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
         <select id="settings-days-select" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:7px;font-size:13px;font-weight:600;color:#0f172a;background:#f8fafc;cursor:pointer;outline:none">
           <option value="7">7 days</option>
           <option value="14">14 days</option>
-          <option value="21">21 days (default)</option>
+          <option value="15">15 days (default)</option>
+          <option value="21">21 days</option>
           <option value="30">30 days</option>
         </select>
         <button onclick="applyDaysBack()" style="padding:8px 18px;background:#DA291C;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Apply</button>
@@ -4215,7 +4223,7 @@ async function load(){
     document.getElementById('fetched-at').textContent=fmtDate(d.fetchedAt);
     const da=document.getElementById('dash-acct');if(da)da.textContent=d.account||'';
     const _db=d.daysBack||${DAYS_BACK};
-    document.getElementById('footer-time').textContent='Assessment window: last '+_db+' days';
+    document.getElementById('footer-time').textContent='Assessment window: '+_db+' days';
     const _sa=document.getElementById('sub-alerts');
     if(_sa)_sa.textContent='Active threats & policy violations · last 14 days';
     const live=document.getElementById('live-dot');
@@ -4360,6 +4368,8 @@ function wireReportBtn(user){
   if(btn)btn.href='/report?'+params.toString();
   const btn2=document.getElementById('rpt2-btn-link');
   if(btn2)btn2.href='/report2?'+params.toString();
+  const btn3=document.getElementById('rpt3-btn-link');
+  if(btn3)btn3.href='/report3?'+params.toString();
 }
 
 function showUserBadge(user){
@@ -4413,7 +4423,7 @@ async function loadAdminSettings(){
     if(cur)cur.textContent=fmtSec(sec);
     setFooterInterval(sec);
     cd=sec;
-    const days=s.daysBack||21;
+    const days=s.daysBack||15;
     const dsel=document.getElementById('settings-days-select');
     if(dsel)dsel.value=String(days);
     const dcur=document.getElementById('settings-cur-days');
@@ -6366,6 +6376,48 @@ function computeAssetRiskMap(vulns, secretsAll, compliance) {
   return { map, maxRisk, critMisc };
 }
 
+// Server-side port of the dashboard's client-only computeEffectivePublicStorage() (inside
+// buildHtml's template literal, not reachable from Node) — merges raw CSPM publicStorage
+// policy/ACL findings with LW_APA_EXPOSURE_PATHS-traced storage findings, minus the known-
+// stale-CSPM-snapshot exclusion list. Any report/page showing "current" public storage
+// exposure should call this instead of reading cache.publicStorage directly — the raw CSPM
+// snapshot can lag the live cloud account (see STALE_STORAGE_FINDINGS comment below).
+function computeEffectivePublicStorage(data) {
+  // Known-stale CSPM snapshot entries: resources FortiCNAPP's last scan captured as public
+  // but that no longer exist in the live cloud account (confirmed 2026-07-27 — Azure
+  // returns ResourceNotFound, not a public-access-denied error, for this container). Not a
+  // detection-logic bug; the fix is a fresh FortiCNAPP Azure CSPM re-scan. Keep in sync with
+  // the client-side copy in buildHtml()'s computeEffectivePublicStorage().
+  const STALE_STORAGE_FINDINGS = ['juiceshopswagger'];
+  const findings = ((data && data.publicStorage) || []).filter(f => STALE_STORAGE_FINDINGS.indexOf(f.name) === -1);
+
+  const epByBucket = {};
+  [['s3', 'S3 Bucket'], ['azureBlob', 'Azure Blob Storage']].forEach(([key, label]) => {
+    ((data && data.exposurePaths && data.exposurePaths[key]) || []).forEach(r => {
+      const nm = r.TARGET && r.TARGET.displayName;
+      if (!nm) return;
+      r._resourceLabel = label;
+      (epByBucket[nm] = epByBucket[nm] || []).push(r);
+    });
+  });
+  const existingNames = {};
+  findings.forEach(f => { f.severity = f.severity || 'critical'; existingNames[f.name] = true; });
+  Object.keys(epByBucket).forEach(nm => {
+    if (existingNames[nm]) return;
+    const rec = epByBucket[nm][0];
+    findings.push({
+      cloud: (rec.PROVIDER_TYPE || 'aws').toLowerCase(),
+      name: nm,
+      account: rec.DOMAIN_ID || '—',
+      region: '—',
+      resourceType: rec._resourceLabel + ' (Verified Internet Path)',
+      severity: 'high',
+      urn: (rec.TARGET && rec.TARGET.key && (rec.TARGET.key.arn || rec.TARGET.key.id)) || nm,
+    });
+  });
+  return { findings, epByBucket };
+}
+
 // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly.
 // Shared by both report builders (MultiCloud + per-cloud CSPM score gauges).
 function computeCspScores(data) {
@@ -7536,6 +7588,243 @@ function buildReportHtml2(data, meta) {
   '</div></div>\n</body>\n</html>';
 }
 
+// ── Report 3 (Cloud Overview) — condensed 4-page, chart-first summary for managers ──
+// Reuses the same shared helpers as Report 1/2 (computeCspScores, computeAssetRiskMap,
+// groupVulnsByHost via CIEM_SECRET_TYPES) so its numbers always match the detailed
+// reports — just visualized instead of tabulated. No detail tables, no per-finding lists.
+function buildReportHtml3(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  const alerts      = data.alerts      || [];
+  const vulns       = data.vulns       || [];
+  const compliance  = governanceReportToComplianceRows(lastGovernanceReport) || data.compliance || [];
+  const identities  = data.identities  || [];
+  const secretsAll  = data.secretsAll  || [];
+  const publicStorage = computeEffectivePublicStorage(data).findings;
+
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  const { cspScores, score, sBand } = computeCspScores(data);
+
+  // ── Page 2: findings by category donut ─────────────────────────────────────
+  const catCounts = [
+    { key: 'Alerts',             n: alerts.length,     color: '#DA291C' },
+    { key: 'CVEs',                n: vulns.length,      color: '#CC4A1A' },
+    { key: 'Misconfigurations',  n: compliance.length,  color: '#B7770D' },
+    { key: 'Identities',         n: identities.length,  color: '#2C5280' },
+    { key: 'Secrets',            n: secretsAll.length,  color: '#7c3aed' },
+  ];
+  const catTotal = catCounts.reduce((s,c) => s + c.n, 0);
+  const topCat = catCounts.reduce((a,b) => b.n > a.n ? b : a, catCounts[0]);
+
+  function donutSvg(segs, total) {
+    const R = 80, CIRC = 2 * Math.PI * R, GAP = 6;
+    const active = segs.filter(s => s.n > 0).length || 1;
+    const usable = CIRC - GAP * active;
+    let cum = 0;
+    const arcs = segs.map(s => {
+      const len = total === 0 ? 0 : (s.n / total) * usable;
+      const arc = '<circle cx="110" cy="110" r="'+R+'" fill="none" stroke="'+s.color+'" stroke-width="30" '+
+        'stroke-dasharray="'+len.toFixed(1)+' '+(CIRC-len).toFixed(1)+'" stroke-dashoffset="'+(-cum).toFixed(1)+'" transform="rotate(-90 110 110)"/>';
+      if (s.n > 0) cum += len + GAP;
+      return arc;
+    }).join('');
+    return '<svg viewBox="0 0 220 220" style="width:220px;height:220px;flex-shrink:0">'+
+      '<circle cx="110" cy="110" r="'+R+'" fill="none" stroke="#e2e8f0" stroke-width="30"/>'+
+      arcs+
+      '<text x="110" y="104" text-anchor="middle" font-size="40" font-weight="900" font-family="-apple-system,Inter,sans-serif" fill="#1e293b">'+total+'</text>'+
+      '<text x="110" y="126" text-anchor="middle" font-size="10" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#64748b" letter-spacing=".05em">TOTAL FINDINGS</text>'+
+    '</svg>';
+  }
+
+  // ── Page 3: identity classification (duplicated from buildReportHtml2 — report
+  // builders are independently maintained, see module docstring) ────────────────
+  function isServiceAccount(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase(), p=(r.PROVIDER_TYPE||'').toLowerCase();
+    return pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||p.includes('serviceprincipal')||p.includes('aad');
+  }
+  function isRoleType(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase();
+    return (pid.includes(':role/')||pid.includes(':assumed-role/')||nm.includes('role')) && !isServiceAccount(r);
+  }
+  function unusedPctOf(r) {
+    const ec = r.ENTITLEMENT_COUNTS || {};
+    const unusedCnt = ec.entitlements_unused_count, totalCnt = ec.entitlements_total_count || ec.entitlements_count;
+    return ec.entitlements_unused_percentage != null ? ec.entitlements_unused_percentage
+      : (unusedCnt != null && totalCnt ? (unusedCnt/totalCnt)*100 : null);
+  }
+  function isHighPermissive(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    const sev = (r.METRICS && r.METRICS.risk_severity || '').toLowerCase();
+    return risks.includes('ALLOWS_FULL_ADMIN') || risks.includes('EXCESSIVE_PERMISSIONS') || sev === 'critical' || sev === 'high';
+  }
+  function isNoMfa(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    return risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+  }
+  const adminUserCount = identities.filter(r => !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r)).length;
+  const iamRoleCount = identities.filter(r => { const up=unusedPctOf(r); return isRoleType(r) && isHighPermissive(r) && up!=null && up>=80; }).length;
+  const serviceAccountCount = identities.filter(r => { const up=unusedPctOf(r); return isServiceAccount(r) && isHighPermissive(r) && up!=null && up>=80; }).length;
+  const ciemSet = {}; CIEM_SECRET_TYPES.forEach(t => ciemSet[t] = true);
+  const ciemSecretCount = secretsAll.filter(r => ciemSet[(r.SECRET_TYPE||'').toUpperCase()]).length;
+  const genericSecretCount = secretsAll.length - ciemSecretCount;
+
+  function statTile(n, label, color) {
+    return '<div style="flex:1;min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:22px 16px;text-align:center">'+
+      '<div style="font-size:38px;font-weight:900;color:'+color+'">'+n+'</div>'+
+      '<div style="font-size:10.5px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:8px;line-height:1.4">'+label+'</div>'+
+    '</div>';
+  }
+
+  // ── Page 4: top risk assets — Internet-Exposed Hosts + Publicly Accessible Storage
+  // ONLY (not the full correlated-risk asset list — see computeAssetRiskMap for that) ──
+  const { map: assetMap } = computeAssetRiskMap(vulns, secretsAll, compliance);
+  const exposedHosts = Object.values(assetMap)
+    .filter(a => a.internetExposed)
+    .sort((a,b) => b.normalizedScore - a.normalizedScore);
+  function driverTag(a) {
+    const drivers = [];
+    if (a.ciem > 0) drivers.push('CIEM credential');
+    if (a.secretRisk > 0) drivers.push('secret');
+    if (a.threatRisk > 0) drivers.push('CVE exposure');
+    if (a.miscRisk > 0) drivers.push('misconfiguration');
+    return drivers.join(', ') || '—';
+  }
+  const exposedHostsHtml = exposedHosts.length ? exposedHosts.map(a => {
+    const tier = assetRiskTier(a.normalizedScore, a.internetExposed);
+    return '<div style="display:flex;align-items:center;gap:16px;padding:14px 18px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px">'+
+      '<div style="width:64px;text-align:center;flex-shrink:0">'+
+        '<div style="font-size:22px;font-weight:900;color:'+tier.color+'">'+a.normalizedScore+'</div>'+
+        '<div style="font-size:8px;font-weight:800;letter-spacing:.05em;color:'+tier.color+'">'+tier.label+'</div>'+
+      '</div>'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="font-size:13px;font-weight:700;color:#1e293b;word-break:break-word">'+esc(a.name)+' <span style="font-size:9px;font-weight:800;color:#fff;background:#DA291C;border-radius:3px;padding:1px 6px;margin-left:4px;vertical-align:middle">INTERNET-EXPOSED</span></div>'+
+        '<div style="font-size:11px;color:#64748b;margin-top:2px">Driven by: '+esc(driverTag(a))+'</div>'+
+      '</div>'+
+    '</div>';
+  }).join('') : '<div class="section-summary"><p>No internet-exposed hosts with correlated risk data were found in this assessment window.</p></div>';
+
+  const publicStorageHtml = publicStorage.length ? publicStorage.map(s => {
+    const isConfirmed = (s.severity||'critical') === 'critical';
+    return '<div style="display:flex;align-items:center;gap:16px;padding:14px 18px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px">'+
+      '<div style="width:78px;text-align:center;flex-shrink:0">'+
+        '<span style="font-size:9px;font-weight:800;letter-spacing:.05em;color:#fff;background:'+(isConfirmed?'#DA291C':'#CC4A1A')+';border-radius:4px;padding:3px 6px;white-space:nowrap">'+(isConfirmed?'PUBLIC':'VERIFIED PATH')+'</span>'+
+      '</div>'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="font-size:13px;font-weight:700;color:#1e293b;word-break:break-word">'+esc(s.name)+' <span style="font-size:9px;font-weight:800;color:#fff;background:'+cspBadgeColor3(s.cloud)+';border-radius:3px;padding:1px 6px;margin-left:4px;vertical-align:middle">'+esc((s.cloud||'').toUpperCase())+'</span></div>'+
+        '<div style="font-size:11px;color:#64748b;margin-top:2px">'+esc(s.resourceType||'Object storage')+' &middot; account: '+esc(s.account||'—')+'</div>'+
+      '</div>'+
+    '</div>';
+  }).join('') : '<div class="section-summary"><p>No publicly accessible storage was found in this assessment window.</p></div>';
+  function cspBadgeColor3(c){ return {aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[c]||'#94a3b8'; }
+
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+  '  <meta charset="UTF-8">\n' +
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+  '  <title>Cloud Overview Report – '+esc(customer)+'</title>\n' +
+  '  <style type="text/css">\n' + REPORT_CSS + '\n' +
+  '  </style>\n</head>\n<body>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
+  '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
+  '<div class="report-cover">\n' +
+  '  <div class="report-type">Rapid Cloud Assessment · Cloud Overview</div>\n' +
+  '  <h1>Cloud Security Overview</h1>\n' +
+  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  (function() {
+    const arcLen=550, fill=Math.round((score/100)*arcLen);
+    function miniGauge(label, bgColor, p) {
+      const pv = p !== null ? p : 100;
+      const arcL=314, f=Math.round((pv/100)*arcL);
+      const c=pv>=90?'#22c55e':pv>=50?'#f59e0b':'#ef4444';
+      return '<div style="display:flex;flex-direction:column;align-items:center;gap:4px">'+
+        '<div style="font-size:9px;font-weight:900;letter-spacing:.12em;padding:3px 10px;border-radius:4px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
+        '<svg viewBox="-10 -10 270 155" style="width:120px;overflow:visible">'+
+          '<path fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="14" stroke-linecap="round" d="M 25,120 A 100,100 0 0,1 225,120"/>'+
+          '<path fill="none" stroke="'+c+'" stroke-width="14" stroke-linecap="round" stroke-dasharray="'+f+' '+arcL+'" d="M 25,120 A 100,100 0 0,1 225,120"/>'+
+          '<text x="125" y="102" text-anchor="middle" font-size="36" font-weight="900" font-family="-apple-system,sans-serif" fill="'+c+'">'+pv+'</text>'+
+        '</svg>'+
+      '</div>';
+    }
+    return '  <div style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
+      '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
+      '    <defs><linearGradient id="rg3" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
+      '<stop offset="0%" stop-color="#ef4444"/><stop offset="50%" stop-color="#ef4444"/>'+
+      '<stop offset="50%" stop-color="#f59e0b"/><stop offset="97.5%" stop-color="#f59e0b"/>'+
+      '<stop offset="97.5%" stop-color="#22c55e"/><stop offset="100%" stop-color="#22c55e"/>'+
+      '</linearGradient></defs>\n'+
+      '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <path fill="none" stroke="url(#rg3)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
+      '  </svg>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">Cloud Security Risk Score — '+esc(sBand)+'</div>\n'+
+      '  </div>\n'+
+      '  <div style="display:flex;justify-content:center;gap:28px;margin-top:1.5rem;flex-wrap:wrap">\n'+
+        miniGauge('AWS', '#232F3E', cspScores.aws)+
+        miniGauge('AZURE', '#0078D4', cspScores.azure)+
+        miniGauge('GCP', '#1a73e8', cspScores.gcp)+
+      '  </div>\n';
+  })()+
+  '  <div class="meta-row">\n' +
+  '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
+  '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
+  '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
+  '  </div>\n</div>\n' +
+  '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:60vh">\n'+
+  '  <h2>2. Risk Findings Overview</h2>\n'+
+  '  <p style="color:#5A5A5A;margin-bottom:24px;font-size:12px">Every finding discovered across this assessment window, grouped by category.</p>\n'+
+  '  <div style="display:flex;align-items:center;gap:48px;flex-wrap:wrap;justify-content:center">\n'+
+      donutSvg(catCounts, catTotal)+
+  '    <div>\n'+
+        catCounts.map(c => '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'+
+          '<span style="width:12px;height:12px;border-radius:3px;background:'+c.color+';flex-shrink:0"></span>'+
+          '<span style="font-size:13px;color:#1e293b;min-width:140px">'+esc(c.key)+'</span>'+
+          '<span style="font-size:13px;font-weight:800;color:#1e293b">'+c.n+'</span>'+
+        '</div>').join('')+
+  '    </div>\n'+
+  '  </div>\n'+
+  (catTotal > 0 ? '  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem 1.5rem;margin-top:2rem;font-size:.85rem;color:#64748b;text-align:center">Largest contributor: <strong style="color:#1e293b">'+esc(topCat.key)+'</strong> ('+topCat.n+' of '+catTotal+' findings)</div>\n' : '')+
+  '</section>\n'+
+  '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:60vh">\n'+
+  '  <h2>3. Identity &amp; Secrets Snapshot</h2>\n'+
+  '  <p style="color:#5A5A5A;margin-bottom:24px;font-size:12px">High-permissive identities and exposed credentials found across all connected cloud accounts.</p>\n'+
+  '  <div style="display:flex;gap:16px;flex-wrap:wrap">\n'+
+      statTile(adminUserCount, 'High-Permissive Users, No MFA', '#DA291C')+
+      statTile(iamRoleCount, 'High-Permissive IAM / RBAC Roles', '#CC4A1A')+
+      statTile(serviceAccountCount, 'High-Permissive Service Accounts', '#B7770D')+
+      statTile(ciemSecretCount, 'CIEM Credentials Exposed', '#7c3aed')+
+      statTile(genericSecretCount, 'Other Secrets Found', '#2C5280')+
+  '  </div>\n'+
+  '</section>\n'+
+  '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:60vh">\n'+
+  '  <h2>4. Top Risk Assets</h2>\n'+
+  '  <p style="color:#5A5A5A;margin-bottom:20px;font-size:12px">The two attack surfaces most likely to be actively targeted: internet-exposed hosts and publicly accessible storage.</p>\n'+
+  '  <div style="font-size:12px;font-weight:800;color:#1e293b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Internet-Exposed Hosts ('+exposedHosts.length+')</div>\n'+
+      exposedHostsHtml+
+  '  <div style="font-size:12px;font-weight:800;color:#1e293b;text-transform:uppercase;letter-spacing:.05em;margin:20px 0 10px">Storage with Public Access ('+publicStorage.length+')</div>\n'+
+      publicStorageHtml+
+  '  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1.2rem 1.5rem;margin-top:1.5rem">\n'+
+  '    <div style="font-size:12px;font-weight:800;color:#1e293b;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Recommended Next Steps</div>\n'+
+  '    <div style="font-size:12px;color:#475569;line-height:1.9">'+
+        '1. Rotate or revoke exposed CIEM credentials and secrets on the highest-risk assets above.<br>'+
+        '2. Enforce MFA for every high-permissive user identified in the Identity &amp; Secrets snapshot.<br>'+
+        '3. Prioritize patching for internet-exposed hosts carrying Critical CVEs before addressing internal-only findings.'+
+  '    </div>\n'+
+  '  </div>\n'+
+  '</section>\n'+
+  '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
+  '<div style="text-align:center">' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT — CLOUD OVERVIEW &mdash; Powered by FortiCNAPP</div>' +
+  '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
+  '<div style="font-size:11px;color:#6b7280">This report is confidential and intended solely for the named recipient. For the full detailed findings, see the Cloud Security Report.</div>' +
+  '</div>' +
+  '</div>\n</body>\n</html>';
+}
+
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
@@ -7602,13 +7891,13 @@ function requestHandler(req, res) {
           }
         } else if (payload.daysBack !== undefined) {
           const d = payload.daysBack;
-          if (d === 7 || d === 14 || d === 21 || d === 30) {
+          if (d === 7 || d === 14 || d === 15 || d === 21 || d === 30) {
             dynamicDaysBack = d;
             res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
             res.end(JSON.stringify({ ok: true, daysBack: dynamicDaysBack }));
           } else {
             res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
-            res.end(JSON.stringify({ error: 'daysBack must be 7, 14, 21, or 30' }));
+            res.end(JSON.stringify({ error: 'daysBack must be 7, 14, 15, 21, or 30' }));
           }
         } else {
           res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
@@ -7886,6 +8175,40 @@ function requestHandler(req, res) {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
+  } else if (req.url.startsWith('/report3')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer = (qs.get('customer') || 'Customer').trim();
+    const author   = (qs.get('author')   || 'Fortinet').trim();
+    const sanitize = /^(1|true|yes)$/i.test(qs.get('sanitize') || '');
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    const reportData = sanitize ? sanitizeCacheData(cache) : cache;
+    const reportHtml = buildReportHtml3(reportData, { customer, author });
+    const reportPath = path.join(__dirname, 'rca3.html');
+    const pdfPath    = path.join(__dirname, 'rca3.pdf');
+    fs.writeFile(reportPath, reportHtml, err => {
+      if (err) { console.error('[report3] html save failed:', err.message); return; }
+      console.log('[report3] saved html to', reportPath);
+      const { execFile } = require('child_process');
+      execFile('chromium-browser', [
+        '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+        '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+      ], (err2) => {
+        if (err2) execFile('chromium', [
+          '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+          '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+        ], (err3) => {
+          if (err3) console.error('[report3] pdf generation failed:', err3.message);
+          else console.log('[report3] saved pdf to', pdfPath);
+        });
+        else console.log('[report3] saved pdf to', pdfPath);
+      });
+    });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+    res.end(reportHtml);
   } else if (req.url.startsWith('/report2')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
