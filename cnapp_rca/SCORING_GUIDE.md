@@ -69,20 +69,25 @@ before vs. after this change aren't directly comparable.
 
 ---
 
-### 1a. Three CVE thresholds — don't confuse them either
+### 1a. CVE and host-risk thresholds — don't confuse them either
 
-CVEs get filtered at three different, independently-tuned cutoffs across the tool. Each one
-exists for a different purpose, and they intentionally disagree with each other:
+Findings get filtered at several different, independently-tuned cutoffs across the tool. Each one
+exists for a different purpose, and they intentionally disagree with each other — some are
+per-*CVE* thresholds, one is a per-*host* threshold:
 
 | Where | Threshold | Field | Why this cutoff |
 |---|---|---|---|
 | **Posture score** (§1 above) | `riskScore ≥ 8` | `riskScore` (host-composite metric, can vary per host for the same CVE) | The score's own weighting formula — below-8 CVEs are common and rarely represent a real, standalone exploitable threat, so they're excluded to avoid diluting the mean |
-| **Private Host Most Exposed** / **Internet-Exposed Host (Beta)** panels | `cveRiskScore ≥ 9` | `cveRiskScore` (the CVE's own intrinsic severity — consistent across every host it appears on) | A tighter, panel-specific view of only the highest-severity CVEs on a given host, filtered client-side on top of the posture score's already-fetched ≥8 pool (9 is a strict subset, so no extra API call is needed) |
-| **Risk Findings Inventory → Host Exposure** | `cveRiskScore ≥ 9.95` | `cveRiskScore` | The tightest cut — only CVEs whose *displayed* risk score (`Math.round(cveRiskScore × 10)`) reads a full **100**. In live data, `cveRiskScore` never actually reaches the raw scale's true max of 10 (observed max ≈ 9.98), so an exact `=== 10` filter would silently return zero rows; 9.95 is the correct cutoff where the rounded display hits 100. Sourced from a separate, fully-paginated fetch (`fetchHighRiskVulns()`, any severity) rather than the posture score's 500-row-capped pool, then further restricted to hosts also confirmed internet-exposed |
+| **Private Host Most Exposed** panel | `cveRiskScore ≥ 9` | `cveRiskScore` (the CVE's own intrinsic severity — consistent across every host it appears on) | A tighter, panel-specific view of only the highest-severity CVEs on a given host, filtered client-side on top of the posture score's already-fetched ≥8 pool (9 is a strict subset, so no extra API call is needed) |
+| **Internet Exposed Host** panel | `hostRiskScore ≥ 7` — a **host**-level threshold, not a CVE one | `hostRiskScore` (Lacework's composite per-machine score) | Deliberately reproduces the FortiCNAPP console's own "Hosts" query (`Risk score ≥ 7` · `Internet exposed = True` · `Machine status Online/Launched` · has a Vulnerable-status observation) rather than this app's usual CVE-level cutoffs — it's a side-by-side comparison view, not a variant of the other two rows. Also uses Lacework's *raw* `lw_InternetExposureRaw` exposure tag, not the app's stricter verified signal every other panel uses |
+| **Risk Findings Inventory → Host Exposure** | `cveRiskScore ≥ 9.95` | `cveRiskScore` | The tightest cut — only CVEs whose *displayed* risk score (`Math.round(cveRiskScore × 10)`) reads a full **100**. In live data, `cveRiskScore` never actually reaches the raw scale's true max of 10 (observed max ≈ 9.98), so an exact `=== 10` filter would silently return zero rows; 9.95 is the correct cutoff where the rounded display hits 100. Sourced from a separate, fully-paginated fetch (`fetchHighRiskVulns()`, any severity) rather than the posture score's 500-row-capped pool, then further restricted to hosts also confirmed internet-exposed (via the app's verified signal, not the raw one) |
 
 The practical effect: a CVE can appear in the posture score's pool without showing up in Private
 Host Most Exposed, and can appear there without qualifying for the Risk Findings Inventory's Host
-Exposure count. That's by design — each view answers a narrower question than the last.
+Exposure count. That's by design — each view answers a narrower question than the last. Because
+Private Host Most Exposed and Internet Exposed Host use different exposure definitions (verified
+vs. raw), the app explicitly excludes any host qualifying for Internet Exposed Host from the
+Private list too, so the same host never appears as both "Private" and "Internet Exposed" at once.
 
 ---
 

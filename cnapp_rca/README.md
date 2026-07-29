@@ -46,7 +46,7 @@ A few things that make this codebase different from a typical web app, worth kno
 - **It's one file, on purpose.** `rca_ui/server.js` (~9,200 lines) is the entire application — server and client — with no `package.json`, no `npm install`, no build step, and no framework (no Express, no React). You run it with a single command: `node server.js`.
 - **Two programs live in that one file.** The Node.js *server* code (talks to the FortiCNAPP API, keeps a data cache, handles HTTP requests) is completely separate from the *browser* code (the dashboard you see on screen). The trick: the server code has a giant function, `buildHtml()`, that builds the entire webpage — including all of its JavaScript — as one big text string, then sends that string to your browser. Once your browser has it, that JavaScript runs *there*, not on the server. So if you're reading a function and wondering "does this run on the server or in my browser?" — that's the single most useful question to ask, and the answer changes what the function can and can't do (server code can read secrets and call the FortiCNAPP API; browser code can only call the dashboard's own `/api/*` routes and manipulate the page you see).
 - **No database.** Everything the dashboard shows lives in one in-memory JavaScript object called `cache`, refreshed on a timer (once a day by default) by pulling fresh data from FortiCNAPP. It's also saved to a small file (`data/cache.json`) so a restart doesn't show a blank dashboard while new data loads.
-- **Three different "reports" exist** (`/report`, `/report2`, `/report3`) — they're not versions of each other, they're three different documents (a conservative customer report, a detailed "beta" report, and a condensed executive overview) that all read the same underlying data.
+- **Four different "reports" exist** (`/report`, `/report2`, `/report3`, `/report4`) — they're not versions of each other, they're four different documents (a conservative customer report, a detailed "beta" report, a condensed executive overview, and a narrative assessment-style report — **Generate Report_BETA**) that all read the same underlying data.
 - **Want to know what a specific function does?** See [`FUNCTION_REFERENCE.md`](./rca_ui/FUNCTION_REFERENCE.md) — a plain-English walkthrough of every function in `server.js`, organized by section, written for someone seeing this codebase for the first time.
 
 ---
@@ -71,16 +71,16 @@ A few things that make this codebase different from a typical web app, worth kno
 
 | Section | What it shows |
 |---------|--------------|
-| **Private Host Most Exposed** | Non-internet-exposed hosts with CVE risk ≥ 9, enriched with correlated Secrets/CIEM credentials — rendered as asset-detail cards (Asset Details, Cloud Context, Security Findings, full CVE table). Internet-exposed hosts are tracked separately, not shown here — see the Beta tab and Risk Findings Inventory's Host Exposure category below |
+| **Risk Findings Inventory** | Consolidated list of every finding feeding the posture score — Alerts, Host Exposure, Identities, Critical Misconfigurations, Secrets — grouped by category, each collapsed by default (click a header to expand its list, or the "N findings ↗" link to jump to that tab). Risk-score column is a severity-tiered badge (red/orange/amber/green), not uniform bold red |
+| **Attack Paths** | `LW_APA_ATTACK_PATHS` results with click-to-filter severity tiles (Critical / High / Medium / Low) |
 | **Identities** | Admin-privilege identities only, one uniform rule across AWS/Azure/GCP: (User type **and** Full Admin) OR (IAM Role type **and** Full Admin) OR Root/root-equivalent. Service Accounts, Service Principals, Instance Profiles, Groups, and Assumed Roles are excluded regardless of privilege |
-| **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
 | **Secrets** | Discovered secrets and credentials across hosts |
+| **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
+| **Internet Accessible Ressources** | Every asset FortiCNAPP's Attack Path Analysis (`LW_APA_EXPOSURE_PATHS`) has traced a route to from the internet, across all target types **except FortiGate/Fortinet appliances** (those have their own dedicated tab below), with click-to-filter tiles |
+| **Internet Exposed Host** | A second, independently-filtered host view that deliberately reproduces the FortiCNAPP **console's own** "Hosts" query, not this app's usual (stricter) exposure methodology: Host Risk Score ≥ 7 (a per-**machine** composite score, not a per-CVE one) · Machine status Online/Launched · Vulnerability status Active · Internet Exposed = True using Lacework's **raw** exposure tag (not the app's verified SG/NSG/FW-rule signal used everywhere else — the two can disagree). Enriched with Critical CSPM findings, Secrets, and high-permission IAM role/instance profile (AWS). A host qualifying here is automatically excluded from Private Host Most Exposed below, so the same host never shows up as both "Private" and "Internet Exposed" |
+| **Private Host Most Exposed** | Non-internet-exposed hosts with CVE risk ≥ 9, enriched with correlated Secrets/CIEM credentials — rendered as asset-detail cards (Asset Details, Cloud Context, Security Findings, full CVE table). Hosts qualifying for Internet Exposed Host (above) are excluded here even if this panel's own verified-exposure check would otherwise call them private |
 | **Public Storage Exposure** | S3 / Azure Blob buckets confirmed public via policy/ACL, or via a traced Internet→bucket network path (`LW_APA_EXPOSURE_PATHS`) |
 | **FortiGate** | Fortinet appliance inventory — FortiGate plus other Fortinet product lines (FortiManager, FortiADC, etc.), discovered via compute inventory and exposure-path scans, with click-to-filter summary tiles |
-| **Internet Exposed Assets** | Unfiltered view of every asset FortiCNAPP's Attack Path Analysis (`LW_APA_EXPOSURE_PATHS`) has traced a route to from the internet, across all target types, with click-to-filter tiles |
-| **Internet-Exposed Host — Beta** | A second, independently-filtered view matching the FortiCNAPP console's own filter exactly: Online/Launched machines, Vulnerable, Internet Exposed = Yes, CVE risk score ≥ 9 — enriched with Critical CSPM findings, Secrets, and high-permission IAM role/instance profile (AWS). Same asset-card format as Private Host Most Exposed; kept as a separate tab for side-by-side comparison |
-| **Attack Paths** | `LW_APA_ATTACK_PATHS` results with click-to-filter severity tiles (Critical / High / Medium / Low) |
-| **Risk Findings Inventory** | Consolidated list of every finding feeding the posture score — Alerts, Host Exposure, Identities, Critical Misconfigurations, Secrets — grouped by category, each collapsed by default (click a header to expand its list, or the "N findings ↗" link to jump to that tab) |
 
 ---
 
@@ -115,7 +115,7 @@ Risk weights per finding type:
 | Identity — otherwise | `risk_score × 100` (max 100) |
 | Secret (discovered credential) | 10 |
 
-> **Three different CVE thresholds exist in this tool — don't confuse them.** The posture score above weights CVEs at `riskScore ≥ 8`. The Private Host Most Exposed / Internet-Exposed Host (Beta) panels display CVEs at `cveRiskScore ≥ 9`. The Risk Findings Inventory's "Host Exposure" category is stricter still, at `cveRiskScore ≥ 9.95` (a separate, fully-paginated fetch, not the 500-row-capped one behind the posture score). Each exists for a different purpose — see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full breakdown.
+> **Several different risk thresholds exist in this tool — don't confuse them.** The posture score above weights CVEs at `riskScore ≥ 8`. The Private Host Most Exposed panel displays CVEs at `cveRiskScore ≥ 9`. The Internet Exposed Host panel uses a **host**-level threshold instead — `hostRiskScore ≥ 7` — deliberately reproducing the FortiCNAPP console's own "Hosts" query rather than a CVE-level cutoff, and reads Lacework's raw (not this app's verified) internet-exposure tag. The Risk Findings Inventory's "Host Exposure" category is stricter still, at `cveRiskScore ≥ 9.95` (a separate, fully-paginated fetch, not the 500-row-capped one behind the posture score). Each exists for a different purpose — see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full breakdown.
 
 > For the full per-CSP formula, worked examples, and scoring rationale see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
 
@@ -401,13 +401,24 @@ docker cp rca:/app/contacts.csv ./contacts.csv  # visitor registrations
 | `/` | GET | Desktop dashboard; mobile UA → 302 `/mobile` |
 | `/mobile` | GET | Mobile single-scroll view |
 | `/desktop` | GET | Force desktop; supports `#section` hash |
-| `/report?customer=X&author=Y` | GET | Generate HTML/PDF report from cache |
+| `/health` | GET | Plain-text `OK` liveness check |
+| `/report?customer=X&author=Y&sanitize=1` | GET | Original report → `rca.html`/`rca.pdf` |
+| `/report2?customer=X&author=Y&sanitize=1` | GET | Beta wider-scope report → `rca2.html`/`rca2.pdf` |
+| `/report3?customer=X&author=Y&sanitize=1` | GET | Condensed Cloud Overview report → `rca3.html`/`rca3.pdf` |
+| `/report4?customer=X&author=Y&sanitize=1` | GET | **Generate Report_BETA** — narrative assessment report → `rca4.html`/`rca4.pdf` |
 | `/api/data` | GET | Full JSON data cache snapshot |
 | `/api/settings` | GET / POST | Read / write refresh interval and `daysBack` |
 | `/api/register` | POST | Save visitor to `contacts.csv` |
 | `/api/login` | POST | Email login — returns dashboard HTML directly |
 | `/api/identity-trust?pid=<ARN>` | GET | Trust principals for an identity (who can assume this role) |
+| `/api/identity?principalId=<ARN>` | GET | Single identity detail |
+| `/api/machine?hostname=<name>` | GET | Single host/machine detail |
+| `/api/cve?id=<CVE-ID>` | GET | CVE detail lookup (NVD + FortiGuard) |
 | `/api/geoip?ip=<IPv4>` | GET | GeoIP lookup via ipinfo.io (server-side proxy, cached) |
+| `/api/governance/targets` | GET | Cloud accounts eligible for a named-framework governance report |
+| `/api/governance/report` | GET | Run/fetch a governance report for one target |
+| `/api/fg-facts` | GET | Rotating "did you know" facts for the footer ticker |
+| `/api/ai/start` / `/api/ai/message` / `/api/ai/rate` | POST | In-dashboard AI Assistant chat (start thread / follow-up / feedback) |
 
 ---
 

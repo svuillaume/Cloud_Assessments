@@ -713,6 +713,20 @@ async function fetchHighRiskVulns() {
   return allRows;
 }
 
+// Shared "Machine status in (Online, Launched)" check — module-scope so both fetchVulns()
+// and refreshData()'s highRiskVulns correction can apply the same exclusion. Without it,
+// stopped/deallocated hosts leak into any dataset that skips this (confirmed live:
+// fetchHighRiskVulns() itself doesn't filter by machine status at all).
+const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
+function isMachineOffline(mt) {
+  const mtObj = mt && typeof mt === 'object' && !Array.isArray(mt) ? mt : null;
+  const mtArr = Array.isArray(mt) ? mt : null;
+  const state = mtObj
+    ? (mtObj.State || mtObj.PowerState || mtObj.status || '')
+    : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
+  return !!(state && OFFLINE_RE.test(state));
+}
+
 async function fetchVulns() {
   function vulnQuery(sev) {
     return post('Vulnerabilities/Hosts/search', {
@@ -751,6 +765,11 @@ async function fetchVulns() {
     const mt = r.machineTags;
     if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
       const ev = getExposureEvidence(mt);
+      // Preserve Lacework's own raw tag before overwriting it — the "Internet Exposed
+      // Host" panel deliberately compares against the FortiCNAPP console's own field
+      // (see _renderInternetHostExposedBeta), which can disagree with our stricter
+      // verified signal below.
+      mt.lw_InternetExposureRaw = mt.lw_InternetExposure;
       mt.lw_InternetExposure = ev.exposed ? 'Yes' : 'No';
       mt.lw_RestrictedExternalAccess = ev.restricted ? 'Yes' : 'No';
       r._exposureEvidence = ev;
@@ -771,16 +790,9 @@ async function fetchVulns() {
   //   cveRiskScore >= 8                              — CVE severity threshold
   //   machineTags.lw_InternetExposure === "Yes"      — primary internet exposure check
   //   Fallback: hostRiskInfo.host_risk_factors_breakdown.internet_reachability !== "None"
-  const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
   const filtered = rows.filter(r => {
     // Machine status: Online or Launched (exclude Stopped/Terminated/Deallocated)
-    const mt = r.machineTags;
-    const mtObj = mt && typeof mt === 'object' && !Array.isArray(mt) ? mt : null;
-    const mtArr = Array.isArray(mt) ? mt : null;
-    const state = mtObj
-      ? (mtObj.State || mtObj.PowerState || mtObj.status || '')
-      : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
-    if (state && OFFLINE_RE.test(state)) return false;
+    if (isMachineOffline(r.machineTags)) return false;
 
     // CVE severity score >= 8 (fallback: riskScore → hostRiskScore as impact proxy).
     // Deliberately NOT hostRiskScore first — that's Lacework's broader host-composite
@@ -1503,7 +1515,11 @@ async function refreshData() {
   const secrets      = unwrap(s,  'secrets');
   const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [], fortigate: [], all: [] });
   const attackPaths   = unwrap(ap, 'attackPaths');
-  const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns');
+  // fetchHighRiskVulns() itself applies no machine-status filter (unlike fetchVulns()) —
+  // exclude stopped/deallocated/terminated hosts here so every consumer of cache.highRiskVulns
+  // (including the Internet Exposed Host panel) sees only Online/Launched machines, matching
+  // the FortiCNAPP console's own "Machine status in (Online, Launched)" filter.
+  const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns').filter(r => !isMachineOffline(r.machineTags));
   // Apply the same verified-exposure correction fetchVulns() applies to cache.vulns — reuses
   // the getExposureEvidence closure fetchVulns() already computed rather than re-running the
   // CFG queries a second time. Without this, highRiskVulns would use Lacework's raw
@@ -1514,8 +1530,11 @@ async function refreshData() {
       const mt = r.machineTags;
       if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
         const evd = getExposureEvidence(mt);
+        // Preserve Lacework's own raw tag — see matching comment in fetchVulns().
+        mt.lw_InternetExposureRaw = mt.lw_InternetExposure;
         mt.lw_InternetExposure = evd.exposed ? 'Yes' : 'No';
         mt.lw_RestrictedExternalAccess = evd.restricted ? 'Yes' : 'No';
+        r._exposureEvidence = evd;
       }
     }
   }
@@ -2036,6 +2055,13 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       Generate Cloud Overview Report
     </a>
   </div>
+  <!-- Narrative assessment-style report (Scope/Methodology/Control Areas/Evidence/Actions) — /report4 -->
+  <div style="padding:0 0 6px">
+    <a id="rpt4-btn-link" href="/report4" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><circle cx="12" cy="15" r="3"/><path d="M12 13v-1"/></svg>
+      Generate Report_BETA
+    </a>
+  </div>
   <!-- Sidebar meta -->
   <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
@@ -2395,11 +2421,11 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">Internet Exposed Host</div>
-      <div class="vh-sub">Test methodology, for comparison against the standard panels: verified internet-exposed hosts &middot; CVE risk score &ge; 9 only &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
+      <div class="vh-sub">Matches the FortiCNAPP console's own Hosts query: Host Risk Score &ge; 7 &middot; Internet exposed = True &middot; Machine status Online/Launched &middot; has a Vulnerable-status observation &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
     </div>
     <span class="vh-badge" id="cnt-iehb">—</span>
   </div>
-  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (verified) &middot; CVE Risk Score &ge; 9. This is a beta comparison view — not wired into the posture score or other panels.</div>
+  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (FortiCNAPP's own raw tag — not this app's stricter verified SG/NSG/FW-rule signal used elsewhere) &middot; Host Risk Score &ge; 7. This is a beta comparison view — not wired into the posture score or other panels.</div>
   <div id="body-iehb"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
@@ -2868,8 +2894,12 @@ function _renderVulns(rows,err){
     'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
   var _privMap={};
   var _exposedHostSet={};
+  var _iehbSet=iehbQualifyingHostSet(_ld);
   allHosts.forEach(function(h){
-    if(h.reach==='Internet Exposed'){_exposedHostSet[h.name.toLowerCase()]=true;return;}
+    // Also exclude any host that qualifies for the Internet Exposed Host panel (raw
+    // exposure tag, not this panel's verified one — see iehbQualifyingHostSet) so the same
+    // host never shows up as both "Private" and "Internet Exposed" across the two tabs.
+    if(h.reach==='Internet Exposed'||_iehbSet[h.name.toLowerCase()]){_exposedHostSet[h.name.toLowerCase()]=true;return;}
     _privMap[h.name.toLowerCase()]={name:h.name,cloud:h.cloud||'',restricted:!!h.restricted,
       instanceId:h.instanceId||'',resourceName:h.resourceName||'',pubIp:h.pubIp||'',
       ciemSecrets:[],genericSecrets:[],vulns:h.vulns||[],maxRisk:h.maxRisk||0,crit:h.crit||0,high:h.high||0};
@@ -3462,25 +3492,65 @@ function renderAttackPaths(d){
 // secrets, and high-permission attached IAM role (AWS instance-profile name matched to a
 // role identity by name — a heuristic, not a guaranteed 1:1; Azure/GCP not implemented,
 // no managed-identity/service-account linkage data is fetched for those clouds yet).
+// Shared with _renderVulns() (Private Host Most Exposed) so the same host never appears in
+// both panels at once. Pure/stateless — recomputes the "Internet Exposed Host" qualifying
+// set (Host Risk Score >= 7 + Lacework's raw, unverified Internet Exposed tag — see the
+// methodology note in _renderInternetHostExposedBeta below) fresh each call, independent of
+// render order. Returns a lowercased-hostname lookup map, not an array.
+function iehbQualifyingHostSet(d){
+  var scores={};
+  ((d&&d.highRiskVulns)||[]).forEach(function(r){
+    var mt=r.machineTags;
+    var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
+    if(!mtObj)return;
+    var exposedRaw=mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure;
+    if(exposedRaw!=='Yes')return;
+    var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
+    if(!h)return;
+    var hl=h.toLowerCase();
+    var hrs=parseFloat(r.hostRiskScore??0);
+    if(!(hl in scores)||hrs>scores[hl])scores[hl]=hrs;
+  });
+  var set={};
+  Object.keys(scores).forEach(function(hl){if(scores[hl]>=7)set[hl]=true;});
+  return set;
+}
 function renderInternetHostExposedBeta(d){
   try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet Exposed Host render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
 }
 function _renderInternetHostExposedBeta(d){
   d=d||{};
-  var vulns=d.vulns||[];
+  // highRiskVulns (cveRiskScore>=9, ANY severity — see fetchHighRiskVulns) is used instead
+  // of the narrower d.vulns (Critical/High severity + cveRiskScore>=8 only — see
+  // fetchVulns), because a host can carry a cveRiskScore>=9 finding that Lacework itself
+  // doesn't label Critical/High, which d.vulns would silently drop before it ever reaches
+  // this panel.
+  var vulns=d.highRiskVulns||[];
   var instanceIamProfile=d.instanceIamProfile||{};
 
-  // ── Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns),
-  // both now gated to CVE risk score >= 9 (hard cutoff — below 9 contributes nothing).
-  // exposureEvidence/reach reuse the exact same verified (SG/NSG/FW + public IP) exposure
-  // signal, not Lacework's raw topological tag.
+  // ── Matches the FortiCNAPP console's own "Hosts" query exactly:
+  //   Hosts > Risk score >= 7             — host.hostRiskScore (Lacework's composite
+  //                                          per-machine score), NOT the per-CVE score
+  //   Vulnerability observation > status is Vulnerable — guaranteed by fetchVulns()/
+  //                                          fetchHighRiskVulns() (status:'Active' filter
+  //                                          server-side)
+  //   Hosts > Machine status in (Online, Launched)      — guaranteed by fetchVulns()'s
+  //                                          own OFFLINE_RE exclusion
+  //   Hosts > Internet exposed is True    — mtObj.lw_InternetExposureRaw, Lacework's own
+  //                                          raw/topological tag, deliberately NOT the
+  //                                          app's stricter verified (SG/NSG/FW-rule)
+  //                                          signal used everywhere else — this panel
+  //                                          exists specifically to compare against the
+  //                                          console's own methodology, and the two can
+  //                                          disagree (a host can be raw-tagged exposed
+  //                                          without an open wildcard rule we can verify).
+  // Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns).
   var hostMap={};
   vulns.forEach(function(r){
-    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
-    if(rs<9)return;
     var mt=r.machineTags;
     var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
-    if(!mtObj||mtObj.lw_InternetExposure!=='Yes')return;
+    var exposedRaw=mtObj?(mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure):null;
+    if(!mtObj||exposedRaw!=='Yes')return;
     var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'?';
     if(!hostMap[h]){
       var cloudRaw=mtObj.VmProvider||'';
@@ -3488,16 +3558,19 @@ function _renderInternetHostExposedBeta(d){
       if(cloud==='google')cloud='gcp';
       hostMap[h]={name:h,pubIp:mtObj.ExternalIp||mtObj.PublicIp||mtObj.publicIp||'',cloud:cloud,
         instanceId:mtObj.InstanceId||'',resourceName:mtObj.Name||'',
-        vulns:[],maxRisk:0,crit:0,exposureEvidence:r._exposureEvidence||null};
+        vulns:[],maxRisk:0,hostRiskScore:0,crit:0,exposureEvidence:r._exposureEvidence||null};
     }
     var host=hostMap[h];
+    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
     if(rs>host.maxRisk)host.maxRisk=rs;
+    var hrs=parseFloat(r.hostRiskScore??0);
+    if(hrs>host.hostRiskScore)host.hostRiskScore=hrs;
     if((r.severity||'').toLowerCase()==='critical')host.crit++;
     host.vulns.push(r);
   });
-  var hosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
+  var hosts=Object.values(hostMap).filter(function(h){return h.hostRiskScore>=7;}).sort(function(a,b){return b.hostRiskScore-a.hostRiskScore;});
 
-  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a CVE risk score ≥ 9 were found');return}
+  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a Host Risk Score ≥ 7 were found');return}
   setCount('cnt-iehb',hosts.length,true);
 
   // ── Same correlated-risk map + Verified Path lookup the Host Internet Exposure panel
@@ -3664,6 +3737,7 @@ function _renderInternetHostExposedBeta(d){
             +'</div>'
           +'</div>'
           +'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:3px 10px">&#9888; INTERNET EXPOSED</span>'
+          +' <span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:20px;padding:3px 10px">Host Risk Score '+host.hostRiskScore.toFixed(1)+'</span>'
           +(epChips?'<div style="margin-top:8px">'+epChips+'</div>':'')
           +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Asset Details</div>'
           +detailRow('Hostname',host.name)
@@ -3695,7 +3769,7 @@ function _renderInternetHostExposedBeta(d){
         +'</div>'
       +'</div>'
       +'<div id="'+bodyId+'" style="display:none;padding:16px 18px;border-top:1px solid #e2e8f0;background:#fafafa">'
-      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; risk score &ge; 9</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; Host Risk Score '+host.hostRiskScore.toFixed(1)+'</div>'
       +(arScore
         ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
           +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
@@ -3756,7 +3830,7 @@ function summaryStripBeta(hosts){
     +(tc?'<span class="b b-cr">'+tc+' Critical</span>':'')
     +(th?'<span class="b b-hi">'+th+' High</span>':'')
     +(tf?'<span class="b b-ok">'+tf+' fixable</span>':'')
-    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; CVE Risk Score ≥ 9 &middot; enriched with IAM role (AWS)</span>'
+    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; Host Risk Score ≥ 7 &middot; enriched with IAM role (AWS)</span>'
   +'</div>';
 }
 
@@ -5270,6 +5344,8 @@ function wireReportBtn(user){
   if(btn2)btn2.href='/report2?'+params.toString();
   const btn3=document.getElementById('rpt3-btn-link');
   if(btn3)btn3.href='/report3?'+params.toString();
+  const btn4=document.getElementById('rpt4-btn-link');
+  if(btn4)btn4.href='/report4?'+params.toString();
 }
 
 function showUserBadge(user){
@@ -8807,6 +8883,393 @@ function buildReportHtml3(data, meta) {
   '</div>\n</body>\n</html>';
 }
 
+// ── /report4 (BETA) — narrative assessment-style report: Scope & Objectives, Cloud
+// Environment Overview, Assessment Methodology, Risk Findings Categories, Evidence &
+// Affected Assets, Internet Exposed Resources, Immediate & Long-Term Actions. Reuses the
+// shared helpers (computeCspScores, computeAssetRiskMap, computeEffectivePublicStorage,
+// groupVulnsByHost, tocCardHtml, REPORT_CSS) rather than duplicating their logic — only the
+// identity classification helpers are local to this builder, per the "independently
+// maintained report builders" convention documented above. Section 4's four categories are
+// curated, not a keyword classifier over every finding type — see the section comment below.
+function buildReportHtml4(data, meta) {
+  const customer = ((meta && meta.customer) || 'Customer').trim();
+  const author   = ((meta && meta.author)   || 'Fortinet').trim();
+  const dateStr  = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  const alerts      = data.alerts      || [];
+  const vulns       = data.vulns       || [];
+  const compliance  = governanceReportToComplianceRows(lastGovernanceReport) || data.compliance || [];
+  const identities  = data.identities  || [];
+  const secretsAll  = data.secretsAll  || [];
+  const publicStorage = computeEffectivePublicStorage(data).findings;
+
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmt(ts) { if (!ts) return '—'; try { return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch(_) { return String(ts); } }
+  function sevBadge(s) { const m={critical:'badge-critical',high:'badge-high',medium:'badge-medium',low:'badge-low'}; return '<span class="badge '+(m[(s||'').toLowerCase()]||'badge-info')+'">'+esc(s||'—')+'</span>'; }
+  function cspBadge(c) { const m={aws:'badge-aws',azure:'badge-azure',gcp:'badge-gcp'}; return '<span class="badge '+(m[(c||'').toLowerCase()]||'badge-info')+'">'+esc((c||'').toUpperCase()||'—')+'</span>'; }
+
+  const { cspScores, cspCounts, score, sBand } = computeCspScores(data);
+
+  // ── Identity classification (duplicated per-report convention — see module docstring) ──
+  function isServiceAccount(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase(), p=(r.PROVIDER_TYPE||'').toLowerCase();
+    return pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||p.includes('serviceprincipal')||p.includes('aad');
+  }
+  function isRoleType(r) {
+    const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase();
+    return (pid.includes(':role/')||pid.includes(':assumed-role/')||nm.includes('role')) && !isServiceAccount(r);
+  }
+  function isHighPermissive(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    const sev = (r.METRICS && r.METRICS.risk_severity || '').toLowerCase();
+    return risks.includes('ALLOWS_FULL_ADMIN') || risks.includes('EXCESSIVE_PERMISSIONS') || sev === 'critical' || sev === 'high';
+  }
+  function isNoMfa(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    return risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+  }
+  function identityLabel(r) { return r.NAME || (r.PRINCIPAL_ID||'').split('/').pop() || r.PRINCIPAL_ID || '—'; }
+  function cloudOfIdentity(r) {
+    const p = (r.PROVIDER_TYPE||'').toLowerCase(), pid = (r.PRINCIPAL_ID||'').toLowerCase();
+    if (p.includes('aws') || pid.includes('arn:aws')) return 'aws';
+    if (p.includes('azure') || p.includes('aad') || p.includes('serviceprincipal')) return 'azure';
+    if (p.includes('gcp') || p.includes('google') || pid.includes('.iam.gserviceaccount.com')) return 'gcp';
+    return 'other';
+  }
+  // "Admin Users Without MFA" means exactly that: true full-admin (ALLOWS_FULL_ADMIN),
+  // not the broader isHighPermissive() (which also fires on EXCESSIVE_PERMISSIONS or a
+  // plain critical/high risk_severity) — and excludes cloud root accounts, which show up
+  // as noisy near-duplicate "root — no MFA" rows across every AWS account and are rarely
+  // the actionable finding here.
+  function isFullAdmin(r) {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    return risks.includes('ALLOWS_FULL_ADMIN');
+  }
+  function isRootAccount(r) {
+    const pid = (r.PRINCIPAL_ID||'').toLowerCase(), nm = (r.NAME||'').toLowerCase();
+    return nm === 'root' || pid.endsWith(':root');
+  }
+  const adminNoMfaRows = identities.filter(r => !isServiceAccount(r) && !isRoleType(r) && !isRootAccount(r) && isFullAdmin(r) && isNoMfa(r));
+  const highPermRoleRows = identities.filter(r => isRoleType(r) && isHighPermissive(r));
+  const { exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(vulns);
+
+  // ── Section 5 data, computed early so Section 4 can reference it: per-host correlated
+  // risk, tying every finding type back to the resource it was found on. ──
+  const { map: assetMap } = computeAssetRiskMap(vulns, secretsAll, compliance);
+  const evidenceAssets = Object.values(assetMap).filter(a => a.risk > 0).sort((a,b) => b.normalizedScore - a.normalizedScore).slice(0, 15);
+
+  // Secrets found specifically on hosts already confirmed internet-exposed — matching
+  // heuristic mirrors computeAssetRiskMap's own hostname-prefix matching above. Computed
+  // early so both Section 4 (categories) and Section 6d (detail table) can reuse it.
+  const exposedNames = Object.keys(assetMap).filter(k => assetMap[k].internetExposed).map(k => k.toLowerCase());
+  function hostIsExposed(hostname) {
+    const h = (hostname||'').toLowerCase(); if (!h) return false;
+    return exposedNames.some(k => k===h || h.indexOf(k)===0 || k.indexOf(h.split('.')[0])===0);
+  }
+  const exposedHostSecrets = secretsAll.filter(r => hostIsExposed(r.HOSTNAME));
+
+  // ── Section 2: Cloud Environment Overview — list only clouds actually observed in this
+  // tenant's data. This integration has no OCI data source, so OCI is never claimed here. ──
+  const cloudLabel = { aws: 'AWS', azure: 'Microsoft Azure', gcp: 'Google Cloud Platform' };
+  const cloudsSeen = ['aws','azure','gcp'].filter(c => cspScores[c] !== null);
+  const cloudsListStr = cloudsSeen.length
+    ? cloudsSeen.map(c => cloudLabel[c]).join(cloudsSeen.length > 1 ? ', ' : '')
+    : 'AWS, Microsoft Azure, and Google Cloud Platform';
+
+  // ── Section 4: Risk Findings Categories — four curated categories (not a keyword
+  // classifier over every finding type): Identity & Access is scoped to admin/no-MFA
+  // identities and high-permission roles only, Misconfiguration is Critical-severity
+  // compliance findings only, and the other two mirror Section 6's exposure evidence. ──
+  const CONTROL_AREAS = ['Identity & Access','Misconfiguration (Critical)','Secrets on Exposed Host','Internet Accessible Storage'];
+  const AREA_COLORS = { 'Identity & Access':'#8b5cf6', 'Misconfiguration (Critical)':'#B7770D', 'Secrets on Exposed Host':'#0ea5e9', 'Internet Accessible Storage':'#f97316' };
+  const controlAreaBuckets = {}; CONTROL_AREAS.forEach(a => controlAreaBuckets[a] = []);
+  adminNoMfaRows.forEach(r => controlAreaBuckets['Identity & Access'].push({ title: identityLabel(r)+' — Admin, no MFA', severity: 'Critical', source: 'Admin' }));
+  highPermRoleRows.forEach(r => controlAreaBuckets['Identity & Access'].push({ title: identityLabel(r)+' — high-permission role', severity: 'High', source: 'Role' }));
+  compliance.filter(r => (r.severity||'').toLowerCase() === 'critical').forEach(r => controlAreaBuckets['Misconfiguration (Critical)'].push({ title: r.title||r.alertId||'Misconfiguration', severity: 'Critical', source: 'Misconfiguration' }));
+  exposedHostSecrets.forEach(r => controlAreaBuckets['Secrets on Exposed Host'].push({ title: (r.SECRET_TYPE||'Secret')+' on '+(r.HOSTNAME||'unknown host'), severity: 'High', source: 'Secret' }));
+  publicStorage.forEach(r => controlAreaBuckets['Internet Accessible Storage'].push({ title: (r.name||'—')+' — public access', severity: r.severity||'critical', source: 'Public Storage' }));
+  const sevRank = s => ({critical:0,high:1,medium:2,low:3}[(s||'').toLowerCase()] ?? 4);
+  const controlAreaSummary = CONTROL_AREAS.map(area => {
+    const items = controlAreaBuckets[area].slice().sort((a,b) => sevRank(a.severity)-sevRank(b.severity));
+    return { area, items, count: items.length, color: AREA_COLORS[area] };
+  });
+  const controlAreaTotal = controlAreaSummary.reduce((s,a) => s+a.count, 0);
+  function driverTag(a) {
+    const drivers = [];
+    if (a.ciem > 0) drivers.push(a.ciemSecrets.length+' CIEM credential'+(a.ciemSecrets.length===1?'':'s'));
+    if (a.secretRisk > 0) drivers.push(a.genericSecrets.length+' secret'+(a.genericSecrets.length===1?'':'s'));
+    if (a.threatRisk > 0) drivers.push(a.vulns.length+' CVE'+(a.vulns.length===1?'':'s'));
+    if (a.miscRisk > 0) drivers.push('critical misconfiguration exposure');
+    return drivers.join(', ') || '—';
+  }
+  const evidenceRowsHtml = evidenceAssets.length ? evidenceAssets.map((a,i) => {
+    const tier = assetRiskTier(a.normalizedScore, a.internetExposed);
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td><strong>'+esc(a.name)+'</strong></td>'+
+      '<td style="text-align:center">'+(a.internetExposed?'<span class="badge badge-critical">Internet-Exposed</span>':'<span class="badge badge-info">Private</span>')+'</td>'+
+      '<td style="text-align:center"><span class="risk-chip'+(a.normalizedScore>=75?' high':'')+'">'+a.normalizedScore+'</span></td>'+
+      '<td style="text-align:center;color:'+tier.color+';font-weight:700">'+tier.label+'</td>'+
+      '<td class="wide">'+esc(driverTag(a))+'</td>'+
+    '</tr>';
+  }).join('') : '<tr><td colspan="5" style="text-align:center;color:#999;padding:1.5rem">No correlated-risk assets were found in this assessment window</td></tr>';
+
+  // ── Section 6: Internet Exposed Resources — hosts, storage, admin/no-MFA, and secrets
+  // found specifically on internet-exposed hosts. ──
+  const exposedHosts = evidenceAssets.filter(a => a.internetExposed);
+  // Individual risk findings behind a host's "Driven by:" summary — re-joined from the raw
+  // vulns/secretsAll arrays (not assetMap's aggregated ciemSecrets/genericSecrets/vulns,
+  // which only carry a type string and a score) so the detail column can show package/fix
+  // version for CVEs and absolute file path for secrets. Host-key matching mirrors
+  // computeAssetRiskMap's own join logic exactly, so results line up with the score above.
+  function vulnHostKey(r) {
+    const mt = r.machineTags;
+    const mtObj = (mt && typeof mt === 'object' && !Array.isArray(mt)) ? mt : null;
+    return (mtObj && mtObj.Hostname) || (r.evalCtx && r.evalCtx.hostname) || r.mid || '';
+  }
+  function hostSecretDetails(hostName) {
+    const kl = (hostName||'').toLowerCase();
+    return secretsAll.filter(r => {
+      const sh = (r.HOSTNAME||'').toLowerCase();
+      if (!sh) return false;
+      return kl===sh || sh.indexOf(kl)===0 || kl.indexOf(sh.split('.')[0])===0;
+    });
+  }
+  const ciemTypeSet = {}; CIEM_SECRET_TYPES.forEach(t => ciemTypeSet[t] = true);
+  function hostFindingsHtml(a) {
+    const rows = [];
+    hostSecretDetails(a.name).forEach(r => {
+      const isCiem = ciemTypeSet[(r.SECRET_TYPE||'').toUpperCase()];
+      rows.push({ label: r.SECRET_TYPE||'Secret', type: isCiem?'CIEM Credential':'Secret', detail: r.FILE_PATH||'—', severity: isCiem?'Critical':'High' });
+    });
+    vulns.filter(r => vulnHostKey(r) === a.name)
+      .slice()
+      .sort((x,y) => parseFloat(y.cveRiskScore??y.riskScore??0) - parseFloat(x.cveRiskScore??x.riskScore??0))
+      .forEach(r => {
+        const score = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
+        const pkg = (r.featureKey && r.featureKey.name) || 'unknown package';
+        const ver = (r.featureKey && r.featureKey.version) || '';
+        const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
+        const detail = pkg+(ver?' '+ver:'')+(fixVer ? ' → '+fixVer : ((r.fixInfo && r.fixInfo.fix_available) ? ' — fix available' : ' — no fix available'));
+        rows.push({ label: r.vulnId||r.cveId||'CVE', type: 'CVE — Risk '+score.toFixed(1), detail, severity: score>=9?'Critical':'High' });
+      });
+    if (a.miscRisk > 0) rows.push({ label: 'Critical misconfiguration exposure (account-wide)', type: 'Misconfiguration', detail: '—', severity: 'Critical' });
+    if (!rows.length) return '<p style="text-align:center;color:#999;font-size:11px;padding:10px 0">No individual findings recorded</p>';
+    return '<table class="exec-table" style="margin-top:8px"><thead><tr><th>Finding</th><th style="width:150px">Type</th><th>Detail</th><th style="width:80px">Severity</th></tr></thead><tbody>'+
+      rows.map(r => '<tr><td class="wide">'+esc(r.label)+'</td><td class="m">'+esc(r.type)+'</td><td class="m">'+esc(r.detail||'—')+'</td><td>'+sevBadge(r.severity)+'</td></tr>').join('')+
+    '</tbody></table>';
+  }
+  const exposedHostsHtml = exposedHosts.length ? exposedHosts.map(a => {
+    const tier = assetRiskTier(a.normalizedScore, a.internetExposed);
+    const findingCount = (a.ciemSecrets||[]).length + (a.genericSecrets||[]).length + (a.vulns||[]).length + (a.miscRisk>0?1:0);
+    return '<details style="border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px">'+
+      '<summary style="cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:16px">'+
+        '<div style="width:64px;text-align:center;flex-shrink:0">'+
+          '<div style="font-size:22px;font-weight:900;color:'+tier.color+'">'+a.normalizedScore+'</div>'+
+          '<div style="font-size:8px;font-weight:800;letter-spacing:.05em;color:'+tier.color+'">'+tier.label+'</div>'+
+        '</div>'+
+        '<div style="flex:1;min-width:0">'+
+          '<div style="font-size:13px;font-weight:700;color:#1e293b;word-break:break-word">'+esc(a.name)+'</div>'+
+          '<div style="font-size:11px;color:#64748b;margin-top:2px">Driven by: '+esc(driverTag(a))+'</div>'+
+        '</div>'+
+        '<div style="font-size:10.5px;font-weight:700;color:#DA291C;white-space:nowrap;flex-shrink:0">'+findingCount+' finding'+(findingCount===1?'':'s')+' — expand</div>'+
+      '</summary>'+
+      '<div style="padding:0 18px 16px 98px">'+hostFindingsHtml(a)+'</div>'+
+    '</details>';
+  }).join('') : '<div class="section-summary"><p>No internet-exposed hosts with correlated risk data were found in this assessment window.</p></div>';
+
+  function cspBadgeColor4(c){ return {aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[c]||'#94a3b8'; }
+  const publicStorageHtml = publicStorage.length ? publicStorage.map(s => {
+    const isConfirmed = (s.severity||'critical') === 'critical';
+    return '<div style="display:flex;align-items:center;gap:16px;padding:14px 18px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:10px">'+
+      '<div style="width:96px;text-align:center;flex-shrink:0">'+
+        '<span style="font-size:9px;font-weight:800;letter-spacing:.05em;color:#fff;background:'+(isConfirmed?'#DA291C':'#CC4A1A')+';border-radius:4px;padding:3px 6px;white-space:nowrap">'+(isConfirmed?'PUBLIC':'VERIFIED PATH')+'</span>'+
+      '</div>'+
+      '<div style="flex:1;min-width:0">'+
+        '<div style="font-size:13px;font-weight:700;color:#1e293b;word-break:break-word">'+esc(s.name)+' <span style="font-size:9px;font-weight:800;color:#fff;background:'+cspBadgeColor4(s.cloud)+';border-radius:3px;padding:1px 6px;margin-left:4px;vertical-align:middle">'+esc((s.cloud||'').toUpperCase())+'</span></div>'+
+        '<div style="font-size:11px;color:#64748b;margin-top:2px">'+esc(s.resourceType||'Object storage')+' &middot; account: '+esc(s.account||'—')+'</div>'+
+      '</div>'+
+    '</div>';
+  }).join('') : '<div class="section-summary"><p>No publicly accessible storage was found in this assessment window.</p></div>';
+
+  const adminNoMfaRowsHtml = adminNoMfaRows.length ? adminNoMfaRows.map((r,i) => {
+    const risks = (r.METRICS && r.METRICS.risks) || [];
+    const isAdmin = risks.includes('ALLOWS_FULL_ADMIN');
+    return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td><strong>'+esc(identityLabel(r))+'</strong><br><small class="text-muted">'+esc(r.PRINCIPAL_ID||'')+'</small></td>'+
+      '<td>'+cspBadge(cloudOfIdentity(r))+'</td>'+
+      '<td>'+(isAdmin?'<span class="badge badge-critical">Admin</span>':'<span class="badge badge-high">Privileged</span>')+'</td>'+
+      '<td>'+(r.LAST_USED_TIME?fmt(r.LAST_USED_TIME):'<span class="text-muted">Never / Unknown</span>')+'</td>'+
+    '</tr>';
+  }).join('') : '<tr><td colspan="4" style="text-align:center;color:#999;padding:1.5rem">No high-privilege identities without MFA were found</td></tr>';
+
+  // exposedHostSecrets was already computed above (Section 4 needs it too).
+  const exposedHostSecretsHtml = exposedHostSecrets.length ? exposedHostSecrets.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td><strong>'+esc(r.HOSTNAME||'—')+'</strong></td>'+
+      '<td><span class="badge badge-critical">'+esc(r.SECRET_TYPE||'—')+'</span></td>'+
+      '<td class="wide"><code style="font-size:0.8rem">'+esc(r.SECRET_IDENTIFIER||'—')+'</code></td>'+
+    '</tr>').join('') : '<tr><td colspan="3" style="text-align:center;color:#999;padding:1.5rem">No secrets were found on internet-exposed hosts</td></tr>';
+
+  // ── Section 7: Immediate and Long-Term Actions — every bullet is conditional on real
+  // findings above; nothing here is fabricated boilerplate. ──
+  const immediateActions = [];
+  if (exposedHosts.length) immediateActions.push('Patch or isolate the '+exposedHosts.length+' internet-exposed host'+(exposedHosts.length===1?'':'s')+' carrying correlated risk before addressing internal-only findings.');
+  if (publicStorage.length) immediateActions.push('Restrict public access on the '+publicStorage.length+' publicly accessible storage resource'+(publicStorage.length===1?'':'s')+' identified in this assessment.');
+  if (adminNoMfaRows.length) immediateActions.push('Enforce MFA immediately for the '+adminNoMfaRows.length+' high-privilege identit'+(adminNoMfaRows.length===1?'y':'ies')+' currently authenticating without it.');
+  if (exposedHostSecrets.length) immediateActions.push('Rotate or revoke the '+exposedHostSecrets.length+' secret'+(exposedHostSecrets.length===1?'':'s')+' discovered on internet-exposed hosts — treat as compromised.');
+  if (!immediateActions.length) immediateActions.push('No immediate, internet-reachable exposures were identified in this assessment window — proceed with the long-term hardening actions below.');
+
+  const longTermActions = [];
+  if (controlAreaBuckets['Identity & Access'].length) longTermActions.push('Adopt least-privilege IAM/RBAC roles and periodic access reviews; retire unused entitlements flagged in this assessment.');
+  if (exposedHostCount > 0) longTermActions.push('Review inbound security-group/NSG/firewall rules and remove overly permissive (0.0.0.0/0) allowances.');
+  if (controlAreaBuckets['Misconfiguration (Critical)'].length) longTermActions.push('Remediate the flagged Critical misconfigurations and re-scan to confirm closure.');
+  if (controlAreaBuckets['Internet Accessible Storage'].length) longTermActions.push('Apply default-deny public-access policies on cloud storage and audit bucket/container ACLs on a recurring schedule.');
+  if (controlAreaBuckets['Secrets on Exposed Host'].length) longTermActions.push('Adopt automated secret scanning and rotation policies for internet-facing cloud workloads.');
+  if (!longTermActions.length) longTermActions.push('Maintain current controls and re-run this assessment periodically to catch newly introduced risk.');
+  longTermActions.push('Re-run this Rapid Cloud Assessment on a recurring cadence to track remediation progress over time.');
+
+  // ── TOC ──────────────────────────────────────────────────────────────────────
+  const tocCards = [
+    tocCardHtml('#control-areas', controlAreaTotal, '#8b5cf6', '04 — Categories', 'Risk Findings Categories', 'finding'+(controlAreaTotal===1?'':'s')+' across identity, misconfigurations, secrets &amp; storage'),
+    tocCardHtml('#evidence', evidenceAssets.length, '#DA291C', '05 — Evidence', 'Evidence &amp; Affected Assets', 'asset'+(evidenceAssets.length===1?'':'s')+' with correlated risk'),
+    tocCardHtml('#exposed-hosts', exposedHosts.length, '#f97316', '06a — Hosts', 'Internet-Exposed Hosts', 'host'+(exposedHosts.length===1?'':'s')+' reachable from the internet'),
+    tocCardHtml('#exposed-storage', publicStorage.length, '#CC4A1A', '06b — Storage', 'Publicly Accessible Storage', 'resource'+(publicStorage.length===1?'':'s')+' with public access'),
+    tocCardHtml('#exposed-admin', adminNoMfaRows.length, '#ef4444', '06c — Admin', 'Admin Users Without MFA', 'identit'+(adminNoMfaRows.length===1?'y':'ies')),
+    tocCardHtml('#exposed-secrets', exposedHostSecrets.length, '#0ea5e9', '06d — Secrets', 'Secrets on Exposed Hosts', 'secret'+(exposedHostSecrets.length===1?'':'s')+' found on internet-exposed hosts'),
+  ].filter(Boolean).join('\n      ');
+
+  // ── Section 4 grid markup ───────────────────────────────────────────────────
+  const controlAreaGridHtml = controlAreaSummary.map(a => {
+    const itemsHtml = a.items.slice(0, 5).map(it => '<tr>'+
+      '<td class="wide" style="word-break:break-word">'+esc(it.title)+'</td>'+
+      '<td style="width:70px">'+sevBadge(it.severity)+'</td>'+
+    '</tr>').join('');
+    return '<div style="min-width:0;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'+
+      '<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;background:#FAFAFA">'+
+        '<span style="font-size:12px;font-weight:800;color:'+a.color+';text-transform:uppercase;letter-spacing:.04em">'+esc(a.area)+'</span>'+
+        '<span style="font-size:20px;font-weight:900;color:'+a.color+'">'+a.count+'</span>'+
+      '</div>'+
+      (a.items.length ? '<table class="exec-table" style="margin:0"><tbody>'+itemsHtml+'</tbody></table>' :
+        '<p style="text-align:center;color:#999;font-size:11px;padding:16px">No findings in this control area</p>')+
+    '</div>';
+  }).join('');
+
+  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+  '  <meta charset="UTF-8">\n' +
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+  '  <title>Rapid Cloud Assessment (BETA) – '+esc(customer)+'</title>\n' +
+  '  <style type="text/css">\n' + REPORT_CSS + '\n' +
+  '  </style>\n</head>\n<body>\n' +
+  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
+  '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
+  '<div class="report-cover">\n' +
+  '  <div class="report-type">Rapid Cloud Assessment · Full Report (BETA)</div>\n' +
+  '  <h1>Cloud Security Assessment Report</h1>\n' +
+  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  (function() {
+    const arcLen=550, fill=Math.round((score/100)*arcLen);
+    return '  <div style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
+      '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
+      '    <defs><linearGradient id="rg4" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
+      '<stop offset="0%" stop-color="#ef4444"/><stop offset="20.6%" stop-color="#ef4444"/>'+
+      '<stop offset="20.6%" stop-color="#f59e0b"/><stop offset="65.45%" stop-color="#f59e0b"/>'+
+      '<stop offset="65.45%" stop-color="#22c55e"/><stop offset="90.45%" stop-color="#22c55e"/>'+
+      '<stop offset="90.45%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#3b82f6"/>'+
+      '</linearGradient></defs>\n'+
+      '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <path fill="none" stroke="url(#rg4)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <line x1="86" y1="48" x2="108" y2="79"   stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="260" y1="20" x2="248" y2="57"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="357" y1="91" x2="326" y2="113" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
+      '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
+      '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
+      '  </svg>\n'+
+      '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">Cloud Security Risk Score — '+esc(sBand)+'</div>\n'+
+      '  </div>\n';
+  })()+
+  '  <div class="meta-row">\n' +
+  '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
+  '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
+  '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential (Beta Report)</div>\n' +
+  '  </div>\n</div>\n' +
+  '<div class="toc"><h3>Report Contents</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  '<section id="scope" class="pagebreak">\n<h2>1. Scope and Objectives</h2>\n' +
+  '<div class="narrative"><p>Accelerate cloud risk reduction by strengthening cloud security posture, improving configuration hygiene, and enhancing runtime threat detection across '+esc(customer)+'’s cloud environment'+(cloudsSeen.length===1?'':'s')+'.</p>' +
+  '<p>This Rapid Cloud Assessment passively ingests structured data from FortiCNAPP to generate this report — no agents are installed and no changes are made to the environment as part of this assessment.</p></div>\n' +
+  '</section>\n' +
+  '<section id="cloud-overview" class="pagebreak">\n<h2>2. Cloud Environment Overview</h2>\n' +
+  '<div class="narrative"><p>This assessment covers '+esc(customer)+'’s public cloud environment'+(cloudsSeen.length===1?'':'s')+' across '+esc(cloudsListStr)+'. Coverage reflects the FortiCNAPP cloud integrations currently connected to this tenant.</p></div>\n' +
+  '<div style="display:flex;gap:16px;flex-wrap:wrap">' +
+    ['aws','azure','gcp'].filter(c => cspScores[c] !== null).map(c => {
+      const counts = cspCounts[c] || { C:0, H:0, M:0, L:0 };
+      const total = counts.C+counts.H+counts.M+counts.L;
+      return '<div style="flex:1;min-width:180px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:18px 16px;text-align:center">'+
+        cspBadge(c)+
+        '<div style="font-size:32px;font-weight:900;color:'+scoreTierColor(cspScores[c])+';margin-top:10px">'+cspScores[c]+'</div>'+
+        '<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:4px">CSPM Score</div>'+
+        '<div style="font-size:11px;color:#64748b;margin-top:8px">'+total+' finding'+(total===1?'':'s')+'</div>'+
+      '</div>';
+    }).join('') +
+  '</div>\n</section>\n' +
+  '<section id="methodology" class="pagebreak">\n<h2>3. Assessment Methodology</h2>\n' +
+  '<div class="narrative"><p>For a period of '+dynamicDaysBack+' days, FortiCNAPP Rapid Cloud Assessment collected structured data through passive, read-only integration with '+esc(customer)+'’s cloud service provider APIs.</p>' +
+  '<p>No credentials were shared with Fortinet and no changes were made to the environment as part of this data collection.</p></div>\n' +
+  '</section>\n' +
+  '<section id="control-areas" class="pagebreak">\n<h2>4. Risk Findings Categories</h2>\n' +
+  '<p style="color:#5A5A5A;margin-bottom:20px;font-size:12px">Identity & Access is scoped to admin users without MFA and high-permission roles; Misconfiguration covers Critical-severity findings only; the remaining two mirror the internet-exposed evidence detailed in Section 6.</p>\n' +
+  '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px">'+controlAreaGridHtml+'</div>\n' +
+  '</section>\n' +
+  '<section id="evidence" class="pagebreak">\n<h2>5. Evidence and Affected Assets</h2>\n' +
+  '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Asset inventory tying each correlated risk factor (exposed credentials, CVEs, and critical misconfigurations) back to the resource it was found on.</p>\n' +
+  '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">' +
+    [
+      [internalHostCount, 'Vulnerable Private Hosts'],
+      [exposedHostCount, 'Internet-Exposed Hosts'],
+      [identities.length, 'Identities Inventoried'],
+      [publicStorage.length, 'Publicly Accessible Storage'],
+    ].map(([n,label]) => '<div style="flex:1;min-width:150px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:18px 16px;text-align:center">'+
+      '<div style="font-size:32px;font-weight:900;color:#DA291C">'+n+'</div>'+
+      '<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-top:6px">'+label+'</div>'+
+    '</div>').join('') +
+  '</div>\n' +
+  '<table class="exec-table"><thead><tr><th>Asset</th><th style="width:130px">Exposure</th><th style="width:80px">Score</th><th style="width:80px">Tier</th><th>Evidence</th></tr></thead><tbody>'+evidenceRowsHtml+'</tbody></table>\n' +
+  '</section>\n' +
+  '<section id="internet-exposed" class="pagebreak">\n<h2>6. Internet Exposed Resources</h2>\n' +
+  '<p style="color:#5A5A5A;margin-bottom:20px;font-size:12px">Externally reachable assets — the attack surface most likely to be actively targeted.</p>\n' +
+  '<h3 id="exposed-hosts" style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#1e293b;margin-bottom:10px">6a. Internet-Exposed Hosts ('+exposedHosts.length+')</h3>\n' +
+  exposedHostsHtml + '\n' +
+  '<h3 id="exposed-storage" style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#1e293b;margin:24px 0 10px">6b. Publicly Accessible Storage ('+publicStorage.length+')</h3>\n' +
+  publicStorageHtml + '\n' +
+  '<h3 id="exposed-admin" style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#1e293b;margin:24px 0 10px">6c. Admin Users Without MFA ('+adminNoMfaRows.length+')</h3>\n' +
+  '<table class="exec-table"><thead><tr><th>Identity</th><th style="width:70px">Cloud</th><th style="width:90px">Privilege</th><th style="width:130px">Last Login</th></tr></thead><tbody>'+adminNoMfaRowsHtml+'</tbody></table>\n' +
+  '<h3 id="exposed-secrets" style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#1e293b;margin:24px 0 10px">6d. Secrets on Internet-Exposed Hosts ('+exposedHostSecrets.length+')</h3>\n' +
+  '<table class="exec-table"><thead><tr><th style="width:180px">Hostname</th><th style="width:140px">Secret Type</th><th>Secret Identifier</th></tr></thead><tbody>'+exposedHostSecretsHtml+'</tbody></table>\n' +
+  '</section>\n' +
+  '<section id="actions" class="pagebreak">\n<h2>7. Immediate and Long-Term Actions</h2>\n' +
+  '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px">' +
+    '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'+
+      '<div style="padding:14px 16px;background:var(--color-critical-bg);border-bottom:1px solid #e2e8f0"><span style="font-size:12px;font-weight:800;color:var(--color-critical);text-transform:uppercase;letter-spacing:.04em">Immediate Actions</span></div>'+
+      '<div style="padding:16px 18px;font-size:12.5px;color:#374151;line-height:2">'+
+        immediateActions.map((a,i) => (i+1)+'. '+esc(a)).join('<br>')+
+      '</div>'+
+    '</div>'+
+    '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'+
+      '<div style="padding:14px 16px;background:var(--color-low-bg);border-bottom:1px solid #e2e8f0"><span style="font-size:12px;font-weight:800;color:var(--color-low);text-transform:uppercase;letter-spacing:.04em">Long-Term Actions</span></div>'+
+      '<div style="padding:16px 18px;font-size:12.5px;color:#374151;line-height:2">'+
+        longTermActions.map((a,i) => (i+1)+'. '+esc(a)).join('<br>')+
+      '</div>'+
+    '</div>'+
+  '</div>\n</section>\n' +
+  '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
+  '<div style="text-align:center">' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT (BETA) — Powered by FortiCNAPP</div>' +
+  '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
+  '<div style="font-size:11px;color:#6b7280">This report is confidential and intended solely for the named recipient.</div>' +
+  '</div>' +
+  '</div>\n</body>\n</html>';
+}
+
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 
@@ -9157,6 +9620,40 @@ function requestHandler(req, res) {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
+  } else if (req.url.startsWith('/report4')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer = (qs.get('customer') || 'Customer').trim();
+    const author   = (qs.get('author')   || 'Fortinet').trim();
+    const sanitize = /^(1|true|yes)$/i.test(qs.get('sanitize') || '');
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    const reportData = sanitize ? sanitizeCacheData(cache) : cache;
+    const reportHtml = buildReportHtml4(reportData, { customer, author });
+    const reportPath = path.join(__dirname, 'rca4.html');
+    const pdfPath    = path.join(__dirname, 'rca4.pdf');
+    fs.writeFile(reportPath, reportHtml, err => {
+      if (err) { console.error('[report4] html save failed:', err.message); return; }
+      console.log('[report4] saved html to', reportPath);
+      const { execFile } = require('child_process');
+      execFile('chromium-browser', [
+        '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+        '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+      ], (err2) => {
+        if (err2) execFile('chromium', [
+          '--headless', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
+          '--print-to-pdf=' + pdfPath, 'file://' + reportPath
+        ], (err3) => {
+          if (err3) console.error('[report4] pdf generation failed:', err3.message);
+          else console.log('[report4] saved pdf to', pdfPath);
+        });
+        else console.log('[report4] saved pdf to', pdfPath);
+      });
+    });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+    res.end(reportHtml);
   } else if (req.url.startsWith('/report3')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
