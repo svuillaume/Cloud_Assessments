@@ -7,20 +7,22 @@ A live security dashboard and customer-ready Cloud Rapid Assessment Report power
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Dashboard Sections](#dashboard-sections)
-3. [How the Posture Score Works](#how-the-posture-score-works)
-4. [Correlated Risk Findings per Asset](#correlated-risk-findings-per-asset)
-5. [Identity & Access Risk](#identity--access-risk)
-6. [Assessment Windows](#assessment-windows)
-7. [Prerequisites](#prerequisites)
-8. [Quick Start](#quick-start)
-9. [Step-by-Step Setup](#step-by-step-setup)
-10. [Production Deployment with HTTPS](#production-deployment-with-https)
-11. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
-12. [Updating the Dashboard](#updating-the-dashboard)
-13. [Collecting Visitor Contacts](#collecting-visitor-contacts)
-14. [Troubleshooting](#troubleshooting)
-15. [Additional Resources](#additional-resources)
+2. [New Here? Start With This](#new-here-start-with-this)
+3. [Dashboard Sections](#dashboard-sections)
+4. [How the Posture Score Works](#how-the-posture-score-works)
+5. [Correlated Risk Findings per Asset](#correlated-risk-findings-per-asset)
+6. [Identity & Access Risk](#identity--access-risk)
+7. [Assessment Windows](#assessment-windows)
+8. [Prerequisites](#prerequisites)
+9. [Quick Start](#quick-start)
+10. [Step-by-Step Setup](#step-by-step-setup)
+11. [Production Deployment with HTTPS](#production-deployment-with-https)
+12. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+13. [Persistent Cache](#persistent-cache)
+14. [Updating the Dashboard](#updating-the-dashboard)
+15. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+16. [Troubleshooting](#troubleshooting)
+17. [Additional Resources](#additional-resources)
 
 ---
 
@@ -37,16 +39,27 @@ The dashboard is a single Node.js file with **no npm dependencies**. Run it dire
 
 ---
 
+## New Here? Start With This
+
+A few things that make this codebase different from a typical web app, worth knowing before you dive in:
+
+- **It's one file, on purpose.** `rca_ui/server.js` (~9,200 lines) is the entire application — server and client — with no `package.json`, no `npm install`, no build step, and no framework (no Express, no React). You run it with a single command: `node server.js`.
+- **Two programs live in that one file.** The Node.js *server* code (talks to the FortiCNAPP API, keeps a data cache, handles HTTP requests) is completely separate from the *browser* code (the dashboard you see on screen). The trick: the server code has a giant function, `buildHtml()`, that builds the entire webpage — including all of its JavaScript — as one big text string, then sends that string to your browser. Once your browser has it, that JavaScript runs *there*, not on the server. So if you're reading a function and wondering "does this run on the server or in my browser?" — that's the single most useful question to ask, and the answer changes what the function can and can't do (server code can read secrets and call the FortiCNAPP API; browser code can only call the dashboard's own `/api/*` routes and manipulate the page you see).
+- **No database.** Everything the dashboard shows lives in one in-memory JavaScript object called `cache`, refreshed on a timer (once a day by default) by pulling fresh data from FortiCNAPP. It's also saved to a small file (`data/cache.json`) so a restart doesn't show a blank dashboard while new data loads.
+- **Three different "reports" exist** (`/report`, `/report2`, `/report3`) — they're not versions of each other, they're three different documents (a conservative customer report, a detailed "beta" report, and a condensed executive overview) that all read the same underlying data.
+- **Want to know what a specific function does?** See [`FUNCTION_REFERENCE.md`](./rca_ui/FUNCTION_REFERENCE.md) — a plain-English walkthrough of every function in `server.js`, organized by section, written for someone seeing this codebase for the first time.
+
+---
+
 ## Dashboard Sections
 
 ### Dashboard (sidebar)
 
 | Section | What it shows |
 |---------|--------------|
-| **CSPM Score** | Global posture gauge + per-finding risk table |
+| **CSPM Score** | "Cloud Security Risk Score" gauge (global posture score) + per-finding risk table |
 | **CSPM Score per CSP** | Per-cloud (AWS / Azure / GCP) posture breakdown |
-| **Correlated Risk / Asset** | Hosts ranked by combined CIEM + Secrets + CVE + Misconfig risk, tiered by internet exposure |
-| **Exploit Simulation Layer** | AI-assisted attack path simulation and lab scenarios |
+| **Exploit Simulation Layer** | AI-assisted attack path simulation, lab scenarios, and Correlated Risk Findings per Asset (hosts ranked by combined CIEM + Secrets + CVE + Misconfig risk, tiered by internet exposure) |
 
 ### Threat Center (sidebar)
 
@@ -58,10 +71,16 @@ The dashboard is a single Node.js file with **no npm dependencies**. Run it dire
 
 | Section | What it shows |
 |---------|--------------|
-| **Internet Threat Exposure** | CVEs: Critical + High severity · Unpatched (Active) · riskScore ≥ 8 · internet-exposed hosts only |
-| **Identities** | High-permissive IAM roles, users, and service accounts across AWS / Azure / GCP — flat table, 3-tab view |
+| **Private Host Most Exposed** | Non-internet-exposed hosts with CVE risk ≥ 9, enriched with correlated Secrets/CIEM credentials — rendered as asset-detail cards (Asset Details, Cloud Context, Security Findings, full CVE table). Internet-exposed hosts are tracked separately, not shown here — see the Beta tab and Risk Findings Inventory's Host Exposure category below |
+| **Identities** | Admin-privilege identities only, one uniform rule across AWS/Azure/GCP: (User type **and** Full Admin) OR (IAM Role type **and** Full Admin) OR Root/root-equivalent. Service Accounts, Service Principals, Instance Profiles, Groups, and Assumed Roles are excluded regardless of privilege |
 | **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
 | **Secrets** | Discovered secrets and credentials across hosts |
+| **Public Storage Exposure** | S3 / Azure Blob buckets confirmed public via policy/ACL, or via a traced Internet→bucket network path (`LW_APA_EXPOSURE_PATHS`) |
+| **FortiGate** | Fortinet appliance inventory — FortiGate plus other Fortinet product lines (FortiManager, FortiADC, etc.), discovered via compute inventory and exposure-path scans, with click-to-filter summary tiles |
+| **Internet Exposed Assets** | Unfiltered view of every asset FortiCNAPP's Attack Path Analysis (`LW_APA_EXPOSURE_PATHS`) has traced a route to from the internet, across all target types, with click-to-filter tiles |
+| **Internet-Exposed Host — Beta** | A second, independently-filtered view matching the FortiCNAPP console's own filter exactly: Online/Launched machines, Vulnerable, Internet Exposed = Yes, CVE risk score ≥ 9 — enriched with Critical CSPM findings, Secrets, and high-permission IAM role/instance profile (AWS). Same asset-card format as Private Host Most Exposed; kept as a separate tab for side-by-side comparison |
+| **Attack Paths** | `LW_APA_ATTACK_PATHS` results with click-to-filter severity tiles (Critical / High / Medium / Low) |
+| **Risk Findings Inventory** | Consolidated list of every finding feeding the posture score — Alerts, Host Exposure, Identities, Critical Misconfigurations, Secrets — grouped by category, each collapsed by default (click a header to expand its list, or the "N findings ↗" link to jump to that tab) |
 
 ---
 
@@ -80,18 +99,23 @@ Every cloud environment gets a single score from **0 to 100 — higher is better
 ### Global score formula
 
 ```
-postureScore = max(0, round(100 − mean(findingRiskScores) − min(20, secretCount × 0.5)))
+postureScore = max(0, round(100 − mean(findingRiskScores)))
 ```
 
 Risk weights per finding type:
 
 | Finding type | Risk weight |
 |-------------|------------|
-| High-Fidelity Alert | 95 |
-| CVE (Internet Threat Exposure) | `riskScore × 10` (max 100) |
+| High-Fidelity Alert — Critical | 80 |
+| High-Fidelity Alert — High | 60 |
+| High-Fidelity Alert — Medium | 40 |
+| CVE (Internet Threat Exposure, `riskScore ≥ 8` only — lower-risk CVEs are excluded) | `riskScore × 10` (max 100) |
 | Critical Misconfiguration | 80 |
-| Identity (high-perm) | `risk_score × 100` (max 100) |
-| Secret (discovered credential) | −0.5 pts each, capped at −20 |
+| Identity — Admin + No-MFA + (unused entitlements ≥ 80% OR an access key ≥ 180 days old) | 80 |
+| Identity — otherwise | `risk_score × 100` (max 100) |
+| Secret (discovered credential) | 10 |
+
+> **Three different CVE thresholds exist in this tool — don't confuse them.** The posture score above weights CVEs at `riskScore ≥ 8`. The Private Host Most Exposed / Internet-Exposed Host (Beta) panels display CVEs at `cveRiskScore ≥ 9`. The Risk Findings Inventory's "Host Exposure" category is stricter still, at `cveRiskScore ≥ 9.95` (a separate, fully-paginated fetch, not the 500-row-capped one behind the posture score). Each exists for a different purpose — see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full breakdown.
 
 > For the full per-CSP formula, worked examples, and scoring rationale see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
 
@@ -136,15 +160,19 @@ Each card shows a circular score ring, a gradient risk bar, and per-factor break
 
 ## Identity & Access Risk
 
-Queries `LW_CE_IDENTITIES` for high-permissive cloud identities across AWS, Azure, and GCP.
+Queries `LW_CE_IDENTITIES` across AWS, Azure, and GCP, then applies one uniform admin-only rule across all three clouds (`pruneToAdmin()`).
 
-### Filter criteria (any match qualifies)
+### Filter criteria
 
-- Risk severity = **Critical**
-- Unused permissions ≥ **75%**
-- **Full Admin** flag (`ALLOWS_FULL_ADMIN`)
+Keep an identity only if **one of these is true**:
 
-Identity types included: IAM Roles, IAM Users, Service Accounts, Service Principals (AWS / Azure / GCP). Root accounts are always included.
+- **User type** (IAM User / Azure User) **and** the `ALLOWS_FULL_ADMIN` risk flag
+- **IAM Role type** **and** the `ALLOWS_FULL_ADMIN` risk flag
+- **Root or root-equivalent** — AWS root account, Azure Global Administrator, GCP Workspace Super Admin (always included, regardless of the Admin flag — these are inherently top-privilege by definition)
+
+Everything else is dropped **regardless of privilege level** — Service Accounts, Service Principals, Instance Profiles, IAM Groups, and Assumed Roles are excluded entirely, even ones with Full Admin. This keeps the tab focused on identities a human or role could actually be held accountable for, not machine-to-machine service identities.
+
+> The Risk Findings Inventory's "Identities" count narrows this further — Admin identities only, `risk_severity = Critical`, and **root/root-equivalent accounts are explicitly excluded** (unlike the Identity tab itself, which always keeps them).
 
 ### Three-tab view — flat sortable table
 
@@ -186,7 +214,8 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 | Identities | Critical + 75%+ unused + Full Admin | **7 days** | AWS / Azure / GCP roles, users, service accounts; hard-capped at 7d (LQL limit) |
 | Secrets (SSH keys) | All | **7 days** | Hard-capped at 7d (LQL limit) |
 | Secrets All | All | **7 days** | Hard-capped at 7d (LQL limit) |
-| CVEs / Vulnerabilities | Critical, High · riskScore ≥ 8 · Unpatched · Internet-exposed hosts | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged |
+| CVEs / Vulnerabilities | Critical, High · riskScore ≥ 8 · Unpatched (Active) | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged, capped at 500 rows. Not restricted to internet-exposed hosts at fetch time — exposure is a separate, per-host signal checked afterward by each panel individually |
+| Host Exposure (Risk Findings Inventory) | Any severity · cveRiskScore ≥ 9 | **7 days** | Separate, fully-paginated fetch (`fetchHighRiskVulns()`) — not capped at 500 rows like the row above. The Risk Findings Inventory further narrows this to ≥ 9.95 (displayed risk score rounds to 100) and to hosts also confirmed internet-exposed in the CVE fetch above |
 
 The default window is **14 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs, Identities, and Secrets always remain at 7 days due to API/LQL limits.
 
@@ -285,8 +314,11 @@ sudo docker run --rm -d \
     -p 443:8443 \
     --env-file .env \
     -v letsencrypt:/etc/letsencrypt \
+    -v rca-cache:/app/data \
     rca-dashboard
 ```
+
+`-v rca-cache:/app/data` persists the fetched-data cache to a named Docker volume — see [Persistent Cache](#persistent-cache) below. Omitting it still works, it just means every container recreation starts from a blank cache instead of last-known-good data.
 
 Or use the convenience scripts:
 
@@ -318,6 +350,27 @@ sudo docker run --rm -d \
 ```
 
 Set `SELF_SIGNED=true` in `.env` to generate a self-signed cert automatically (no Let's Encrypt, no domain required).
+
+---
+
+## Persistent Cache
+
+The dashboard's fetched-data cache (alerts, CVEs, identities, compliance, secrets, etc.) is written to `/app/data/cache.json` after every refresh cycle and restored automatically on startup — **before** the first live API fetch even begins. This means the dashboard shows last-known-good data immediately after a restart or redeploy, instead of blank panels while `refreshData()` runs (which can take several minutes — the compliance scan alone evaluates every enabled Critical/High policy in throttled batches).
+
+### How it's persisted
+
+- **`docker restart rca`** (hot-deploy) already preserves it with no extra setup — the container's writable filesystem layer survives a restart on its own.
+- **A full `docker rm` + recreate** (e.g. via `deploy.sh`/`deploy_PrivateCloud.sh`) needs the cache directory mounted to a Docker volume, which both scripts do automatically:
+  ```
+  -v rca-cache:/app/data
+  ```
+  `rca-cache` is a **named volume** (not a host path), so this works identically on any machine — Docker creates and manages the actual storage location per-host, with no manual directory setup required.
+
+### What it does *not* change
+
+- A restart still immediately triggers a full `refreshData()` in the background, same as before — the cache file just means panels show the *previous* cycle's data while that runs, instead of showing nothing.
+- The persisted cache has no separate expiry — it's simply overwritten by the next successful `refreshData()` cycle (twice: once after the fast Phase 1 fetch, again after Phase 2 compliance/secrets/public-storage complete).
+- To start completely fresh (e.g. testing), remove the volume: `docker volume rm rca-cache` (only after stopping the `rca` container).
 
 ---
 
@@ -384,6 +437,7 @@ Phase 2 (compliance then secretsAll) runs sequentially after Phase 1 and can tak
 
 ## Additional Resources
 
+- [`FUNCTION_REFERENCE.md`](./rca_ui/FUNCTION_REFERENCE.md) — beginner-friendly, function-by-function walkthrough of `server.js`
 - [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) — full scoring formula and worked example
 - [`CLAUDE.md`](./CLAUDE.md) — developer guide for Claude Code (architecture, scoring, key behaviours)
 - FortiCNAPP documentation: https://docs.fortinet.com

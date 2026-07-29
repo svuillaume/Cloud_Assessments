@@ -54,11 +54,43 @@ let tokenExpiry = 0;
 // instead of the ad-hoc Policies-based fallback.
 let lastGovernanceReport = null;
 let cache = {
-  alerts: [], vulns: [], compliance: [], identities: [], publicStorage: [],
+  alerts: [], vulns: [], compliance: [], identities: [], publicStorage: [], fortiInventory: [], instanceIamProfile: {}, highRiskVulns: [],
   fetchedAt: null, errors: {}, account: LW_ACCOUNT, subAccount: LW_SUBACCOUNT,
   riskScore: 0, daysBack: DAYS_BACK,
   summary: { alerts: 0, vulns: 0, compliance: 0, identities: 0, publicStorage: 0 },
 };
+
+// ── Persistent cache — survives container restarts/redeploys ───────────────────
+// /app/data is bind-mounted to a named Docker volume (see deploy.sh/deploy_PrivateCloud.sh),
+// so it outlives both `docker restart` (which already preserves the container's own
+// writable layer) and a full `docker rm`+recreate. On startup, loadCacheFromDisk() restores
+// the last-known-good cache immediately so the dashboard shows real data right away instead
+// of blank panels during the first refresh cycle (which can take minutes — compliance alone
+// evaluates up to COMPLIANCE_POLICY_CAP policies in throttled batches, and highRiskVulns
+// paginates ~15k rows). refreshData() still runs normally afterward and overwrites this with
+// fresh data as each phase completes, same as before persistence existed.
+const CACHE_FILE = path.join(__dirname, 'data', 'cache.json');
+function loadCacheFromDisk() {
+  try {
+    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+    const loaded = JSON.parse(raw);
+    // Spread over the current default `cache` shape first, not the other way around — an
+    // older cache.json from before a field was added (e.g. highRiskVulns) must not leave
+    // that field undefined; the in-code default always wins for keys the file doesn't have.
+    cache = { ...cache, ...loaded };
+    console.log(`[cache] restored from disk (${CACHE_FILE}), last fetched ${loaded.fetchedAt || 'unknown'}`);
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.log('[cache] failed to load from disk:', e.message);
+  }
+}
+function saveCacheToDisk() {
+  try {
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  } catch (e) {
+    console.log('[cache] failed to save to disk:', e.message);
+  }
+}
 
 const geoIpCache = {}; // ip → ipinfo.io response, cached for container lifetime
 
@@ -373,6 +405,30 @@ function isPublicSource(cidr) {
   if (a >= 224) return false;                            // multicast + reserved
   return true;
 }
+// ── Fortinet appliance presence — best-effort name/tag heuristic, NOT an authoritative
+// type field (unlike LW_APA_EXPOSURE_PATHS' target:"type"="fortigate", which only exists
+// for FortiGate — see fetchExposurePaths()). Scans the full compute inventory fetchTrueExposure()
+// already pulls (every AWS/Azure/GCP instance, not just internet-exposed or vuln-scanned
+// ones) for instance names/tags matching known Fortinet product naming conventions. 'other'
+// must stay last — it's the catch-all for any "forti"-containing name not matched above.
+const FORTI_PRODUCTS = [
+  { key: 'fortigate',     label: 'FortiGate',     re: /forti\s*-?gate|(?:^|[^a-z])fgt(?:[^a-z]|$)/i },
+  { key: 'fortimanager',  label: 'FortiManager',  re: /forti\s*-?manager|(?:^|[^a-z])f-?mg(?:[^a-z]|$)/i },
+  { key: 'fortianalyzer', label: 'FortiAnalyzer', re: /forti\s*-?analyzer|(?:^|[^a-z])faz(?:[^a-z]|$)/i },
+  { key: 'fortiadc',      label: 'FortiADC',      re: /forti\s*-?adc|(?:^|[^a-z])fad(?:[^a-z]|$)/i },
+  { key: 'fortiweb',      label: 'FortiWeb',      re: /forti\s*-?web|(?:^|[^a-z])fweb(?:[^a-z]|$)/i },
+  { key: 'fortimail',     label: 'FortiMail',     re: /forti\s*-?mail/i },
+  { key: 'fortisandbox',  label: 'FortiSandbox',  re: /forti\s*-?sandbox/i },
+  { key: 'fortitester',   label: 'FortiTester',   re: /forti\s*-?tester/i },
+  { key: 'fortiddos',     label: 'FortiDDoS',     re: /forti\s*-?ddos/i },
+  { key: 'other',         label: 'Other Fortinet',re: /forti/i },
+];
+function classifyFortiName(name) {
+  if (!name) return null;
+  for (const p of FORTI_PRODUCTS) { if (p.re.test(name)) return p; }
+  return null;
+}
+
 async function fetchTrueExposure() {
   const [awsInstanceRows, awsSgRows, azureNicRows, azureNsgRows, gcpInstanceRows, gcpFwRows, azureVmRows] = await Promise.all([
     post('Queries/execute', { query: { queryText: `{source { LW_CFG_AWS_EC2_INSTANCES } return distinct {RESOURCE_ID, RESOURCE_CONFIG}}` }, arguments: timeArgs(7) }, 60000).catch(() => []),
@@ -519,7 +575,46 @@ async function fetchTrueExposure() {
     const exposed = reasons.some(r => r.tier === 'open');
     return { exposed, restricted: !exposed && reasons.length > 0, publicIp, reasons };
   };
-  return { getExposureEvidence, azureComputerNames };
+
+  // Fortinet appliance presence scan — see FORTI_PRODUCTS comment above. Reuses the full
+  // instance inventory already fetched above (no extra API calls).
+  const fortiInventory = [];
+  awsInstanceRows.forEach(inst => {
+    const cfg = inst.RESOURCE_CONFIG || {};
+    const tags = Array.isArray(cfg.Tags) ? cfg.Tags : [];
+    const name = (tags.find(t => t.Key === 'Name') || {}).Value || inst.RESOURCE_ID || '';
+    const match = classifyFortiName(name);
+    if (match) fortiInventory.push({ cloud: 'aws', product: match.key, label: match.label, name, resourceId: inst.RESOURCE_ID || '' });
+  });
+  azureVmRows.forEach(vm => {
+    const cfg = vm.RESOURCE_CONFIG || {};
+    const name = cfg.extended?.instanceView?.computerName || cfg.osProfile?.computerName || vm.RESOURCE_ID || '';
+    const match = classifyFortiName(name) || classifyFortiName(vm.RESOURCE_ID || '');
+    if (match) fortiInventory.push({ cloud: 'azure', product: match.key, label: match.label, name, resourceId: vm.RESOURCE_ID || '' });
+  });
+  gcpInstanceRows.forEach(inst => {
+    const cfg = inst.RESOURCE_CONFIG || {};
+    const name = inst.RESOURCE_ID || cfg.name || '';
+    const match = classifyFortiName(name);
+    if (match) fortiInventory.push({ cloud: 'gcp', product: match.key, label: match.label, name, resourceId: inst.RESOURCE_ID || '' });
+  });
+  console.log(`  [forti-inventory] appliances matched by name/tag heuristic: ${fortiInventory.length}`);
+
+  // AWS instance → attached IAM instance-profile ARN, for the "Internet-Exposed Host - Beta"
+  // tab's host→IAM-role linkage. AWS-only for now — Azure/GCP would need managed-identity/
+  // service-account data this app doesn't currently fetch. Instance profile name is matched
+  // to an IAM role by NAME against `identities` at render time (profile and role share the
+  // same name by convention when created via console/typical IaC, but this is a heuristic,
+  // not a guaranteed 1:1 — an instance profile is technically a separate resource wrapping a role).
+  const instanceIamProfile = {};
+  awsInstanceRows.forEach(inst => {
+    const arn = inst.RESOURCE_CONFIG && inst.RESOURCE_CONFIG.IamInstanceProfile && inst.RESOURCE_CONFIG.IamInstanceProfile.Arn;
+    if (!arn || !inst.RESOURCE_ID) return;
+    const profileName = arn.split('/').pop() || '';
+    instanceIamProfile[inst.RESOURCE_ID] = { arn, profileName };
+  });
+
+  return { getExposureEvidence, azureComputerNames, fortiInventory, instanceIamProfile };
 }
 
 // ── Verified Exposure Paths — LW_APA_EXPOSURE_PATHS (Attack Path Analysis) ──────
@@ -536,17 +631,86 @@ async function fetchExposurePaths() {
   const SOURCE = 'LW_APA_EXPOSURE_PATHS a, array_to_rows(a.TARGETS) as (target)';
   function q(targetType) {
     const queryText = `{ source { ${SOURCE} } FILTER { target:"type" = "${targetType}" } return distinct { ${RETURN} } }`;
-    return post('Queries/execute', { query: { queryText }, arguments: timeArgs(7) }, 60000)
+    return post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
       .catch(e => { console.log(`  [exposure-paths] ${targetType} ERR:`, e.message.slice(0, 150)); return []; });
   }
-  const [s3, ec2, azureVm, azureBlob] = await Promise.all([
+  // Unfiltered — every traced Internet→Target path regardless of target type, TARGETS left
+  // as its raw (unflattened) array rather than array_to_rows-exploded like the per-type
+  // queries above. Powers the "Internet Exposed Assets" tab, a comprehensive superset of
+  // the type-specific panels (Host Internet Exposure, Public Storage Exposure, FortiGate).
+  function qAll() {
+    const queryText = `{ source { LW_APA_EXPOSURE_PATHS } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
+    return post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
+      .catch(e => { console.log('  [exposure-paths] all ERR:', e.message.slice(0, 150)); return []; });
+  }
+  const [s3, ec2, azureVm, azureBlob, fortigate, all] = await Promise.all([
     q('s3:bucket'),
     q('ec2:instance'),
     q('microsoft.compute/virtualmachines'),
     q('microsoft.storage/storageaccounts/blobservices'),
+    q('fortigate'),
+    qAll(),
   ]);
-  console.log(`  [exposure-paths] s3:${s3.length} ec2:${ec2.length} azureVm:${azureVm.length} azureBlob:${azureBlob.length}`);
-  return { s3, ec2, azureVm, azureBlob };
+  console.log(`  [exposure-paths] s3:${s3.length} ec2:${ec2.length} azureVm:${azureVm.length} azureBlob:${azureBlob.length} fortigate:${fortigate.length} all:${all.length}`);
+  return { s3, ec2, azureVm, azureBlob, fortigate, all };
+}
+
+// ── Attack Paths — LW_APA_ATTACK_PATHS (Attack Path Analysis) ──────────────────
+// Full computed attack-path graphs, distinct from LW_APA_EXPOSURE_PATHS above (that table is
+// Internet→Target reachability only; this one is FortiCNAPP's broader attack-path risk
+// scoring). Each record's METRICS carries METRICS.path_score (0-100) + METRICS.path_severity —
+// confirmed against a live tenant. Fetched/cached unfiltered here; renderAttackPaths() applies
+// the path_score >= 80 filter client-side (same pattern as the rest of exposurePaths).
+async function fetchAttackPaths() {
+  const queryText = `{ source { LW_APA_ATTACK_PATHS } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
+  const rows = await post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
+    .catch(e => { console.log('  [attack-paths] ERR:', e.message.slice(0, 150)); return []; });
+  console.log(`  [attack-paths] total:${rows.length}${rows[0] ? ' sample METRICS: ' + JSON.stringify(rows[0].METRICS) : ' (no rows)'}`);
+  return rows;
+}
+
+// ── High-risk vulnerabilities — cveRiskScore >= 9, ANY severity ────────────────
+// Powers Risk Findings' "Host Exposure" category specifically (filtered further to
+// internet-exposed hosts client-side) — deliberately separate from fetchVulns()/cache.vulns
+// below, which stays Critical/High-severity-only and continues to drive posture score,
+// reports, the asset risk map, and every other existing consumer unchanged.
+// Confirmed live: the API rejects expression:"gte" (400 "Invalid format in request body")
+// but accepts expression:"ge" — matches the FortiCNAPP console's own "Risk score >= 9"
+// query-builder clause, which is NOT severity-gated (can return Medium/Low/Info CVEs with
+// a high risk score that Critical/High-only queries never see at all).
+async function fetchHighRiskVulns() {
+  const tok = await ensureToken();
+  let allRows = [];
+  let path = 'Vulnerabilities/Hosts/search';
+  let body = {
+    timeFilter: timeFilter(7),
+    filters: [
+      { field: 'status', expression: 'eq', value: 'Active' },
+      { field: 'cveRiskScore', expression: 'ge', value: 9 },
+    ],
+    returns: ['vulnId', 'severity', 'hostRiskScore', 'cveRiskScore', 'riskScore', 'featureKey', 'fixInfo', 'evalCtx', 'machineTags', 'mid', 'startTime'],
+    paging: { rows: 5000 },
+  };
+  let pageNum = 0;
+  while (true) {
+    pageNum++;
+    try {
+      const { status, resp } = pageNum === 1
+        ? await postRaw(path, body, 60000)
+        : { status: 200, resp: await get(path) };
+      if (status !== 200) { console.log(`  [high-risk-vulns] page ${pageNum} → HTTP ${status}`); break; }
+      const rows = Array.isArray(resp?.data) ? resp.data : [];
+      allRows.push(...rows);
+      const nextUrl = resp?.paging?.urls?.nextPage;
+      if (!nextUrl) break;
+      path = new URL(nextUrl).pathname.replace(/^\/api\/v2\//, '');
+    } catch (e) {
+      console.log(`  [high-risk-vulns] page ${pageNum} ERR:`, e.message.slice(0, 150));
+      break;
+    }
+  }
+  console.log(`  [high-risk-vulns] total:${allRows.length} (cveRiskScore >= 9, any severity)`);
+  return allRows;
 }
 
 async function fetchVulns() {
@@ -569,9 +733,9 @@ async function fetchVulns() {
   const [crits, highs, trueExposure] = await Promise.all([
     vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); return []; }),
     vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); return []; }),
-    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return { getExposureEvidence: () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }), azureComputerNames: {} }; }),
+    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return { getExposureEvidence: () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }), azureComputerNames: {}, fortiInventory: [], instanceIamProfile: {} }; }),
   ]);
-  const { getExposureEvidence, azureComputerNames } = trueExposure;
+  const { getExposureEvidence, azureComputerNames, fortiInventory, instanceIamProfile } = trueExposure;
 
   const rows = [...crits, ...highs];
 
@@ -629,9 +793,15 @@ async function fetchVulns() {
   });
 
   console.log(`  [vulns] raw crit:${crits.length} hi:${highs.length} → cveRisk>=8: ${filtered.length}`);
-  return filtered
+  const vulnRows = filtered
     .sort((a, b) => parseFloat(b.cveRiskScore ?? b.hostRiskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.hostRiskScore ?? 0))
     .slice(0, 500);
+  // fetchTrueExposure() already pulls the full compute inventory needed for the Fortinet
+  // appliance presence scan (see FORTI_PRODUCTS) — piggyback its result out through here
+  // rather than re-running those CFG queries a second time from refreshData(). Same for
+  // getExposureEvidence — refreshData() reuses it to verify-exposure-correct
+  // fetchHighRiskVulns()'s rows too, instead of a second full CFG re-fetch.
+  return { rows: vulnRows, fortiInventory, instanceIamProfile, getExposureEvidence };
 }
 
 // ── 3. Top Critical Non-Compliance ───────────────────────────────────────────
@@ -1236,11 +1406,63 @@ async function fetchPublicStorage() {
   return findings;
 }
 
+// ── Identity risk classification — shared by calcRiskScore() and computeCspScores(), the
+// only two server-side (Node) scoring functions; the client dashboard, mobile view, and both
+// report builders each keep their own duplicated copy (no shared JS runtime across those). ──
+function isServiceAccount(r) {
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase(), p=(r.PROVIDER_TYPE||'').toLowerCase();
+  return pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||p.includes('serviceprincipal')||p.includes('aad');
+}
+function isRoleType(r) {
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase(), nm=(r.NAME||'').toLowerCase();
+  return (pid.includes(':role/')||pid.includes(':assumed-role/')||nm.includes('role')) && !isServiceAccount(r);
+}
+function isHighPermissive(r) {
+  const risks = (r.METRICS && r.METRICS.risks) || [];
+  const sev = (r.METRICS && r.METRICS.risk_severity || '').toLowerCase();
+  return risks.includes('ALLOWS_FULL_ADMIN') || risks.includes('EXCESSIVE_PERMISSIONS') || sev === 'critical' || sev === 'high';
+}
+function isNoMfa(r) {
+  const risks = (r.METRICS && r.METRICS.risks) || [];
+  return risks.includes('PASSWORD_LOGIN_NO_MFA') || !r.MFA_ENABLED;
+}
+function unusedPctOf(r) {
+  const ec = r.ENTITLEMENT_COUNTS || {};
+  const unusedCnt = ec.entitlements_unused_count, totalCnt = ec.entitlements_total_count || ec.entitlements_count;
+  return ec.entitlements_unused_percentage != null ? ec.entitlements_unused_percentage
+    : (unusedCnt != null && totalCnt ? (unusedCnt/totalCnt)*100 : null);
+}
+// Access-key age — field name unverified against a live account or mock snapshot (none
+// available at implementation time; see docs/superpowers/specs/2026-07-28-risk-findings-
+// weighting-design.md). Checks the common casings a FortiCNAPP/AWS-style payload might use;
+// if none match, the key is treated as not-old rather than guessed.
+function isOldAccessKey(r, thresholdDays) {
+  thresholdDays = thresholdDays || 180;
+  const raw = r.ACCESS_KEYS;
+  const keys = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? [raw] : []);
+  return keys.some(k => {
+    if (!k || typeof k !== 'object') return false;
+    const created = k.create_date || k.CREATE_DATE || k.createDate || k.CreateDate || k.created_at || k.CREATED_AT;
+    if (!created) return false;
+    const ageDays = (Date.now() - new Date(created).getTime()) / 86400000;
+    return Number.isFinite(ageDays) && ageDays >= thresholdDays;
+  });
+}
+function isAdminNoMfaIdentity(r) {
+  return !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r);
+}
+// Admin + No-MFA + (unused entitlements ≥80% OR an access key ≥180d old) → flat 80 (same
+// tier as a Critical alert). Otherwise falls back to the raw FortiCNAPP CIEM risk_score.
+function identityRiskScore(r) {
+  const qualifies = isAdminNoMfaIdentity(r) && ((unusedPctOf(r) ?? 0) >= 80 || isOldAccessKey(r));
+  return qualifies ? 80 : Math.min(100, (r.METRICS?.risk_score || 0) * 100);
+}
+
 // ── Main refresh ──────────────────────────────────────────────────────────────
 
 function calcRiskScore(alerts, vulns, identities) {
-  const topIdent = identities.reduce((m, i) => Math.max(m, (i.METRICS?.risk_score || 0) * 100), 0);
-  const topCve   = vulns.reduce((m, v) => Math.max(m, parseFloat(v.riskScore || 0) * 10), 0);
+  const topIdent = identities.reduce((m, i) => Math.max(m, identityRiskScore(i)), 0);
+  const topCve   = vulns.reduce((m, v) => { const rs = parseFloat(v.riskScore || 0); return rs >= 8 ? Math.max(m, rs * 10) : m; }, 0);
   const alertPts = Math.min(alerts.length * 3, 15);
   return Math.min(100, Math.round(topIdent * 0.60 + topCve * 0.25 + alertPts));
 }
@@ -1254,12 +1476,14 @@ async function refreshData() {
   // the concurrent Queries/execute burst at the exact moment this fires, which is enough by
   // itself to trip this tenant's rate limit before compliance even gets a turn. It runs in
   // Phase 2 instead, after Phase 1's fetchers have already completed and freed up quota.
-  const [a, v, i, s, ep] = await Promise.allSettled([
+  const [a, v, i, s, ep, ap, hrv] = await Promise.allSettled([
     fetchAlerts(),
     fetchVulns(),
     fetchIdentities(),
     fetchSecrets(),
     fetchExposurePaths(),
+    fetchAttackPaths(),
+    fetchHighRiskVulns(),
   ]);
 
   function unwrap(res, key) {
@@ -1270,16 +1494,38 @@ async function refreshData() {
   }
 
   const alerts       = unwrap(a,  'alerts');
-  const vulns        = unwrap(v,  'vulns');
+  const vulnsResult   = unwrap(v,  'vulns');
+  const vulns         = Array.isArray(vulnsResult) ? vulnsResult : (vulnsResult.rows || []);
+  const fortiInventory = Array.isArray(vulnsResult) ? [] : (vulnsResult.fortiInventory || []);
+  const instanceIamProfile = Array.isArray(vulnsResult) ? {} : (vulnsResult.instanceIamProfile || {});
+  const getExposureEvidence = Array.isArray(vulnsResult) ? null : vulnsResult.getExposureEvidence;
   const identities    = unwrap(i,  'identities');
   const secrets      = unwrap(s,  'secrets');
-  const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [] });
+  const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [], fortigate: [], all: [] });
+  const attackPaths   = unwrap(ap, 'attackPaths');
+  const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns');
+  // Apply the same verified-exposure correction fetchVulns() applies to cache.vulns — reuses
+  // the getExposureEvidence closure fetchVulns() already computed rather than re-running the
+  // CFG queries a second time. Without this, highRiskVulns would use Lacework's raw
+  // topological "internet exposed" tag instead of the actually-verified (open SG/NSG/FW rule
+  // + public IP) signal the rest of the app relies on — a second, inconsistent definition.
+  if (getExposureEvidence) {
+    for (const r of highRiskVulnsRaw) {
+      const mt = r.machineTags;
+      if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
+        const evd = getExposureEvidence(mt);
+        mt.lw_InternetExposure = evd.exposed ? 'Yes' : 'No';
+        mt.lw_RestrictedExternalAccess = evd.restricted ? 'Yes' : 'No';
+      }
+    }
+  }
 
   // Publish fast data right away; compliance + secretsAll + publicStorage update the cache
   // as each becomes ready
   cache = {
     ...cache,
-    alerts, vulns, identities, secrets, exposurePaths,
+    alerts, vulns, identities, secrets, exposurePaths, attackPaths, fortiInventory, instanceIamProfile,
+    highRiskVulns: highRiskVulnsRaw,
     fetchedAt: new Date().toISOString(),
     errors,
     account: LW_ACCOUNT,
@@ -1287,6 +1533,7 @@ async function refreshData() {
     riskScore: calcRiskScore(alerts, vulns, identities),
     summary: { alerts: alerts.length, vulns: vulns.length, compliance: cache.compliance?.length ?? 0, identities: identities.length, secrets: secrets.length, secretsAll: cache.secretsAll?.length ?? 0, publicStorage: cache.publicStorage?.length ?? 0 },
   };
+  saveCacheToDisk(); // Phase 1 result — saved now so a restart mid-Phase-2 still keeps this
 
   // Phase 2: compliance + secretsAll + publicStorage run concurrently, each publishing to
   // cache the moment IT resolves — not gated behind all three settling together. They used
@@ -1336,6 +1583,7 @@ async function refreshData() {
 
   console.log(`[done] alerts:${alerts.length} vulns:${vulns.length} compliance:${compliance.length} identities:${identities.length} secretsAll:${secretsAll.length} publicStorage:${publicStorage.length}`);
   if (Object.keys(errors).length) console.log('[errors]', errors);
+  saveCacheToDisk(); // Full cache including Phase 2 (compliance/secretsAll/publicStorage)
 }
 
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
@@ -1731,7 +1979,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="sb-sect">Risk Findings</div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Host Internet Exposure
+    Private Host Most Exposed
   </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -1748,6 +1996,22 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="sb-item" id="nav-storage" onclick="nav('storage')">
     <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
     Public Storage Exposure
+  </div>
+  <div class="sb-item" id="nav-fortigate" onclick="nav('fortigate')">
+    <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+    FortiGate
+  </div>
+  <div class="sb-item" id="nav-exposed-assets" onclick="nav('exposed-assets')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    Internet Exposed Assets
+  </div>
+  <div class="sb-item" id="nav-iehb" onclick="nav('iehb')">
+    <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M12 8v4"/><circle cx="12" cy="15" r=".5" fill="currentColor"/></svg>
+    Internet-Exposed Host <span style="font-size:8px;font-weight:800;letter-spacing:.05em;color:#DA291C;background:#fff;border-radius:3px;padding:0 4px;margin-left:4px">BETA</span>
+  </div>
+  <div class="sb-item" id="nav-attack-paths" onclick="nav('attack-paths')">
+    <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 8.5l7 7"/><path d="M18 6l-6 6"/></svg>
+    Attack Paths
   </div>
   <div class="sb-item" id="nav-risk" onclick="nav('risk')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
@@ -1811,16 +2075,18 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
     <!-- Centering wrapper: responsive — fills available space up to a comfortable max -->
     <div style="width:100%;max-width:clamp(480px,58vw,740px);display:flex;flex-direction:column;align-items:center">
-    <!-- Arc label positions (SVG units): URGENT≈(58,67)  ATTENTION≈(314,43)  PROACTIVE≈(396,180) -->
-    <svg id="gauge-svg" viewBox="-88 -46 636 324" style="display:block;width:100%;overflow:visible">
+    <!-- Band boundaries at score 30/60/80 (Foundational/Managed/Advanced/Optimized) -->
+    <svg id="gauge-svg" viewBox="-118 -46 636 364" style="display:block;width:100%;overflow:visible">
       <defs>
         <linearGradient id="band-grad" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
-          <stop offset="0%"    stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#ef4444"/>
-          <stop offset="50%"   stop-color="#f59e0b"/>
-          <stop offset="97.5%" stop-color="#f59e0b"/>
-          <stop offset="97.5%" stop-color="#22c55e"/>
-          <stop offset="100%"  stop-color="#22c55e"/>
+          <stop offset="0%"     stop-color="#ef4444"/>
+          <stop offset="20.6%"  stop-color="#ef4444"/>
+          <stop offset="20.6%"  stop-color="#f59e0b"/>
+          <stop offset="65.45%" stop-color="#f59e0b"/>
+          <stop offset="65.45%" stop-color="#22c55e"/>
+          <stop offset="90.45%" stop-color="#22c55e"/>
+          <stop offset="90.45%" stop-color="#3b82f6"/>
+          <stop offset="100%"   stop-color="#3b82f6"/>
         </linearGradient>
         <filter id="gauge-glow"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="rgba(0,0,0,.12)"/></filter>
         <filter id="bub-glow"><feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="rgba(0,0,0,.15)"/></filter>
@@ -1837,47 +2103,53 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <path id="gauge-arc" fill="none" stroke="url(#band-grad)" stroke-width="32" stroke-linecap="round"
             stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"
             filter="url(#gauge-glow)" style="transition:stroke-dasharray 1.2s cubic-bezier(.22,1,.36,1)"/>
-      <!-- Band divider ticks -->
-      <line x1="200" y1="12" x2="200" y2="48"  stroke="white" stroke-width="3.5" stroke-linecap="round"/>
-      <line x1="350" y1="156" x2="387" y2="143" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
-      <!-- Band labels removed — bubbles carry the labels -->
+      <!-- Band divider ticks at score 30 / 60 / 80 -->
+      <line x1="86" y1="48" x2="108" y2="79"   stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="260" y1="20" x2="248" y2="57"  stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="357" y1="91" x2="326" y2="113" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
+      <!-- Band labels removed — legend row below carries the labels -->
       <!-- Score number -->
       <text id="gauge-score" x="200" y="172" text-anchor="middle" font-size="58" font-weight="900"
             letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
-      <!-- Scale endpoints -->
 
-      <!-- ── URGENT bubble — left, tail centered on right edge → arc at ~(58,67) ── -->
-      <g id="bubble-urgent" opacity="0.35" style="transition:opacity .4s,filter .4s">
-        <polygon points="40,28 57,63 40,44" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="-108" y="5" width="148" height="56" rx="9" fill="#fef2f2" stroke="#ef4444" stroke-width="1.5"/>
-        <line x1="40" y1="28" x2="40" y2="44" stroke="#fef2f2" stroke-width="3"/>
-        <text x="-34" y="24" text-anchor="middle" font-size="9.5" font-weight="800" fill="#ef4444" letter-spacing=".04em" font-family="-apple-system,sans-serif">Immediate Action Required</text>
-        <text x="-34" y="42" text-anchor="middle" font-size="8.5" fill="#7f1d1d" font-family="-apple-system,sans-serif">Highly Vulnerable</text>
-      </g>
-
-      <!-- ── ATTENTION bubble — upper-right of arc, tail on LEFT → arc at ~(314,43) ── -->
-      <g id="bubble-attention" opacity="0.35" style="transition:opacity .4s,filter .4s">
-        <polygon points="330,18 314,43 330,34" fill="#fffbeb" stroke="#fcd34d" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="330" y="-4" width="142" height="52" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
-        <line x1="330" y1="18" x2="330" y2="34" stroke="#fffbeb" stroke-width="3"/>
-        <text x="401" y="14" text-anchor="middle" font-size="9.5" font-weight="800" fill="#b45309" letter-spacing=".04em" font-family="-apple-system,sans-serif">Action Required</text>
-        <text x="401" y="32" text-anchor="middle" font-size="8.5" fill="#78350f" font-family="-apple-system,sans-serif">Vulnerable</text>
-      </g>
-
-      <!-- ── PROACTIVE bubble — right, tail 20u → arc at ~(396,180). Left edge at x=416 ── -->
-      <g id="bubble-proactive" opacity="0.35" style="transition:opacity .4s,filter .4s">
-        <polygon points="416,172 398,180 416,188" fill="#f0fdf4" stroke="#86efac" stroke-width="1.3" stroke-linejoin="round"/>
-        <rect x="416" y="152" width="130" height="52" rx="9" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.5"/>
-        <line x1="416" y1="172" x2="416" y2="188" stroke="#f0fdf4" stroke-width="3"/>
-        <text x="481" y="170" text-anchor="middle" font-size="9.5" font-weight="800" fill="#15803d" letter-spacing=".04em" font-family="-apple-system,sans-serif">Review Only Required</text>
-        <text x="481" y="188" text-anchor="middle" font-size="8.5" fill="#14532d" font-family="-apple-system,sans-serif">Least Vulnerable</text>
-      </g>
       <!-- Objective tagline — anchored at x=200 (gauge arc center) -->
-      <text x="200" y="248" text-anchor="middle" font-size="9.5" font-weight="600"
+      <text x="200" y="228" text-anchor="middle" font-size="9.5" font-weight="600"
             letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
             fill="#64748b" text-transform="uppercase">
-        <tspan>THE HIGHER THE RISK SCORE, THE HIGHER THE REMEDIATION PRIORITY</tspan>
+        <tspan>THE HIGHER THE SCORE, THE MORE MATURE YOUR CLOUD SECURITY POSTURE</tspan>
       </text>
+
+      <!-- ── Maturity legend — primary label only (no negative wording); hovering a chip
+           reveals the executive interpretation via its native <title> tooltip. Replaces the
+           old per-band callout bubbles with hand-tuned tail-triangle geometry, which doesn't
+           scale cleanly to a 4th band. The active band (matching the current score) is
+           highlighted; the others stay dimmed. ── -->
+      <g id="gauge-legend" font-family="-apple-system,BlinkMacSystemFont,sans-serif">
+        <g id="bubble-foundational" opacity="0.35" style="transition:opacity .4s,filter .4s">
+          <title>Foundational (0–30) — Security controls are immature; significant exposure and remediation priorities exist</title>
+          <rect x="-58" y="252" width="120" height="32" rx="16" fill="#fef2f2" stroke="#ef4444" stroke-width="1.3"/>
+          <circle cx="-40" cy="268" r="5.5" fill="#ef4444"/>
+          <text x="-28" y="272" font-size="11" font-weight="800" fill="#b91c1c" font-family="-apple-system,sans-serif">Foundational</text>
+        </g>
+        <g id="bubble-managed" opacity="0.35" style="transition:opacity .4s,filter .4s">
+          <title>Managed (31–60) — Core controls are established, but security gaps and optimization opportunities remain</title>
+          <rect x="74" y="252" width="120" height="32" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.3"/>
+          <circle cx="92" cy="268" r="5.5" fill="#f59e0b"/>
+          <text x="104" y="272" font-size="11" font-weight="800" fill="#b45309" font-family="-apple-system,sans-serif">Managed</text>
+        </g>
+        <g id="bubble-advanced" opacity="0.35" style="transition:opacity .4s,filter .4s">
+          <title>Advanced (61–80) — Security posture is strong with effective controls and manageable residual risk</title>
+          <rect x="206" y="252" width="120" height="32" rx="16" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.3"/>
+          <circle cx="224" cy="268" r="5.5" fill="#22c55e"/>
+          <text x="236" y="272" font-size="11" font-weight="800" fill="#15803d" font-family="-apple-system,sans-serif">Advanced</text>
+        </g>
+        <g id="bubble-optimized" opacity="0.35" style="transition:opacity .4s,filter .4s">
+          <title>Optimized (81–100) — Mature cloud security posture with proactive risk management and continuous improvement</title>
+          <rect x="338" y="252" width="120" height="32" rx="16" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.3"/>
+          <circle cx="356" cy="268" r="5.5" fill="#3b82f6"/>
+          <text x="368" y="272" font-size="11" font-weight="800" fill="#1d4ed8" font-family="-apple-system,sans-serif">Optimized</text>
+        </g>
+      </g>
     </svg>
 
     </div><!-- /gauge-wrapper -->
@@ -2018,8 +2290,8 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Host Internet and Lateral Exposure &amp; Risk</div>
-      <div class="vh-sub">Internet-exposed &amp; Private hosts · CVE risk ≥ 8 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
+      <div class="vh-title">Private Host Most Exposed</div>
+      <div class="vh-sub">Private hosts · CVE risk ≥ 9 · Unpatched · Correlated Secrets, Identities &amp; Misconfigs &nbsp;<a class="agent-tip" href="https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903770/agent-based-workload-security" target="_blank" style="text-decoration:none" title="Enable the FortiCNAPP agent for deeper in-memory &amp; runtime vulnerability detection">Agent available ↗</a></div>
     </div>
     <span class="vh-badge" id="cnt-v">—</span>
   </div>
@@ -2085,6 +2357,64 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <span class="vh-badge" id="cnt-storage">—</span>
   </div>
   <div id="body-storage"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: FortiGate ═══ -->
+<div class="view" id="view-fortigate">
+  <div class="view-hdr vha-orange">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">FortiGateVM</div>
+      <div class="vh-sub">Fortinet appliance presence across the cloud environment — product mix (name/tag match) &amp; verified internet-exposed Fortinet appliances (Attack Path Analysis)</div>
+    </div>
+    <span class="vh-badge" id="cnt-fortigate">—</span>
+  </div>
+  <div id="fortigate-tiles" style="display:flex;gap:12px;flex-wrap:wrap;padding:16px 20px 4px"></div>
+  <div id="body-fortigate-inventory" style="padding:0 20px"></div>
+  <div style="padding:8px 20px 4px;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em">Verified Internet-Exposed Fortinet Appliances (Attack Path Analysis)</div>
+  <div id="body-fortigate"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Internet Exposed Assets ═══ -->
+<div class="view" id="view-exposed-assets">
+  <div class="view-hdr vha-orange">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Internet Exposed Assets</div>
+      <div class="vh-sub">Every asset with a verified Internet&rarr;Target path (FortiCNAPP Attack Path Analysis) — all types, comprehensive superset of Host/Storage/FortiGate exposure</div>
+    </div>
+    <span class="vh-badge" id="cnt-exposed-assets">—</span>
+  </div>
+  <div id="exposed-assets-tiles" style="display:flex;gap:12px;flex-wrap:wrap;padding:16px 20px 4px"></div>
+  <div id="body-exposed-assets"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Internet-Exposed Host - Beta ═══ -->
+<div class="view" id="view-iehb">
+  <div class="view-hdr vha-orange">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Internet-Exposed Host <span style="font-size:9px;font-weight:800;letter-spacing:.05em;color:#fff;background:#DA291C;border-radius:3px;padding:1px 5px;margin-left:4px;vertical-align:middle">BETA</span></div>
+      <div class="vh-sub">Test methodology, for comparison against the standard panels: verified internet-exposed hosts &middot; CVE risk score &ge; 9 only &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
+    </div>
+    <span class="vh-badge" id="cnt-iehb">—</span>
+  </div>
+  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (verified) &middot; CVE Risk Score &ge; 9. This is a beta comparison view — not wired into the posture score or other panels.</div>
+  <div id="body-iehb"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+</div>
+
+<!-- ═══ View: Attack Paths ═══ -->
+<div class="view" id="view-attack-paths">
+  <div class="view-hdr vha-orange">
+    <div class="vh-icon"></div>
+    <div class="vh-text">
+      <div class="vh-title">Attack Paths</div>
+      <div class="vh-sub">FortiCNAPP Attack Path Analysis — computed multi-hop attack paths, risk score 80+</div>
+    </div>
+    <span class="vh-badge" id="cnt-attack-paths">—</span>
+  </div>
+  <div id="attack-paths-tiles" style="display:flex;gap:12px;flex-wrap:wrap;padding:16px 20px 4px"></div>
+  <div id="body-attack-paths"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
 <!-- ═══ View: Asset Risk ═══ -->
@@ -2196,7 +2526,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="view-hdr">
     <div class="vh-text">
       <div class="vh-title">Exploit Simulation Layer</div>
-      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</div>
+      <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Optimized</div>
     </div>
     <div id="lab-storage-badge" onclick="nav('storage')" style="display:none;cursor:pointer;align-items:center;gap:7px;font-size:11px;font-weight:700;color:#fff;background:#b91c1c;border-radius:7px;padding:6px 13px" title="Public object storage — click to view">
       🗄️ <span id="lab-storage-cnt">0</span> Public Storage Resource<span id="lab-storage-plural">s</span> Exposed
@@ -2222,7 +2552,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <!-- CSP header row -->
     <div style="padding:14px 24px 0;display:flex;align-items:center;gap:10px">
       <span id="clab-csp-badge" style="font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:3px 12px;border-radius:5px;color:#fff;background:#94a3b8">—</span>
-      <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Review Only Required</span>
+      <span style="font-size:11px;color:var(--sub)">Posture: <b id="clab-score" style="color:#94a3b8">—</b> &nbsp;·&nbsp; <span id="clab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Optimized</span>
     </div>
     <div class="cjmap-outer" id="lab-csp-diagram"></div>
     <div id="cjnd3-ip-row" style="display:none;padding:2px 24px 14px;font-size:11px;color:#7c2d12;text-align:center"></div>
@@ -2392,8 +2722,8 @@ function setKpi(id,n){const el=document.getElementById(id);if(el)el.textContent=
 function buildPie(d){
   var segs=[
     {id:'rf-pseg-a',key:'a',n:(d.alerts||[]).length},
-    {id:'rf-pseg-v',key:'v',n:(d.vulns||[]).length},
-    {id:'rf-pseg-i',key:'i',n:(d.identities||[]).length},
+    {id:'rf-pseg-v',key:'v',n:riskFindingHostExposure(d).length},
+    {id:'rf-pseg-i',key:'i',n:riskFindingIdentities(d.identities).length},
     {id:'rf-pseg-c',key:'c',n:(d.compliance||[]).length},
     {id:'rf-pseg-s',key:'s',n:(d.secretsAll||[]).length},
   ];
@@ -2462,9 +2792,12 @@ function ciemCategoryLabel(t){
 
 function _renderVulns(rows,err){
   if(err){state('body-v','',err);return;}
-  rows=rows||[];
+  // Panel threshold raised to CVE risk ≥ 9 (tighter than the server's own ≥ 8 base fetch) —
+  // filtered client-side since 9 is a strict subset of the already-fetched ≥8 data, same
+  // scoped-filter pattern as the Beta tab's own ≥9 gate (no separate fetch needed).
+  rows=(rows||[]).filter(function(r){return parseFloat(r.cveRiskScore??r.riskScore??r.hostRiskScore??0)>=9;});
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
-  if(!rows.length){state('body-v','','≥ 8 risk score · internet-exposed · unpatched — no results');return;}
+  if(!rows.length){state('body-v','','≥ 9 risk score · internet-exposed · unpatched — no results');return;}
 
   // ── Pull correlated data from global cache ─────────────────────────────────
   var _ld=_lastData||{};
@@ -2524,10 +2857,10 @@ function _renderVulns(rows,err){
 
   var allHosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
 
-  // Internet-exposed hosts come from vulns data (all have CVE risk ≥ 8)
+  // Internet-exposed hosts come from vulns data (all have CVE risk ≥ 9)
   var inetHosts=allHosts.filter(function(h){return h.reach==='Internet Exposed';});
 
-  // Private hosts: all non-internet-exposed hosts with CVE risk ≥ 8 · Unpatched (same
+  // Private hosts: all non-internet-exposed hosts with CVE risk ≥ 9 · Unpatched (same
   // base set as the Internet Exposed tab), enriched with correlated Secrets from secretsAll —
   // NOT gated on secrets being present, so hosts with only CVE risk still show up.
   var _CIEM_TYPES=['SSH_PRIVATE_KEY','SSH_PRIVATE_KEYS','RSA','ECDSA','ED25519',
@@ -2537,7 +2870,9 @@ function _renderVulns(rows,err){
   var _exposedHostSet={};
   allHosts.forEach(function(h){
     if(h.reach==='Internet Exposed'){_exposedHostSet[h.name.toLowerCase()]=true;return;}
-    _privMap[h.name.toLowerCase()]={name:h.name,cloud:h.cloud||'',restricted:!!h.restricted,ciemSecrets:[],genericSecrets:[],vulns:h.vulns||[],maxRisk:h.maxRisk||0,crit:h.crit||0,high:h.high||0};
+    _privMap[h.name.toLowerCase()]={name:h.name,cloud:h.cloud||'',restricted:!!h.restricted,
+      instanceId:h.instanceId||'',resourceName:h.resourceName||'',pubIp:h.pubIp||'',
+      ciemSecrets:[],genericSecrets:[],vulns:h.vulns||[],maxRisk:h.maxRisk||0,crit:h.crit||0,high:h.high||0};
   });
   // Correlate secrets onto matching hosts (and surface secret-only hosts with no CVE >= 8 too).
   // Must also skip hosts already known Internet Exposed above -- otherwise a host with no
@@ -2571,274 +2906,197 @@ function _renderVulns(rows,err){
     +'</div>';
   }
 
-  // Tab bar
-  var html='<div style="display:flex;gap:0;border-bottom:2px solid var(--border);background:var(--surface)">'
-    +'<button id="vtab-inet" class="lab-tab active" onclick="switchVTab(&apos;inet&apos;)" style="border-radius:0;border-bottom:none;padding:9px 18px;font-size:11px">'
-      +'Internet Exposed <span style="font-size:9px;background:#fee2e2;color:#b91c1c;border-radius:10px;padding:1px 6px;margin-left:5px;font-weight:700">'+inetHosts.length+'</span>'
-    +'</button>'
-    +'<button id="vtab-priv" class="lab-tab" onclick="switchVTab(&apos;priv&apos;)" style="border-radius:0;border-bottom:none;padding:9px 18px;font-size:11px">'
-      +'Private Hosts <span style="font-size:9px;background:#f3f4f6;color:#374151;border-radius:10px;padding:1px 6px;margin-left:5px;font-weight:700">'+privHosts.length+'</span>'
-    +'</button>'
-  +'</div>';
-
-  // ── Internet Exposed panel ─────────────────────────────────────────────────
-  html+='<div id="vpanel-inet">';
-  if(!inetHosts.length){
-    html+='<div class="state">No internet-exposed hosts with CVE risk ≥ 8</div>';
-  }else{
-    var inetRows=rows.filter(function(r){
-      var mt2=r.machineTags;
-      var mtObj=mt2&&typeof mt2==='object'&&!Array.isArray(mt2)?mt2:null;
-      return mtObj&&mtObj.lw_InternetExposure==='Yes';
-    });
-    html+=summaryStrip(inetHosts,inetRows,'Internet-exposed &middot; hostRiskScore ≥ 8 &middot; Unpatched');
-  }
-
-  // Pre-compute compliance → host map (JSON.stringify once per policy, not per host)
-  var _compMatch={};
-  inetHosts.forEach(function(h){_compMatch[h.name.toLowerCase()]=[];});
-  ((_ld.compliance)||[]).forEach(function(c){
-    if(!Array.isArray(c.resources)||!c.resources.length)return;
-    var resJson=JSON.stringify(c.resources).toLowerCase();
-    Object.keys(_compMatch).forEach(function(hn){
-      if(resJson.indexOf(hn)>=0)_compMatch[hn].push(c);
-    });
-  });
-
-  // ── Per-host sections (internet exposed) ───────────────────────────────────
-  // ── Verified Exposure Paths (LW_APA_EXPOSURE_PATHS) — Lacework's own graph-traced
-  // Internet→Target route, independent of the SG/NSG/FW-rule evidence above. Matched by
-  // instance ID (AWS) / VM name (Azure); a target can have more than one traced route.
-  var _epRaw=(_ld.exposurePaths)||{};
-  var _epByInstance={};
-  (_epRaw.ec2||[]).forEach(function(r){
-    var id=r.TARGET&&r.TARGET.key&&r.TARGET.key.id;
-    if(!id)return;
-    (_epByInstance[id]=_epByInstance[id]||[]).push(r);
-  });
-  var _epByAzureVm={};
-  (_epRaw.azureVm||[]).forEach(function(r){
-    var nm=r.TARGET&&r.TARGET.displayName;
-    if(!nm)return;
-    var k=nm.toLowerCase();
-    (_epByAzureVm[k]=_epByAzureVm[k]||[]).push(r);
-  });
-  function exposurePathChips(epRecs){
-    if(!epRecs||!epRecs.length)return'';
-    var shown=epRecs.slice(0,2).map(function(rec){
-      var hopN=rec.METRICS&&rec.METRICS.path_length;
-      return'<span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'
-        +'<b>Verified Path</b> &nbsp;'+exposurePathHopsStr(rec)+(hopN?' &nbsp;('+hopN+' hops)':'')
-      +'</span>';
-    }).join('');
-    var more=epRecs.length>2?'<span style="font-size:9px;color:var(--muted)">+'+(epRecs.length-2)+' more</span>':'';
-    return shown+more;
-  }
-
-  var hosts=inetHosts;
-  hosts.forEach(function(host,idx){
-    var rsCol=host.maxRisk>=9.5?'#b91c1c':host.maxRisk>=8.5?'#c2410c':'#92400e';
-    var bodyId='cve-body-'+idx;
-    var n=host.vulns.length;
-
-    // ── Per-host asset risk entry ──────────────────────────────────────────────
-    var arEntry=_arMap[host.name];
-    var arScore=arEntry?arEntry.normalizedScore:0;
-    var arTier=arTierOf(arScore,true);
-    function arChip(label,col,bd){
-      return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';
-    }
-
-    var hasCiemInet=!!(arEntry&&arEntry.ciemSecrets&&arEntry.ciemSecrets.length);
-
-    // ── Exposure justification: Public IP + the specific SG (AWS) / NSG (Azure) /
-    // firewall rule (GCP) that actually allows the internet in — why this host is
-    // truly reachable, not just tagged reachable.
-    var ev=host.exposureEvidence;
-    var expBadges='';
-    if(host.pubIp){
-      expBadges+='<span style="font-size:9px;font-family:monospace;font-weight:700;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:3px;padding:1px 6px">Public IP '+e(host.pubIp)+'</span>';
-    }
-    if(ev&&ev.reasons&&ev.reasons.length){
-      var seenCtrl={};
-      expBadges+=ev.reasons.filter(function(r){
-        var k=r.control+'|'+r.name;if(seenCtrl[k])return false;seenCtrl[k]=1;return true;
-      }).map(function(r){
-        var ctrlLabel=r.control==='security group'?'SG':r.control==='NSG rule'?'NSG':'FW';
-        return'<span title="'+e(r.protocol+' '+r.port+' from '+r.source)+'" style="font-size:9px;font-weight:600;color:#7c2d12;background:#fff7ed;border:1px solid #fdba74;border-radius:3px;padding:1px 6px;font-family:monospace">'+e(ctrlLabel+': '+r.name)+'</span>';
-      }).join('');
-    }
-
-    var cloudTagInet=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
-
-    var epMatch=(host.instanceId&&_epByInstance[host.instanceId])||_epByAzureVm[host.name.toLowerCase()]||null;
-    var epChips=exposurePathChips(epMatch);
-
-    // Resource ID / Resource Name — matches what FortiCNAPP's own console shows/searches by,
-    // so a host found here can be located in the console too. For Azure, Resource Name is the
-    // OS computer name (may differ from the ARM resource name shown as the header above).
-    var idNameLine=(host.instanceId?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource ID <b style="color:var(--text)">'+e(host.instanceId)+'</b></span>':'')
-      +(host.resourceName?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource Name <b style="color:var(--text)">'+e(host.resourceName)+'</b></span>':'');
-
-    html+='<div style="padding:11px 16px 10px;border-bottom:1px solid var(--border)">'
-      // ── Host header row — same chip layout as the Private Hosts panel ───────
-      +'<div style="display:flex;align-items:center;gap:10px">'
-        +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(idx+1)+'</span>'
-        +'<div style="flex:1;min-width:0">'
-          +'<span style="display:flex;align-items:center">'
-            +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
-            +cloudTagInet
-          +'</span>'
-          +(idNameLine?'<span style="display:flex;gap:10px;align-items:center;margin-top:3px;flex-wrap:wrap">'+idNameLine+'</span>':'')
-          +(expBadges?'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'+expBadges+'</span>':'')
-          +(epChips?'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'+epChips+'</span>':'')
-          +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
-            +(hasCiemInet?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+arEntry.ciemSecrets.length+' credential'+(arEntry.ciemSecrets.length!==1?'s':'')+'</span>':'')
-            +(hasCiemInet?arEntry.ciemSecrets.map(function(t){return'<span style="font-size:8px;font-weight:600;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(ciemCategoryLabel(t))+'</span>';}).join(''):'')
-            +(arEntry&&arEntry.genericSecrets&&arEntry.genericSecrets.length?'<span style="font-size:9px;font-weight:600;color:#92400e;background:#fffbeb;border-radius:3px;padding:1px 6px">'+arEntry.genericSecrets.length+' secret'+(arEntry.genericSecrets.length!==1?'s':'')+'</span>':'')
-            +(n?'<span style="font-size:9px;font-weight:600;color:#c2410c;background:#fff7ed;border-radius:3px;padding:1px 6px">'+n+' CVE'+(n!==1?'s':'')+(host.crit?' &middot; '+host.crit+' crit':'')+'</span>':'')
-            +(_arCritMisc?'<span style="font-size:9px;color:#4b5563">Misconfigs &middot; '+_arCritMisc+'</span>':'')
-            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px;margin-left:4px">Machine Details</button>'
-            +'<span style="font-size:9px;color:var(--muted)">|</span>'
-            +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
-            +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:9px;padding:2px 9px;border-radius:4px;border:1px solid var(--border);cursor:pointer;background:var(--surface);color:var(--text);font-weight:600;white-space:nowrap;margin-left:4px">&#9654; CVEs</button>'
-          +'</span>'
-        +'</div>'
-      +'</div>'
-      // Expanded CVE section (action list removed — links are now inline on the hostname)
-      +'<div id="'+bodyId+'" style="display:none;margin-top:8px;padding-left:28px">'
-      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed</div>'
-      // Compact correlated risk strip
-      +(arScore
-        ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
-          +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
-          +'<span style="font-size:15px;font-weight:800;color:'+arTier.c+';font-variant-numeric:tabular-nums;line-height:1">'+arScore+'</span>'
-          +'<span style="font-size:8px;font-weight:700;color:'+arTier.c+';border:1px solid '+arTier.bd+';border-radius:3px;padding:1px 5px">'+arTier.l+'</span>'
-          +'<div style="flex:0 0 70px;height:3px;background:#e5e7eb;border-radius:2px"><div style="height:3px;border-radius:2px;background:'+arTier.c+';width:'+arScore+'%"></div></div>'
-          +(arEntry&&arEntry.ciemSecrets.length?arChip('CIEM \xb7 '+arEntry.ciemSecrets.length,'#b91c1c','#fca5a5'):'')
-          +(arEntry&&arEntry.genericSecrets.length?arChip('SEC \xb7 '+arEntry.genericSecrets.length,'#92400e','#fcd34d'):'')
-          +(_arCritMisc?arChip('MISCONF \xb7 '+_arCritMisc,'#4b5563','#d1d5db'):'')
-        +'</div>'
-        :'')
-      // ── Non-Compliance violations matched to this host ──────────────────────
-      +(function(){
-        var hn=host.name.toLowerCase();
-        var matched=_compMatch[hn]||[];
-        if(!matched.length)return'';
-        return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
-          +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
-          +matched.map(function(c){
-            // Resources matching this host
-            var urnKeys=['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','NAME','INSTANCE_ID'];
-            var firstRes=c.resources[0]||{};
-            var urnKey=urnKeys.find(function(k){return firstRes[k]!==undefined;})||Object.keys(firstRes)[0]||'';
-            var hostRes=c.resources.filter(function(res){return JSON.stringify(res).toLowerCase().indexOf(hn)>=0;});
-            var cl=e(c.cloud||'');var sev=(c.severity||'').toLowerCase();
-            return'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
-              +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px">'
-                +'<span style="font-size:10.5px;font-weight:600;color:var(--text)">'+e(c.title||c.alertId||'')+'</span>'
-                +'<span style="display:flex;gap:4px;flex-shrink:0">'
-                  +(cl?'<span class="b b-nt" style="font-size:8px">'+cl.toUpperCase()+'</span>':'')
-                  +'<span class="b '+(sev==='critical'?'b-cr':'b-hi')+'" style="font-size:8px">'+(c.severity||'')+'</span>'
-                +'</span>'
-              +'</div>'
-              +(c.description?'<div style="font-size:9px;color:var(--muted);margin-bottom:4px;line-height:1.4">'+e(c.description.slice(0,120))+(c.description.length>120?'…':'')+'</div>':'')
-              +(hostRes.length&&urnKey
-                ?'<div style="margin-top:3px">'
-                  +'<div style="font-size:8px;font-weight:700;color:#b91c1c;margin-bottom:2px">'+hostRes.length+' violating resource'+(hostRes.length>1?'s':'')+' on this host:</div>'
-                  +hostRes.slice(0,5).map(function(res){
-                    var val=urnKey&&res[urnKey]!==undefined?String(res[urnKey]):'—';
-                    return'<div style="font-family:monospace;font-size:8.5px;color:#1e293b;background:#f8fafc;border:1px solid #e5e7eb;border-radius:3px;padding:2px 6px;margin-bottom:2px;word-break:break-all">'+e(val)+'</div>';
-                  }).join('')
-                  +(hostRes.length>5?'<div style="font-size:8px;color:var(--muted)">+' +(hostRes.length-5)+' more</div>':'')
-                +'</div>'
-                :'')
-            +'</div>';
-          }).join('')
-        +'</div>';
-      })()
-      // CVE sub-table
-      +'<div class="tbl-wrap"><table style="font-size:11px">'
-        +'<thead><tr>'
-          +'<th style="width:160px">CVE / Vuln ID</th>'
-          +'<th style="width:52px">CVE Risk</th>'
-          +'<th>Package · Installed version</th>'
-          +'<th>OS / Namespace</th>'
-          +'<th>Fix version</th>'
-          +'<th></th>'
-        +'</tr></thead><tbody>'
-        +host.vulns.map(function(r){
-          var fix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
-          var fixVer=(r.fixInfo&&r.fixInfo.fixed_version)||'';
-          var cveId=e(r.vulnId||r.cveId||'');
-          var svcol=(r.severity||'').toLowerCase()==='critical'?'#b91c1c':'#c2410c';
-          return'<tr>'
-            +'<td style="white-space:nowrap">'
-              +'<span style="font-family:monospace;font-size:10.5px;font-weight:700;color:'+svcol+'">'+e(r.vulnId||r.cveId||'—')+'</span>'
-              +'<button class="cp-btn" data-cp="'+cveId+'" style="margin-left:3px">'+cpIcon+'</button>'
-            +'</td>'
-            +'<td class="r"><span class="risk-score">'+parseFloat(r.cveRiskScore||r.hostRiskScore||r.riskScore||0).toFixed(1)+'</span></td>'
-            +'<td style="font-size:10.5px">'+e(r.featureKey&&r.featureKey.name||'—')+(r.featureKey&&r.featureKey.version_installed?'<br><span style="font-size:9px;color:var(--muted)">'+e(r.featureKey.version_installed)+'</span>':'')+'</td>'
-            +'<td style="font-size:10px;color:var(--muted)">'+e(r.featureKey&&r.featureKey.namespace||'—')+'</td>'
-            +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,16)||'Fix ✓')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
-            +'<td style="white-space:nowrap">'
-              +'<button class="cve-det-btn" data-cve="'+cveId+'" style="font-size:9px;padding:1px 6px;border-radius:3px;border:none;cursor:pointer;background:#f97316;color:#fff;font-weight:700;margin-right:3px">Details</button>'
-              +'<button class="cp-btn" data-cp="'+cveId+'" title="Copy CVE ID">'+cpIcon+'</button>'
-            +'</td>'
-          +'</tr>';
-        }).join('')
-        +'</tbody></table></div>'
-      +'</div>'   // closes cve-body-N collapsible
-    +'</div>';    // closes host row
-  });
-
-  html+='</div>'; // closes vpanel-inet
+  // Internet-Exposed tab/panel removed — internet-exposed hosts are still tracked
+  // elsewhere (Internet-Exposed Host Beta tab, Risk Findings' Host Exposure category via
+  // riskFindingHostExposure()); this panel now shows only Private Hosts, no tab switcher.
+  var html='';
 
   // ── Private Hosts panel ────────────────────────────────────────────────────
-  html+='<div id="vpanel-priv" style="display:none">';
+  // Card format matches the Internet-Exposed Host - Beta tab's asset-card design
+  // (newHostInterExposure.png reference) — two-column card: Asset Details + Cloud Context
+  // on the left, Security Findings + Actions on the right, "View all findings" expansion
+  // below with correlated risk strip, non-compliance violations, and the full CVE table.
+  html+='<div id="vpanel-priv">';
   if(!privHosts.length){
-    html+='<div class="state">No private hosts with CVE risk ≥ 8 or exposed Secrets found</div>';
+    html+='<div class="state">No private hosts with CVE risk ≥ 9 or exposed Secrets found</div>';
   }else{
     var privCap=50;
-    // Summary bar for private hosts
     html+='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
       +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+privHosts.length+' Private Hosts</span>'
-      +'<span style="font-size:11px;color:var(--muted)">&middot; CVE Risk ≥ 8 &amp; Exposed Secrets</span>'
+      +'<span style="font-size:11px;color:var(--muted)">&middot; CVE Risk ≥ 9 &amp; Exposed Secrets</span>'
       +(_arCritMisc?'<span class="b b-hi" style="font-size:9px">'+_arCritMisc+' Critical Misconfigs</span>':'')
       +(_critIdents.length?'<span class="b" style="font-size:9px;background:#ede9fe;color:#7c3aed;border:1px solid #ddd6fe">'+_critIdents.length+' Privileged Identities</span>':'')
       +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Private &middot; Correlated Secrets · Identities &amp; Misconfigs</span>'
     +'</div>'
     +(privHosts.length>privCap?'<div style="font-size:10px;color:var(--muted);padding:6px 16px;background:var(--surface);border-bottom:1px solid var(--border)">Showing top '+privCap+' of '+privHosts.length+' hosts by risk</div>':'');
+
+    // Non-compliance violations matched to host, same JSON-substring approach as the Beta tab
+    var _compMatchPriv={};
+    privHosts.forEach(function(h){_compMatchPriv[h.name.toLowerCase()]=[];});
+    ((_ld.compliance)||[]).forEach(function(c){
+      if(!Array.isArray(c.resources)||!c.resources.length)return;
+      var resJson=JSON.stringify(c.resources).toLowerCase();
+      Object.keys(_compMatchPriv).forEach(function(hn){if(resJson.indexOf(hn)>=0)_compMatchPriv[hn].push(c);});
+    });
+
+    // High-permission attached IAM role (AWS only), same heuristic as the Beta tab
+    var _instanceIamProfile=_ld.instanceIamProfile||{};
+    function isHighPermissivePriv(r){
+      var risks=(r.METRICS&&r.METRICS.risks)||[];
+      var sev=((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase();
+      return risks.indexOf('ALLOWS_FULL_ADMIN')!==-1||risks.indexOf('EXCESSIVE_PERMISSIONS')!==-1||sev==='critical'||sev==='high';
+    }
+    privHosts.forEach(function(h){
+      h.iamRole=null;
+      var profile=h.instanceId&&_instanceIamProfile[h.instanceId];
+      if(!profile)return;
+      var match=_corIdents.find(function(r){
+        var pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase(),pn=profile.profileName.toLowerCase();
+        return nm===pn||pid.split('/').pop()===pn;
+      });
+      h.iamRole=match?{name:match.NAME||profile.profileName,highPermissive:isHighPermissivePriv(match)}:{name:profile.profileName,highPermissive:null};
+    });
+
+    function detailRowPriv(label,val){
+      if(!val||val==='—')return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px"><span style="color:#94a3b8">'+e(label)+'</span><span style="color:#cbd5e1">—</span></div>';
+      return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px">'
+        +'<span style="color:#94a3b8">'+e(label)+'</span>'
+        +'<span style="display:flex;align-items:center;gap:4px;font-family:monospace;font-weight:600;color:#1e293b;text-align:right;word-break:break-all">'+e(val)+'<button class="cp-btn" data-cp="'+e(val)+'" style="flex-shrink:0">'+cpIcon+'</button></span>'
+      +'</div>';
+    }
+    function contextChipPriv(label,val){
+      return'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;font-size:10px;min-width:0">'
+        +'<div style="color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-size:8.5px;margin-bottom:2px">'+e(label)+'</div>'
+        +'<div style="color:#1e293b;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+e(val)+'">'+e(val)+'</div>'
+      +'</div>';
+    }
+    var sevStylePriv={CRITICAL:{c:'#b91c1c',bg:'#fef2f2',bd:'#fecaca'},HIGH:{c:'#c2410c',bg:'#fff7ed',bd:'#fdba74'}};
+    function findingCardPriv(f){
+      var s=sevStylePriv[f.sev]||sevStylePriv.HIGH;
+      return'<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid '+s.bd+';border-left:3px solid '+s.c+';background:'+s.bg+';border-radius:6px;margin-bottom:6px">'
+        +'<span style="color:'+s.c+';font-size:13px;line-height:1.3">&#9888;</span>'
+        +'<div style="min-width:0;flex:1">'
+          +'<div style="font-size:11px;font-weight:700;color:#1e293b;word-break:break-word">'+e(f.title)+'</div>'
+          +'<div style="margin-top:2px"><span style="font-size:8.5px;font-weight:800;color:'+s.c+';background:#fff;border:1px solid '+s.bd+';border-radius:3px;padding:0 5px">'+f.sev+'</span> <span style="font-size:9.5px;color:#94a3b8">&middot; '+e(f.cat)+'</span></div>'
+        +'</div>'
+      +'</div>';
+    }
+
     privHosts.slice(0,privCap).forEach(function(host,pidx){
+      var bodyId='priv-cve-body-'+pidx;
+      var n=host.vulns.length;
       var hasCiem=host.ciemSecrets.length>0;
-      var secCol=hasCiem?'#b91c1c':'#92400e';
-      var secBg=hasCiem?'#fee2e2':'#fffbeb';
-      var cloudTagPriv=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
-      html+='<div style="padding:10px 16px 9px;border-bottom:1px solid var(--border)">'
-        +'<div style="display:flex;align-items:center;gap:10px">'
-          +'<span style="font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;width:18px;text-align:right;flex-shrink:0">'+(pidx+1)+'</span>'
-          +'<div style="flex:1;min-width:0">'
-            +'<span style="display:flex;align-items:center">'
-              +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:12px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(host.name)+'</span>'
-              +cloudTagPriv
-            +'</span>'
-            +'<span style="display:flex;gap:5px;align-items:center;margin-top:3px;flex-wrap:wrap">'
-              +(host.restricted?'<span style="font-size:9px;font-weight:700;color:#0369a1;background:#e0f2fe;border-radius:3px;padding:1px 6px" title="Reachable from a specific allowlisted public IP, not wide open">Restricted External Access</span>':'')
-              +(hasCiem?'<span style="font-size:9px;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:3px;padding:1px 6px">CIEM &middot; '+host.ciemSecrets.length+' credential'+(host.ciemSecrets.length!==1?'s':'')+'</span>':'')
-              +(host.genericSecrets.length?'<span style="font-size:9px;font-weight:600;color:#92400e;background:#fffbeb;border-radius:3px;padding:1px 6px">'+host.genericSecrets.length+' secret'+(host.genericSecrets.length!==1?'s':'')+'</span>':'')
-              +(host.vulns&&host.vulns.length?'<span style="font-size:9px;font-weight:600;color:#c2410c;background:#fff7ed;border-radius:3px;padding:1px 6px">'+host.vulns.length+' CVE'+(host.vulns.length!==1?'s':'')+(host.crit?' &middot; '+host.crit+' crit':'')+'</span>':'')
-              +(_arCritMisc?'<span style="font-size:9px;color:#4b5563">Misconfigs &middot; '+_arCritMisc+'</span>':'')
-              +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#2563eb;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px;margin-left:4px">Machine Details</button>'
-              +'<span style="font-size:9px;color:var(--muted)">|</span>'
-              +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" style="font-size:9px;color:#b91c1c;background:none;border:none;padding:0;cursor:pointer;font-weight:600;text-decoration:underline;text-underline-offset:2px">&#9651; Exploit Graph</button>'
-            +'</span>'
+      var arEntry=_arMap[host.name];
+      var arScore=arEntry?arEntry.normalizedScore:0;
+      var arTier=arTierOf(arScore,false);
+      function arChipPriv(label,col,bd){return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';}
+
+      var cloudFullName={aws:'Amazon Web Services',azure:'Microsoft Azure',gcp:'Google Cloud Platform'}[host.cloud]||'Cloud Provider';
+      var cloudIconColor=cspBadgeColor(host.cloud);
+      var primaryLabel=host.resourceName||host.name;
+      var rawTags=(host.vulns[0]&&host.vulns[0].machineTags)||{};
+      var zone=rawTags.Zone||'—';
+      var netLabel=host.cloud==='azure'?'VNet':'VPC';
+      var netVal=rawTags.VpcId||'—';
+      var acctLabel=host.cloud==='azure'?'Subscription':(host.cloud==='gcp'?'Project':'Subnet');
+      var acctVal=host.cloud==='azure'?(rawTags.SubscriptionName||rawTags.SubscriptionId||'—'):(rawTags.SubnetId||rawTags.ProjectId||'—');
+
+      var findings=[];
+      if(hasCiem)findings.push({title:host.ciemSecrets.length+' exposed CIEM credential'+(host.ciemSecrets.length!==1?'s':'')+' on this host',sev:'CRITICAL',cat:'Credential Exposure'});
+      if(host.genericSecrets.length)findings.push({title:host.genericSecrets.length+' exposed secret'+(host.genericSecrets.length!==1?'s':'')+' on this host',sev:'HIGH',cat:'Credential Exposure'});
+      if(host.iamRole&&host.iamRole.highPermissive===true)findings.push({title:'Attached IAM role ('+host.iamRole.name+') grants high-permission access',sev:'HIGH',cat:'Identity & Access'});
+      host.vulns.slice().sort(function(a,b){return(parseFloat(b.cveRiskScore||b.riskScore||0))-(parseFloat(a.cveRiskScore||a.riskScore||0));}).slice(0,3).forEach(function(r){
+        var rs=parseFloat(r.cveRiskScore||r.riskScore||0);
+        findings.push({title:(r.vulnId||r.cveId||'CVE')+' — '+((r.featureKey&&r.featureKey.name)||'package')+' (risk '+rs.toFixed(1)+')',sev:rs>=9.5?'CRITICAL':'HIGH',cat:'Vulnerability Management'});
+      });
+      var findingsShown=findings.slice(0,4);
+
+      html+='<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:16px;background:#fff">'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0">'
+          +'<div style="padding:18px;border-right:1px solid #e2e8f0">'
+            +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+              +'<div style="width:42px;height:42px;border-radius:9px;background:'+cloudIconColor+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="color:#fff;font-weight:900;font-size:11px;letter-spacing:.02em">'+e((host.cloud||'').toUpperCase()||'?')+'</span></div>'
+              +'<div style="min-width:0">'
+                +'<div style="font-size:15px;font-weight:800;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(primaryLabel)+'</div>'
+                +'<div style="font-size:10.5px;color:#94a3b8">'+e(cloudFullName)+'</div>'
+              +'</div>'
+            +'</div>'
+            +(host.restricted
+              ?'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:20px;padding:3px 10px" title="Reachable from a specific allowlisted public IP, not wide open">RESTRICTED EXTERNAL ACCESS</span>'
+              :'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#374151;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:20px;padding:3px 10px">PRIVATE &middot; NOT INTERNET EXPOSED</span>')
+            +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Asset Details</div>'
+            +detailRowPriv('Hostname',host.name)
+            +detailRowPriv('Resource ID',host.instanceId)
+            +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:6px">Cloud Context</div>'
+            +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+              +contextChipPriv('Zone',zone)+contextChipPriv(netLabel,netVal)
+              +contextChipPriv(acctLabel,acctVal)
+              +contextChipPriv('IAM Role',host.iamRole?host.iamRole.name:'None attached')
+            +'</div>'
           +'</div>'
-          // Secret type chips on right
-          +'<div style="display:flex;gap:3px;flex-wrap:wrap;max-width:200px;justify-content:flex-end">'
-            +host.ciemSecrets.slice(0,3).map(function(t){return'<span style="font-size:8px;background:#fee2e2;color:#b91c1c;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(t)+'</span>';}).join('')
-            +host.genericSecrets.slice(0,2).map(function(t){return'<span style="font-size:8px;background:#fffbeb;color:#92400e;border-radius:3px;padding:1px 5px;white-space:nowrap">'+e(t)+'</span>';}).join('')
-            +((host.ciemSecrets.length+host.genericSecrets.length)>5?'<span style="font-size:8px;color:var(--muted)">+'+(host.ciemSecrets.length+host.genericSecrets.length-5)+' more</span>':'')
+          +'<div style="padding:18px">'
+            +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+              +'<div style="display:flex;align-items:center;gap:8px">'
+                +'<span style="font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#374151">Security Findings</span>'
+                +'<span style="font-size:10px;font-weight:800;color:#fff;background:#DA291C;border-radius:10px;padding:1px 8px;min-width:16px;text-align:center">'+findings.length+'</span>'
+              +'</div>'
+              +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:10px;font-weight:700;color:#DA291C;background:none;border:none;cursor:pointer;padding:0">View all findings &rsaquo;</button>'
+            +'</div>'
+            +(findingsShown.length?findingsShown.map(findingCardPriv).join(''):'<div style="font-size:11px;color:#94a3b8">No specific findings enriched — see full CVE list below.</div>')
+            +(findings.length>findingsShown.length?'<div style="font-size:10px;color:#94a3b8;margin-top:2px">+'+(findings.length-findingsShown.length)+' more in full list</div>':'')
+            +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px">Actions</div>'
+            +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+              +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" data-resourcename="'+e(host.resourceName||'')+'" style="font-size:11px;font-weight:700;color:#fff;background:#DA291C;border:none;border-radius:6px;padding:7px 14px;cursor:pointer">&#9651; Exploit Graph</button>'
+              +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:11px;font-weight:700;color:#374151;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:7px 14px;cursor:pointer">Machine Details</button>'
+            +'</div>'
           +'</div>'
+        +'</div>'
+        +'<div id="'+bodyId+'" style="display:none;padding:16px 18px;border-top:1px solid #e2e8f0;background:#fafafa">'
+        +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; private host</div>'
+        +(arScore
+          ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+            +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
+            +'<span style="font-size:15px;font-weight:800;color:'+arTier.c+';font-variant-numeric:tabular-nums;line-height:1">'+arScore+'</span>'
+            +'<span style="font-size:8px;font-weight:700;color:'+arTier.c+';border:1px solid '+arTier.bd+';border-radius:3px;padding:1px 5px">'+arTier.l+'</span>'
+            +'<div style="flex:0 0 70px;height:3px;background:#e5e7eb;border-radius:2px"><div style="height:3px;border-radius:2px;background:'+arTier.c+';width:'+arScore+'%"></div></div>'
+            +(arEntry&&arEntry.ciemSecrets.length?arChipPriv('CIEM \xb7 '+arEntry.ciemSecrets.length,'#b91c1c','#fca5a5'):'')
+            +(arEntry&&arEntry.genericSecrets.length?arChipPriv('SEC \xb7 '+arEntry.genericSecrets.length,'#92400e','#fcd34d'):'')
+            +(_arCritMisc?arChipPriv('MISCONF \xb7 '+_arCritMisc,'#4b5563','#d1d5db'):'')
+          +'</div>':'')
+        +(function(){
+          var matched=_compMatchPriv[host.name.toLowerCase()]||[];
+          if(!matched.length)return'';
+          return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
+            +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
+            +matched.map(function(c){
+              var cl=e(c.cloud||''),sev=(c.severity||'').toLowerCase();
+              return'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
+                +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
+                  +'<span style="font-size:10.5px;font-weight:600;color:var(--text)">'+e(c.title||c.alertId||'')+'</span>'
+                  +'<span style="display:flex;gap:4px;flex-shrink:0">'+(cl?'<span class="b b-nt" style="font-size:8px">'+cl.toUpperCase()+'</span>':'')+'<span class="b '+(sev==='critical'?'b-cr':'b-hi')+'" style="font-size:8px">'+(c.severity||'')+'</span></span>'
+                +'</div>'
+              +'</div>';
+            }).join('')
+          +'</div>';
+        })()
+        +(n?'<div class="tbl-wrap"><table style="font-size:11px">'
+          +'<thead><tr><th style="width:160px">CVE / Vuln ID</th><th style="width:52px">CVE Risk</th><th>Package · Installed version</th><th>OS / Namespace</th><th>Fix version</th><th></th></tr></thead><tbody>'
+          +host.vulns.map(function(r){
+            var fix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
+            var fixVer=(r.fixInfo&&r.fixInfo.fixed_version)||'';
+            var cveId=e(r.vulnId||r.cveId||'');
+            var svcol=(r.severity||'').toLowerCase()==='critical'?'#b91c1c':'#c2410c';
+            return'<tr>'
+              +'<td style="white-space:nowrap"><span style="font-family:monospace;font-size:10.5px;font-weight:700;color:'+svcol+'">'+e(r.vulnId||r.cveId||'—')+'</span><button class="cp-btn" data-cp="'+cveId+'" style="margin-left:3px">'+cpIcon+'</button></td>'
+              +'<td class="r"><span class="risk-score">'+parseFloat(r.cveRiskScore||r.hostRiskScore||r.riskScore||0).toFixed(1)+'</span></td>'
+              +'<td style="font-size:10.5px">'+e(r.featureKey&&r.featureKey.name||'—')+(r.featureKey&&r.featureKey.version_installed?'<br><span style="font-size:9px;color:var(--muted)">'+e(r.featureKey.version_installed)+'</span>':'')+'</td>'
+              +'<td style="font-size:10px;color:var(--muted)">'+e(r.featureKey&&r.featureKey.namespace||'—')+'</td>'
+              +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,16)||'Fix ✓')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
+              +'<td style="white-space:nowrap"><button class="cve-det-btn" data-cve="'+cveId+'" style="font-size:9px;padding:1px 6px;border-radius:3px;border:none;cursor:pointer;background:#f97316;color:#fff;font-weight:700;margin-right:3px">Details</button><button class="cp-btn" data-cp="'+cveId+'" title="Copy CVE ID">'+cpIcon+'</button></td>'
+            +'</tr>';
+          }).join('')
+          +'</tbody></table></div>'
+          :'<div style="font-size:10px;color:var(--muted)">No CVEs on this host — flagged via correlated secrets only.</div>')
         +'</div>'
       +'</div>';
     });
@@ -2987,6 +3245,658 @@ function renderPublicStorage(d){
   setBody('body-storage',html);
 }
 
+// ── FortiGateVM — two independent signals, purely additive (no effect on posture score,
+// alerts, or any other panel):
+//  1. fortiInventory — best-effort name/tag heuristic scan of the FULL compute inventory
+//     (see FORTI_PRODUCTS server-side), tenant-wide presence across all Fortinet product
+//     lines, not just FortiGate and not just internet-exposed. Powers the tiles below.
+//  2. exposurePaths.fortigate — LW_APA_EXPOSURE_PATHS records, FortiGate ONLY (the only
+//     product this table classifies with its own type), each a verified Internet→VM path.
+// Tiles are click-to-filter against fortiInventory itself (their own source data) — the
+// Attack-Path-verified table below stays separate/unfiltered since it's a different
+// dataset (FortiGate-only, path-verified) with no per-product breakdown to filter by.
+// NOTE: onclick args use &apos; (HTML entity), NOT backslash-escaped quotes — this whole
+// script is embedded inside buildHtml()'s own outer template literal, which consumes one
+// level of backslash-escaping before the browser ever sees it, silently corrupting any
+// \' sequence and breaking the ENTIRE inline <script> block's syntax (not just this
+// function). &apos; sidesteps that entirely. See existing switchVTab(&apos;inet&apos;) for
+// the established precedent — don't reintroduce \' here.
+var _fortiInventory=[];
+var _fortiInventoryFilter=null;
+function filterFortiInventory(label){
+  _fortiInventoryFilter=(_fortiInventoryFilter===label)?null:label;
+  renderFortiGateTilesUI();
+}
+function renderFortiGateTilesUI(){
+  var inv=_fortiInventory;
+  var el=document.getElementById('fortigate-tiles');
+  var invEl=document.getElementById('body-fortigate-inventory');
+  if(!el)return;
+  if(!inv.length){
+    el.innerHTML='<div class="state"><span>No Fortinet appliances matched by name/tag across the scanned compute inventory</span></div>';
+    if(invEl)invEl.innerHTML='';
+    return;
+  }
+  var counts={};
+  inv.forEach(function(r){counts[r.label]=(counts[r.label]||0)+1;});
+  var order=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];});
+  if(_fortiInventoryFilter&&order.indexOf(_fortiInventoryFilter)===-1)_fortiInventoryFilter=null;
+  el.innerHTML=order.map(function(label){
+    var active=label===_fortiInventoryFilter;
+    return'<div onclick="filterFortiInventory(&apos;'+label+'&apos;)" title="Click to filter — click again to clear" style="cursor:pointer;flex:1;min-width:130px;background:#fff;border:2px solid '+(active?'#DA291C':'#e2e8f0')+';border-radius:10px;padding:16px;text-align:center;transition:border-color .15s">'
+      +'<div style="font-size:30px;font-weight:900;color:#DA291C">'+counts[label]+'</div>'
+      +'<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-top:4px">'+e(label)+'</div>'
+    +'</div>';
+  }).join('')
+  +'<div style="flex-basis:100%;font-size:10px;color:#94a3b8;margin-top:6px">Best-effort name/tag match against the scanned compute inventory — not an authoritative device-type field.</div>';
+  var shown=_fortiInventoryFilter?inv.filter(function(r){return r.label===_fortiInventoryFilter;}):[];
+  if(!invEl)return;
+  if(!shown.length){invEl.innerHTML='';return}
+  var rowsHtml=shown.map(function(r){
+    return'<tr><td>'+cloud(r.cloud)+'</td><td class="p">'+e(r.label)+'</td>'
+      +'<td class="p" style="font-family:monospace">'+e(r.name||'—')+'</td>'
+      +'<td class="p" style="font-family:monospace">'+e(r.resourceId||'—')+'</td></tr>';
+  }).join('');
+  invEl.innerHTML='<div style="padding:8px 0;font-size:11px;color:#64748b">Filtered to <b>'+e(_fortiInventoryFilter)+'</b> — <a href="#" onclick="event.preventDefault();filterFortiInventory(&apos;'+_fortiInventoryFilter+'&apos;)" style="color:#DA291C;font-weight:700">clear filter</a></div>'
+    +'<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Product</th><th>Name</th><th>Resource ID</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
+}
+function renderFortiGate(d){
+  _fortiInventory=((d&&d.fortiInventory)||[]);
+  renderFortiGateTilesUI();
+  var rows=((d&&d.exposurePaths&&d.exposurePaths.fortigate)||[]);
+  if(!rows.length){setCount('cnt-fortigate',_fortiInventory.length,false);state('body-fortigate','','No FortiGate VMs detected via FortiCNAPP Attack Path Analysis');return}
+  setCount('cnt-fortigate',_fortiInventory.length,false);
+  var rowsHtml=rows.map(function(r){
+    var t=r.TARGET||{};
+    var name=(t.tags&&t.tags.Name)||t.displayName||(t.key&&(t.key.id||t.key.arn))||'—';
+    var hopN=r.METRICS&&r.METRICS.path_length;
+    return'<tr>'
+      +'<td>'+cloud((r.PROVIDER_TYPE||'').toLowerCase())+'</td>'
+      +'<td class="p">'+e(String(r.DOMAIN_ID||'—'))+'</td>'
+      +'<td class="p" style="font-family:monospace">'+e(String(name))+'</td>'
+      +'<td><span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'+exposurePathHopsStr(r)+(hopN?' &nbsp;('+hopN+' hops)':'')+'</span></td>'
+      +'<td class="m">'+fmtDate(r.RECORD_CREATED_TIME)+'</td>'
+    +'</tr>';
+  }).join('');
+  setBody('body-fortigate','<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Domain / Account</th><th>Target</th><th>Verified Internet Path</th><th>First Seen</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>');
+}
+
+// ── Internet Exposed Assets — unfiltered LW_APA_EXPOSURE_PATHS, every target type, TARGETS
+// left as its raw array (one path record can carry more than one target). Comprehensive
+// superset of the type-specific panels (Host Internet Exposure, Public Storage Exposure,
+// FortiGate) — purely additive, no effect on posture score or any other panel.
+// 'fortigate' → 'Fortinet Appliance', NOT 'FortiGate': Lacework's own type field here covers
+// every Fortinet virtual appliance (FortiGate, FortiAnalyzer, FortiWeb, FortiManager,
+// FortiADC, FortiTester, ...) under this one type, confirmed by cross-checking target names
+// (e.g. "FAZFOSTERR-faz", "FortiManager", "sallam-fadc" all appear here) — it is not
+// FortiGate-specific despite the string. Don't rename this back without re-verifying.
+var EXPOSED_ASSET_TYPE_LABELS={
+  's3:bucket':'S3 Bucket','ec2:instance':'EC2 Instance',
+  'microsoft.compute/virtualmachines':'Azure VM',
+  'microsoft.storage/storageaccounts/blobservices':'Azure Blob Storage',
+  'fortigate':'Fortinet Appliance',
+};
+function exposedAssetTypeLabel(t){return EXPOSED_ASSET_TYPE_LABELS[t]||t||'Unknown';}
+// Flattened {rec,target} rows from the last render — kept so tile clicks can re-filter the
+// table instantly without touching cached API data or re-fetching.
+var _exposedAssetsRows=[];
+var _exposedAssetsFilter=null; // active tile label, or null for "all"
+function filterExposedAssets(label){
+  _exposedAssetsFilter=(_exposedAssetsFilter===label)?null:label; // click active tile again to clear
+  renderExposedAssetsUI();
+}
+function renderExposedAssetsUI(){
+  var rows=_exposedAssetsRows;
+  var tilesEl=document.getElementById('exposed-assets-tiles');
+  if(!rows.length){
+    setCount('cnt-exposed-assets',0,false);
+    if(tilesEl)tilesEl.innerHTML='';
+    state('body-exposed-assets','','No internet-exposed assets detected via FortiCNAPP Attack Path Analysis');
+    return;
+  }
+  var counts={};
+  rows.forEach(function(x){var lbl=exposedAssetTypeLabel(x.target&&x.target.type);counts[lbl]=(counts[lbl]||0)+1;});
+  var order=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];});
+  if(_exposedAssetsFilter&&order.indexOf(_exposedAssetsFilter)===-1)_exposedAssetsFilter=null; // stale filter (data refreshed)
+  var shown=_exposedAssetsFilter?rows.filter(function(x){return exposedAssetTypeLabel(x.target&&x.target.type)===_exposedAssetsFilter;}):rows;
+  setCount('cnt-exposed-assets',shown.length,true);
+  if(tilesEl)tilesEl.innerHTML=order.map(function(label){
+    var active=label===_exposedAssetsFilter;
+    return'<div onclick="filterExposedAssets(&apos;'+label+'&apos;)" title="Click to filter — click again to clear" style="cursor:pointer;flex:1;min-width:130px;background:#fff;border:2px solid '+(active?'#DA291C':'#e2e8f0')+';border-radius:10px;padding:16px;text-align:center;transition:border-color .15s">'
+      +'<div style="font-size:30px;font-weight:900;color:#DA291C">'+counts[label]+'</div>'
+      +'<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-top:4px">'+e(label)+'</div>'
+    +'</div>';
+  }).join('');
+  var rowsHtml=shown.map(function(x){
+    var r=x.rec,t=x.target||{};
+    var name=(t.tags&&t.tags.Name)||t.displayName||(t.key&&(t.key.id||t.key.arn))||'—';
+    var hopN=r.METRICS&&r.METRICS.path_length;
+    return'<tr>'
+      +'<td>'+cloud((r.PROVIDER_TYPE||'').toLowerCase())+'</td>'
+      +'<td class="p">'+e(String(r.DOMAIN_ID||'—'))+'</td>'
+      +'<td class="p">'+e(exposedAssetTypeLabel(t.type))+'</td>'
+      +'<td class="p" style="font-family:monospace">'+e(String(name))+'</td>'
+      +'<td><span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'+exposurePathHopsStr(r)+(hopN?' &nbsp;('+hopN+' hops)':'')+'</span></td>'
+      +'<td class="m">'+fmtDate(r.RECORD_CREATED_TIME)+'</td>'
+    +'</tr>';
+  }).join('');
+  var filterNote=_exposedAssetsFilter?'<div style="padding:8px 4px;font-size:11px;color:#64748b">Filtered to <b>'+e(_exposedAssetsFilter)+'</b> — <a href="#" onclick="event.preventDefault();filterExposedAssets(&apos;'+_exposedAssetsFilter+'&apos;)" style="color:#DA291C;font-weight:700">clear filter</a></div>':'';
+  setBody('body-exposed-assets',filterNote+'<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Domain / Account</th><th>Type</th><th>Target</th><th>Verified Internet Path</th><th>First Seen</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>');
+}
+function renderExposedAssets(d){
+  var records=((d&&d.exposurePaths&&d.exposurePaths.all)||[]);
+  var rows=[];
+  records.forEach(function(r){
+    (r.TARGETS||[]).forEach(function(t){rows.push({rec:r,target:t});});
+  });
+  _exposedAssetsRows=rows;
+  renderExposedAssetsUI();
+}
+
+// ── Attack Paths — LW_APA_ATTACK_PATHS ──────────────────────────────────────────
+// Confirmed against a live tenant: METRICS.path_score (0-100) + METRICS.path_severity
+// ("LOW"/"MEDIUM"/"HIGH"/"CRITICAL" presumably). Filtered to path_score >= 80.
+function attackPathRiskScore(rec){
+  var v=rec&&rec.METRICS&&rec.METRICS.path_score;
+  return typeof v==='number'?v:null;
+}
+var _attackPathRecords=[];
+var _attackPathFilter=null;
+function filterAttackPaths(label){
+  _attackPathFilter=(_attackPathFilter===label)?null:label;
+  renderAttackPathsUI();
+}
+function renderAttackPathsUI(){
+  var records=_attackPathRecords;
+  var tilesEl=document.getElementById('attack-paths-tiles');
+  if(!records.length){
+    setCount('cnt-attack-paths',0,false);
+    if(tilesEl)tilesEl.innerHTML='';
+    state('body-attack-paths','','No attack paths with risk score ≥ 80');
+    return;
+  }
+  var counts={};
+  records.forEach(function(r){var sev=(r.METRICS&&r.METRICS.path_severity)||'Unknown';counts[sev]=(counts[sev]||0)+1;});
+  var sevOrder=['CRITICAL','HIGH','MEDIUM','LOW'];
+  var order=Object.keys(counts).sort(function(a,b){
+    var ai=sevOrder.indexOf(a),bi=sevOrder.indexOf(b);
+    if(ai===-1&&bi===-1)return counts[b]-counts[a];
+    if(ai===-1)return 1; if(bi===-1)return -1;
+    return ai-bi;
+  });
+  if(_attackPathFilter&&order.indexOf(_attackPathFilter)===-1)_attackPathFilter=null;
+  var sevColor={CRITICAL:'#DA291C',HIGH:'#CC4A1A',MEDIUM:'#B7770D',LOW:'#2C5280'};
+  if(tilesEl)tilesEl.innerHTML=order.map(function(label){
+    var active=label===_attackPathFilter;
+    var col=sevColor[label]||'#64748b';
+    return'<div onclick="filterAttackPaths(&apos;'+label+'&apos;)" title="Click to filter — click again to clear" style="cursor:pointer;flex:1;min-width:130px;background:#fff;border:2px solid '+(active?col:'#e2e8f0')+';border-radius:10px;padding:16px;text-align:center;transition:border-color .15s">'
+      +'<div style="font-size:30px;font-weight:900;color:'+col+'">'+counts[label]+'</div>'
+      +'<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em;margin-top:4px">'+e(label)+'</div>'
+    +'</div>';
+  }).join('');
+  var shown=_attackPathFilter?records.filter(function(r){return((r.METRICS&&r.METRICS.path_severity)||'Unknown')===_attackPathFilter;}):records;
+  setCount('cnt-attack-paths',shown.length,true);
+  var rowsHtml=shown.map(function(r){
+    var targets=(r.TARGETS||[]).map(function(t){return(t.tags&&t.tags.Name)||t.displayName||(t.key&&(t.key.id||t.key.arn))||t.type||'—';});
+    var hopN=r.METRICS&&r.METRICS.path_length;
+    var rs=attackPathRiskScore(r);
+    var sevLabel=(r.METRICS&&r.METRICS.path_severity)||'';
+    return'<tr>'
+      +'<td>'+cloud((r.PROVIDER_TYPE||'').toLowerCase())+'</td>'
+      +'<td class="p">'+e(String(r.DOMAIN_ID||'—'))+'</td>'
+      +'<td class="p" style="font-family:monospace">'+e(targets.join(', ')||'—')+'</td>'
+      +'<td class="p"><b>'+e(String(rs))+'</b>'+(sevLabel?' <span style="font-size:9px;font-weight:700;color:#b91c1c">'+e(sevLabel)+'</span>':'')+'</td>'
+      +'<td><span style="font-size:9px;font-family:monospace;font-weight:600;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:3px;padding:1px 6px" title="FortiCNAPP Attack Path Analysis">'+exposurePathHopsStr(r)+(hopN?' &nbsp;('+hopN+' hops)':'')+'</span></td>'
+      +'<td class="m">'+fmtDate(r.RECORD_CREATED_TIME)+'</td>'
+    +'</tr>';
+  }).join('');
+  var filterNote=_attackPathFilter?'<div style="padding:8px 4px;font-size:11px;color:#64748b">Filtered to <b>'+e(_attackPathFilter)+'</b> — <a href="#" onclick="event.preventDefault();filterAttackPaths(&apos;'+_attackPathFilter+'&apos;)" style="color:#DA291C;font-weight:700">clear filter</a></div>':'';
+  setBody('body-attack-paths',filterNote+'<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Domain / Account</th><th>Targets</th><th>Risk Score</th><th>Path</th><th>First Seen</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>');
+}
+function renderAttackPaths(d){
+  var all=((d&&d.attackPaths)||[]);
+  _attackPathRecords=all.filter(function(r){var rs=attackPathRiskScore(r);return rs!=null&&rs>=80;})
+    .sort(function(a,b){return(attackPathRiskScore(b)||0)-(attackPathRiskScore(a)||0);});
+  renderAttackPathsUI();
+}
+
+// ── Internet-Exposed Host - Beta ─────────────────────────────────────────────
+// Test methodology for comparison against the existing panels — NOT wired into posture
+// score, alerts, or any other panel. Filter: verified internet-exposed hosts only, CVE risk
+// score >= 9 (hard cutoff, no partial credit below), enriched with Critical misconfigs,
+// secrets, and high-permission attached IAM role (AWS instance-profile name matched to a
+// role identity by name — a heuristic, not a guaranteed 1:1; Azure/GCP not implemented,
+// no managed-identity/service-account linkage data is fetched for those clouds yet).
+function renderInternetHostExposedBeta(d){
+  try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet-Exposed Host (Beta) render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
+}
+function _renderInternetHostExposedBeta(d){
+  d=d||{};
+  var vulns=d.vulns||[];
+  var instanceIamProfile=d.instanceIamProfile||{};
+
+  // ── Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns),
+  // both now gated to CVE risk score >= 9 (hard cutoff — below 9 contributes nothing).
+  // exposureEvidence/reach reuse the exact same verified (SG/NSG/FW + public IP) exposure
+  // signal, not Lacework's raw topological tag.
+  var hostMap={};
+  vulns.forEach(function(r){
+    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
+    if(rs<9)return;
+    var mt=r.machineTags;
+    var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
+    if(!mtObj||mtObj.lw_InternetExposure!=='Yes')return;
+    var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'?';
+    if(!hostMap[h]){
+      var cloudRaw=mtObj.VmProvider||'';
+      var cloud=cloudRaw?cloudRaw.toLowerCase():'';
+      if(cloud==='google')cloud='gcp';
+      hostMap[h]={name:h,pubIp:mtObj.ExternalIp||mtObj.PublicIp||mtObj.publicIp||'',cloud:cloud,
+        instanceId:mtObj.InstanceId||'',resourceName:mtObj.Name||'',
+        vulns:[],maxRisk:0,crit:0,exposureEvidence:r._exposureEvidence||null};
+    }
+    var host=hostMap[h];
+    if(rs>host.maxRisk)host.maxRisk=rs;
+    if((r.severity||'').toLowerCase()==='critical')host.crit++;
+    host.vulns.push(r);
+  });
+  var hosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
+
+  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a CVE risk score ≥ 9 were found');return}
+  setCount('cnt-iehb',hosts.length,true);
+
+  // ── Same correlated-risk map + Verified Path lookup the Host Internet Exposure panel
+  // uses, reused as-is so the two panels agree on secrets/misconfig/CIEM numbers ──
+  var _arm=buildAssetRiskMap(d);
+  var _arMap=_arm.map, _arCritMisc=_arm.critMisc;
+  function arTierOf(score,exposed){
+    if(score>=75)return exposed?{l:'CRITICAL',c:'#b91c1c',bd:'#fca5a5'}:{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
+    if(score>=50)return exposed?{l:'HIGH',c:'#c2410c',bd:'#fdba74'}:{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
+    if(score>=30)return{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
+    return{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
+  }
+  var _epRaw=d.exposurePaths||{};
+  var _epByInstance={};
+  (_epRaw.ec2||[]).forEach(function(r){var id=r.TARGET&&r.TARGET.key&&r.TARGET.key.id;if(!id)return;(_epByInstance[id]=_epByInstance[id]||[]).push(r);});
+  var _epByAzureVm={};
+  (_epRaw.azureVm||[]).forEach(function(r){var nm=r.TARGET&&r.TARGET.displayName;if(!nm)return;var k=nm.toLowerCase();(_epByAzureVm[k]=_epByAzureVm[k]||[]).push(r);});
+  function exposurePathChips(epRecs){
+    if(!epRecs||!epRecs.length)return'';
+    var shown=epRecs.slice(0,2).map(function(rec){
+      var hopN=rec.METRICS&&rec.METRICS.path_length;
+      return'<span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'
+        +'<b>Verified Path</b> &nbsp;'+exposurePathHopsStr(rec)+(hopN?' &nbsp;('+hopN+' hops)':'')+'</span>';
+    }).join('');
+    var more=epRecs.length>2?'<span style="font-size:9px;color:var(--muted)">+'+(epRecs.length-2)+' more</span>':'';
+    return shown+more;
+  }
+
+  // ── Non-Compliance violations matched to host, same JSON-substring approach as the
+  // Host Internet Exposure panel ──
+  var _compMatch={};
+  hosts.forEach(function(h){_compMatch[h.name.toLowerCase()]=[];});
+  (d.compliance||[]).forEach(function(c){
+    if(!Array.isArray(c.resources)||!c.resources.length)return;
+    var resJson=JSON.stringify(c.resources).toLowerCase();
+    Object.keys(_compMatch).forEach(function(hn){if(resJson.indexOf(hn)>=0)_compMatch[hn].push(c);});
+  });
+
+  // ── High-permission attached IAM role (AWS only — new, not part of the existing panel).
+  // Instance-profile name matched to a role identity by name; heuristic, not guaranteed 1:1. ──
+  function isHighPermissive(r){
+    var risks=(r.METRICS&&r.METRICS.risks)||[];
+    var sev=((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase();
+    return risks.indexOf('ALLOWS_FULL_ADMIN')!==-1||risks.indexOf('EXCESSIVE_PERMISSIONS')!==-1||sev==='critical'||sev==='high';
+  }
+  var identities=d.identities||[];
+  hosts.forEach(function(h){
+    h.iamRole=null;
+    var profile=h.instanceId&&instanceIamProfile[h.instanceId];
+    if(!profile)return;
+    var match=identities.find(function(r){
+      var pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase(),pn=profile.profileName.toLowerCase();
+      return nm===pn||pid.split('/').pop()===pn;
+    });
+    h.iamRole=match?{name:match.NAME||profile.profileName,highPermissive:isHighPermissive(match)}:{name:profile.profileName,highPermissive:null};
+  });
+
+  var html=summaryStripBeta(hosts);
+
+  hosts.forEach(function(host,idx){
+    var bodyId='iehb-cve-body-'+idx;
+    var n=host.vulns.length;
+    var arEntry=_arMap[host.name];
+    var arScore=arEntry?arEntry.normalizedScore:0;
+    var arTier=arTierOf(arScore,true);
+    function arChip(label,col,bd){return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';}
+    var hasCiemInet=!!(arEntry&&arEntry.ciemSecrets&&arEntry.ciemSecrets.length);
+
+    var ev=host.exposureEvidence;
+    var expBadges='';
+    if(host.pubIp)expBadges+='<span style="font-size:9px;font-family:monospace;font-weight:700;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:3px;padding:1px 6px">Public IP '+e(host.pubIp)+'</span>';
+    if(ev&&ev.reasons&&ev.reasons.length){
+      var seenCtrl={};
+      expBadges+=ev.reasons.filter(function(r){var k=r.control+'|'+r.name;if(seenCtrl[k])return false;seenCtrl[k]=1;return true;}).map(function(r){
+        var ctrlLabel=r.control==='security group'?'SG':r.control==='NSG rule'?'NSG':'FW';
+        return'<span title="'+e(r.protocol+' '+r.port+' from '+r.source)+'" style="font-size:9px;font-weight:600;color:#7c2d12;background:#fff7ed;border:1px solid #fdba74;border-radius:3px;padding:1px 6px;font-family:monospace">'+e(ctrlLabel+': '+r.name)+'</span>';
+      }).join('');
+    }
+    var cloudTagInet=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
+    var epMatch=(host.instanceId&&_epByInstance[host.instanceId])||_epByAzureVm[host.name.toLowerCase()]||null;
+    var epChips=exposurePathChips(epMatch);
+    // Resource Name (e.g. "my-blogs") leads as the primary identifier when available — much
+    // easier to identify at a glance than the raw hostname; hostname moves to the subtitle line.
+    var primaryLabel=host.resourceName||host.name;
+    var idNameLine=(host.resourceName?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Hostname <b style="color:var(--text)">'+e(host.name)+'</b></span>':'')
+      +(host.instanceId?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource ID <b style="color:var(--text)">'+e(host.instanceId)+'</b></span>':'');
+    var iamBadge=host.iamRole
+      ?(host.iamRole.highPermissive===true
+        ?'<span style="font-size:9px;font-weight:700;color:#fff;background:#DA291C;border-radius:3px;padding:1px 6px" title="'+e(host.iamRole.name)+'">High-Perm IAM Role</span>'
+        :host.iamRole.highPermissive===false
+          ?'<span style="font-size:9px;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="'+e(host.iamRole.name)+'">IAM Role (not high-perm)</span>'
+          :'<span style="font-size:9px;color:var(--muted)" title="Instance profile: '+e(host.iamRole.name)+'">IAM role unresolved</span>')
+      :'';
+
+    // ── Asset-detail card layout (per newHostInterExposure.png reference) — left panel:
+    // asset identity + details + cloud context; right panel: security-findings summary +
+    // actions. The full CVE table stays as the "View all findings" expansion below,
+    // reusing the existing toggle-host-cve/bodyId collapsible rather than rebuilding it.
+    var cloudFullName={aws:'Amazon Web Services',azure:'Microsoft Azure',gcp:'Google Cloud Platform'}[host.cloud]||'Cloud Provider';
+    var cloudIconColor=cspBadgeColor(host.cloud);
+    // Confirmed live field names per cloud — Azure carries no SubnetId/ResourceGroup in
+    // machineTags at all (only AWS does), and VpcId is actually populated for Azure too
+    // (the VNet name, e.g. "DMZ-VNET") — so label/value must be paired per-cloud, not
+    // via a generic fallback chain that would show an Azure VNet under an "AWS Subnet" label.
+    var rawTags=(host.vulns[0]&&host.vulns[0].machineTags)||{};
+    var zone=rawTags.Zone||'—';
+    var netLabel=host.cloud==='azure'?'VNet':'VPC';
+    var netVal=rawTags.VpcId||'—';
+    var acctLabel=host.cloud==='azure'?'Subscription':(host.cloud==='gcp'?'Project':'Subnet');
+    var acctVal=host.cloud==='azure'?(rawTags.SubscriptionName||rawTags.SubscriptionId||'—'):(rawTags.SubnetId||rawTags.ProjectId||'—');
+
+    function detailRow(label,val){
+      if(!val||val==='—')return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px"><span style="color:#94a3b8">'+e(label)+'</span><span style="color:#cbd5e1">—</span></div>';
+      return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px">'
+        +'<span style="color:#94a3b8">'+e(label)+'</span>'
+        +'<span style="display:flex;align-items:center;gap:4px;font-family:monospace;font-weight:600;color:#1e293b;text-align:right;word-break:break-all">'+e(val)+'<button class="cp-btn" data-cp="'+e(val)+'" style="flex-shrink:0">'+cpIcon+'</button></span>'
+      +'</div>';
+    }
+    function contextChip(label,val){
+      return'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;font-size:10px;min-width:0">'
+        +'<div style="color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-size:8.5px;margin-bottom:2px">'+e(label)+'</div>'
+        +'<div style="color:#1e293b;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+e(val)+'">'+e(val)+'</div>'
+      +'</div>';
+    }
+
+    // Findings list — same signals as the badge row before, reframed as finding cards.
+    var findings=[];
+    if(ev&&ev.reasons&&ev.reasons.length){
+      var seenCtrl2={};
+      ev.reasons.filter(function(r){var k=r.control+'|'+r.name;if(seenCtrl2[k])return false;seenCtrl2[k]=1;return true;}).forEach(function(r){
+        findings.push({title:'Security group allows '+(r.protocol||'traffic')+' '+(r.port||'')+' from '+(r.source||'public internet'),sev:'CRITICAL',cat:'Network Exposure'});
+      });
+    }
+    if(host.pubIp)findings.push({title:'Instance has a public IP address ('+host.pubIp+')',sev:'CRITICAL',cat:'Network Exposure'});
+    if(hasCiemInet)findings.push({title:arEntry.ciemSecrets.length+' exposed CIEM credential'+(arEntry.ciemSecrets.length!==1?'s':'')+' on this host',sev:'CRITICAL',cat:'Credential Exposure'});
+    if(arEntry&&arEntry.genericSecrets&&arEntry.genericSecrets.length)findings.push({title:arEntry.genericSecrets.length+' exposed secret'+(arEntry.genericSecrets.length!==1?'s':'')+' on this host',sev:'HIGH',cat:'Credential Exposure'});
+    if(host.iamRole&&host.iamRole.highPermissive===true)findings.push({title:'Attached IAM role ('+host.iamRole.name+') grants high-permission access',sev:'HIGH',cat:'Identity & Access'});
+    host.vulns.slice().sort(function(a,b){return(parseFloat(b.cveRiskScore||b.riskScore||0))-(parseFloat(a.cveRiskScore||a.riskScore||0));}).slice(0,3).forEach(function(r){
+      var rs=parseFloat(r.cveRiskScore||r.riskScore||0);
+      findings.push({title:(r.vulnId||r.cveId||'CVE')+' — '+((r.featureKey&&r.featureKey.name)||'package')+' (risk '+rs.toFixed(1)+')',sev:rs>=9.5?'CRITICAL':'HIGH',cat:'Vulnerability Management'});
+    });
+    var findingsShown=findings.slice(0,4);
+    var sevStyle={CRITICAL:{c:'#b91c1c',bg:'#fef2f2',bd:'#fecaca'},HIGH:{c:'#c2410c',bg:'#fff7ed',bd:'#fdba74'}};
+    function findingCard(f){
+      var s=sevStyle[f.sev]||sevStyle.HIGH;
+      return'<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid '+s.bd+';border-left:3px solid '+s.c+';background:'+s.bg+';border-radius:6px;margin-bottom:6px">'
+        +'<span style="color:'+s.c+';font-size:13px;line-height:1.3">&#9888;</span>'
+        +'<div style="min-width:0;flex:1">'
+          +'<div style="font-size:11px;font-weight:700;color:#1e293b;word-break:break-word">'+e(f.title)+'</div>'
+          +'<div style="margin-top:2px"><span style="font-size:8.5px;font-weight:800;color:'+s.c+';background:#fff;border:1px solid '+s.bd+';border-radius:3px;padding:0 5px">'+f.sev+'</span> <span style="font-size:9.5px;color:#94a3b8">&middot; '+e(f.cat)+'</span></div>'
+        +'</div>'
+      +'</div>';
+    }
+
+    html+='<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:16px;background:#fff">'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0">'
+        // ── LEFT: asset panel ──
+        +'<div style="padding:18px;border-right:1px solid #e2e8f0">'
+          +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+            +'<div style="width:42px;height:42px;border-radius:9px;background:'+cloudIconColor+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="color:#fff;font-weight:900;font-size:11px;letter-spacing:.02em">'+e((host.cloud||'').toUpperCase()||'?')+'</span></div>'
+            +'<div style="min-width:0">'
+              +'<div style="font-size:15px;font-weight:800;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(primaryLabel)+'</div>'
+              +'<div style="font-size:10.5px;color:#94a3b8">'+e(cloudFullName)+'</div>'
+            +'</div>'
+          +'</div>'
+          +'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:3px 10px">&#9888; INTERNET EXPOSED</span>'
+          +(epChips?'<div style="margin-top:8px">'+epChips+'</div>':'')
+          +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Asset Details</div>'
+          +detailRow('Hostname',host.name)
+          +detailRow('Resource ID',host.instanceId)
+          +detailRow('Public IP',host.pubIp)
+          +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:6px">Cloud Context</div>'
+          +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+            +contextChip('Zone',zone)+contextChip(netLabel,netVal)
+            +contextChip(acctLabel,acctVal)
+            +contextChip('IAM Role',host.iamRole?host.iamRole.name:'None attached')
+          +'</div>'
+        +'</div>'
+        // ── RIGHT: findings + actions panel ──
+        +'<div style="padding:18px">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+            +'<div style="display:flex;align-items:center;gap:8px">'
+              +'<span style="font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#374151">Security Findings</span>'
+              +'<span style="font-size:10px;font-weight:800;color:#fff;background:#DA291C;border-radius:10px;padding:1px 8px;min-width:16px;text-align:center">'+findings.length+'</span>'
+            +'</div>'
+            +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:10px;font-weight:700;color:#DA291C;background:none;border:none;cursor:pointer;padding:0">View all findings &rsaquo;</button>'
+          +'</div>'
+          +(findingsShown.length?findingsShown.map(findingCard).join(''):'<div style="font-size:11px;color:#94a3b8">No specific findings enriched — see full CVE list below.</div>')
+          +(findings.length>findingsShown.length?'<div style="font-size:10px;color:#94a3b8;margin-top:2px">+'+(findings.length-findingsShown.length)+' more in full list</div>':'')
+          +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px">Actions</div>'
+          +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+            +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" data-resourcename="'+e(host.resourceName||'')+'" style="font-size:11px;font-weight:700;color:#fff;background:#DA291C;border:none;border-radius:6px;padding:7px 14px;cursor:pointer">&#9651; Investigate</button>'
+            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:11px;font-weight:700;color:#374151;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:7px 14px;cursor:pointer">Machine Details</button>'
+          +'</div>'
+        +'</div>'
+      +'</div>'
+      +'<div id="'+bodyId+'" style="display:none;padding:16px 18px;border-top:1px solid #e2e8f0;background:#fafafa">'
+      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; risk score &ge; 9</div>'
+      +(arScore
+        ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
+          +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
+          +'<span style="font-size:15px;font-weight:800;color:'+arTier.c+';font-variant-numeric:tabular-nums;line-height:1">'+arScore+'</span>'
+          +'<span style="font-size:8px;font-weight:700;color:'+arTier.c+';border:1px solid '+arTier.bd+';border-radius:3px;padding:1px 5px">'+arTier.l+'</span>'
+          +'<div style="flex:0 0 70px;height:3px;background:#e5e7eb;border-radius:2px"><div style="height:3px;border-radius:2px;background:'+arTier.c+';width:'+arScore+'%"></div></div>'
+          +(arEntry&&arEntry.ciemSecrets.length?arChip('CIEM \xb7 '+arEntry.ciemSecrets.length,'#b91c1c','#fca5a5'):'')
+          +(arEntry&&arEntry.genericSecrets.length?arChip('SEC \xb7 '+arEntry.genericSecrets.length,'#92400e','#fcd34d'):'')
+          +(_arCritMisc?arChip('MISCONF \xb7 '+_arCritMisc,'#4b5563','#d1d5db'):'')
+        +'</div>':'')
+      +(function(){
+        var matched=_compMatch[host.name.toLowerCase()]||[];
+        if(!matched.length)return'';
+        return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
+          +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
+          +matched.map(function(c){
+            var cl=e(c.cloud||''),sev=(c.severity||'').toLowerCase();
+            return'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
+              +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
+                +'<span style="font-size:10.5px;font-weight:600;color:var(--text)">'+e(c.title||c.alertId||'')+'</span>'
+                +'<span style="display:flex;gap:4px;flex-shrink:0">'+(cl?'<span class="b b-nt" style="font-size:8px">'+cl.toUpperCase()+'</span>':'')+'<span class="b '+(sev==='critical'?'b-cr':'b-hi')+'" style="font-size:8px">'+(c.severity||'')+'</span></span>'
+              +'</div>'
+            +'</div>';
+          }).join('')
+        +'</div>';
+      })()
+      +'<div class="tbl-wrap"><table style="font-size:11px">'
+        +'<thead><tr><th style="width:160px">CVE / Vuln ID</th><th style="width:52px">CVE Risk</th><th>Package · Installed version</th><th>OS / Namespace</th><th>Fix version</th><th></th></tr></thead><tbody>'
+        +host.vulns.map(function(r){
+          var fix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
+          var fixVer=(r.fixInfo&&r.fixInfo.fixed_version)||'';
+          var cveId=e(r.vulnId||r.cveId||'');
+          var svcol=(r.severity||'').toLowerCase()==='critical'?'#b91c1c':'#c2410c';
+          return'<tr>'
+            +'<td style="white-space:nowrap"><span style="font-family:monospace;font-size:10.5px;font-weight:700;color:'+svcol+'">'+e(r.vulnId||r.cveId||'—')+'</span><button class="cp-btn" data-cp="'+cveId+'" style="margin-left:3px">'+cpIcon+'</button></td>'
+            +'<td class="r"><span class="risk-score">'+parseFloat(r.cveRiskScore||r.hostRiskScore||r.riskScore||0).toFixed(1)+'</span></td>'
+            +'<td style="font-size:10.5px">'+e(r.featureKey&&r.featureKey.name||'—')+(r.featureKey&&r.featureKey.version_installed?'<br><span style="font-size:9px;color:var(--muted)">'+e(r.featureKey.version_installed)+'</span>':'')+'</td>'
+            +'<td style="font-size:10px;color:var(--muted)">'+e(r.featureKey&&r.featureKey.namespace||'—')+'</td>'
+            +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,16)||'Fix ✓')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
+            +'<td style="white-space:nowrap"><button class="cve-det-btn" data-cve="'+cveId+'" style="font-size:9px;padding:1px 6px;border-radius:3px;border:none;cursor:pointer;background:#f97316;color:#fff;font-weight:700;margin-right:3px">Details</button><button class="cp-btn" data-cp="'+cveId+'" title="Copy CVE ID">'+cpIcon+'</button></td>'
+          +'</tr>';
+        }).join('')
+        +'</tbody></table></div>'
+      +'</div>'
+    +'</div>';
+  });
+
+  setBody('body-iehb',html);
+}
+function summaryStripBeta(hosts){
+  var rowsArr=[];hosts.forEach(function(h){rowsArr=rowsArr.concat(h.vulns);});
+  var tc=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
+  var th=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='high';}).length;
+  var tf=rowsArr.filter(function(r){return r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');}).length;
+  return'<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
+    +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+hosts.length+' Hosts</span>'
+    +'<span style="font-size:11px;color:var(--muted)">&middot; '+rowsArr.length+' CVEs</span>'
+    +(tc?'<span class="b b-cr">'+tc+' Critical</span>':'')
+    +(th?'<span class="b b-hi">'+th+' High</span>':'')
+    +(tf?'<span class="b b-ok">'+tf+' fixable</span>':'')
+    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; CVE Risk Score ≥ 9 &middot; enriched with IAM role (AWS)</span>'
+  +'</div>';
+}
+
+// ── Identity classification — global so both the Identity tab (renderIdentities) and the
+// Risk Findings identities count (buildPie/renderRiskFindings) apply the exact same rule
+// instead of two independently-maintained copies drifting apart. ──
+// Cross-cloud "root-equivalent" detector — AWS has a literal root account; Azure/GCP
+// don't, so the tenant-wide Global Administrator (Entra ID) / Workspace Super Admin
+// (GCP) directory roles are the closest analogues (unrestricted control, no per-resource scoping).
+// LW_CE_IDENTITIES has no dedicated "assigned role name" field for Azure/GCP, so this
+// matches on NAME/PRINCIPAL_ID text the same way the existing AWS root check does.
+function rootEquivalent(r){
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase();
+  const nm=(r.NAME||'').toLowerCase();
+  if(pid.includes(':root')||nm==='root')return{label:'AWS Root Account',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+  if(nm.includes('global admin')||nm.includes('globaladmin')||pid.includes('globaladmin'))
+    return{label:'Azure Global Administrator',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+  if(nm.includes('super admin')||nm.includes('superadmin')||pid.includes('superadmin'))
+    return{label:'GCP Workspace Super Admin',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
+  return null;
+}
+function identType(r){
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase();
+  const nm=(r.NAME||'').toLowerCase();
+  const pt=(r.PROVIDER_TYPE||'').toLowerCase();
+  const rootEq=rootEquivalent(r);
+  if(rootEq)return rootEq;
+  // Real LQL-verified type from LW_CE_LINKED_IDENTITIES.RELATION_TYPE (server-attached
+  // as r._lqlType) takes priority over string-pattern guessing below — it's classified
+  // data straight from the source, not an ARN/name heuristic. Only covers identities
+  // that appear in a linked-identity relationship (e.g. group membership, role chaining);
+  // falls through to the heuristics for identities with no such relationship.
+  const lqlType=r._lqlType; // {cloud:'AWS'|'AZURE'|'GCP', type:'USER'|'ROLE'|...} or null
+  // NOTE: INSTANCE_PROFILE is deliberately NOT mapped to IAM Role here — an ARN-based
+  // check further below reliably classifies actual instance profiles as their own
+  // 'Instance Profile' type; folding them into 'IAM Role' here would hide them from
+  // anything that filters on that distinct type (e.g. the EC2 Instance Profile tab).
+  if(lqlType&&lqlType.type==='ROLE')return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
+  if(lqlType&&lqlType.type==='USER'){
+    // Cloud is carried alongside type specifically so an Azure user linked via
+    // AZURE_USER_TO_GROUP isn't collapsed into the same bare 'USER' bucket as an
+    // AWS IAM user (RELATION_TYPE's own prefix used to be discarded — see lqlTypeMap).
+    if(lqlType.cloud==='AZURE')return{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'};
+    if(lqlType.cloud==='GCP')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+  }
+  if(lqlType&&lqlType.type==='GOOGLE_ACCOUNT')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+  if(lqlType&&lqlType.type==='SERVICE_ACCOUNT')return lqlType.cloud==='AZURE'
+    ?{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'}
+    :{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+
+  if(pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com'))return{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+  if(pid.includes(':assumed-role/')||pid.includes('/sts:'))return{label:'Assumed Role',color:'#b45309',bg:'#fffbeb',border:'#fde68a'};
+  if(pid.includes(':group/'))return{label:'IAM Group',color:'#be185d',bg:'#fdf2f8',border:'#fbcfe8'};
+  if(pid.includes(':instance-profile/'))return{label:'Instance Profile',color:'#0e7490',bg:'#ecfeff',border:'#a5f3fc'};
+  // Azure/GCP identities are classified from PROVIDER_TYPE before the AWS-style ARN/name
+  // heuristics below — those heuristics (":user/", "user" in name, "role" in name) are
+  // AWS-shaped and otherwise misfire on Azure/GCP records whose NAME or PRINCIPAL_ID
+  // happens to contain those substrings, mislabeling them as generic AWS types.
+  if(pt==='azure'||pt==='gcp'){
+    // Azure AD / GCP Workspace human users have PROVIDER_TYPE just 'azure'/'gcp' (no
+    // serviceprincipal/aad marker) and no AWS-style ARN — but their PRINCIPAL_ID is an
+    // email/UPN (e.g. user@tenant.onmicrosoft.com, user#EXT#@tenant.onmicrosoft.com,
+    // user@workspace-domain.com). Any gserviceaccount.com address already matched the
+    // Service Account check above, so an '@' here means a real person, not a service.
+    if(pid.includes('@'))return pt==='azure'
+      ?{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'}
+      :{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+    // Azure Service Principals / App Registrations (e.g. automation identities like
+    // "lacework_security_audit", "azure-cli-*", FortiGate/FortiManager service accounts)
+    // have a bare GUID PRINCIPAL_ID with no email — distinct from human Azure AD users,
+    // whose ID always contains '@'. No linked-identity relationship is recorded for most
+    // of them either (no group membership), so this is the last-resort signal.
+    if(pt==='azure'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pid))
+      return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+  }
+  if(pid.includes(':role/')||nm.includes('role'))return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
+  if(pid.includes(':user/')||nm.includes('user'))return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+  if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
+  if(pt.includes('user'))return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
+  return{label:'Identity',color:'#475569',bg:'#f8fafc',border:'#e2e8f0'};
+}
+// ── Admin-only pruning — one uniform rule across all three cloud tabs, and the basis
+// for the Risk Findings "Identities" count too. Keep only: (User-type AND Admin) OR
+// (IAM-Role-type AND Admin) OR Root/root-equivalent. Everything else — Service Accounts,
+// Service Principals, Instance Profiles, Groups, Assumed Roles — is dropped entirely,
+// admin or not. Root-equivalents (Global Administrator / Workspace Super Admin) always
+// survive even without the explicit ALLOWS_FULL_ADMIN flag — they're inherently the
+// top-privilege bucket by definition.
+var USER_TYPE_LABELS=['IAM User','Azure User','User'];
+var ROLE_TYPE_LABELS=['IAM Role'];
+function isAdminIdentity(r){return((r.METRICS&&r.METRICS.risks)||[]).includes('ALLOWS_FULL_ADMIN');}
+function pruneToAdmin(cloud,cloudRows){
+  return cloudRows.filter(function(r){
+    if(rootEquivalent(r))return true;
+    if(!isAdminIdentity(r))return false;
+    var t=identType(r).label;
+    return USER_TYPE_LABELS.indexOf(t)!==-1||ROLE_TYPE_LABELS.indexOf(t)!==-1;
+  });
+}
+// Identities count shown in Risk Findings (donut + inventory table) — same Admin-only
+// pruning as the Identity tab, further narrowed to risk_severity Critical only, so the
+// number here always matches what a reader would find by opening the Identity tab. Root/
+// root-equivalent accounts are explicitly excluded here (never included), even though
+// pruneToAdmin() itself always keeps them for the Identity tab — this list is meant to
+// surface actionable Admin-privilege User/Role findings, not the account root(s) themselves.
+function riskFindingIdentities(identities){
+  return pruneToAdmin('all',identities||[]).filter(function(r){
+    if(rootEquivalent(r))return false;
+    return((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase()==='critical';
+  });
+}
+// Host Exposure count/list shown in Risk Findings (Overview "Exposure" tile, inventory
+// badge, and inventory table row) — single source of truth so all three can't drift apart
+// the way they did when only the inventory table's items list got fixed. Sourced from
+// highRiskVulns (server-side cveRiskScore>=9, ANY severity — see fetchHighRiskVulns()),
+// restricted to hosts that also appear as internet-exposed in the Host Internet Exposure
+// tab itself (cache.vulns, Critical/High only) — keeps this list and that tab in agreement
+// instead of highRiskVulns' broader any-severity scan surfacing hosts the tab has no entry
+// for at all. Threshold is >=9.5, not >=9 (fetchHighRiskVulns()'s own server-side floor) —
+// raised per explicit request, kept as a client-side filter on top of the >=9 fetch rather
+// than re-querying, since >=9.5 is a strict subset.
+function riskFindingHostExposure(d){
+  const tabExposedHosts=new Set((d.vulns||[]).filter(r=>{const mt=r.machineTags;const mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;return mtObj&&mtObj.lw_InternetExposure==='Yes';}).map(r=>{const mt=r.machineTags;return mt&&mt.Hostname;}).filter(Boolean));
+  // >=9.95 rather than the raw 0–10 scale's true max (10) — cveRiskScore in practice never
+  // reaches exactly 10 (observed max ~9.98); this is the cutoff where the displayed
+  // Math.round(cveRiskScore*10) risk score reads 100, matching what "risk score = 100" means
+  // to a reader of the table rather than the underlying float.
+  return(d.highRiskVulns||[]).filter(r=>{
+    const mt=r.machineTags;
+    const mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
+    return mtObj&&mtObj.lw_InternetExposure==='Yes'&&tabExposedHosts.has(mtObj.Hostname)&&parseFloat(r.cveRiskScore??r.riskScore??0)>=9.95;
+  });
+}
+
 function renderIdentities(rows,err){
   const setTab=function(id,html){var el=document.getElementById(id);if(el)el.innerHTML=html;};
   if(err){
@@ -2999,85 +3909,6 @@ function renderIdentities(rows,err){
   if(!rows.length){
     const msg='<div class="state">No high-permissive identities found</div>';
     setTab('ibody-aws',msg);setTab('ibody-azure',msg);setTab('ibody-gcp',msg);return;
-  }
-
-  // ── Shared helpers ────────────────────────────────────────────────────────
-  // Cross-cloud "root-equivalent" detector — AWS has a literal root account; Azure/GCP
-  // don't, so the tenant-wide Global Administrator (Entra ID) / Workspace Super Admin
-  // (GCP) directory roles are the closest analogues (unrestricted control, no per-resource scoping).
-  // LW_CE_IDENTITIES has no dedicated "assigned role name" field for Azure/GCP, so this
-  // matches on NAME/PRINCIPAL_ID text the same way the existing AWS root check does.
-  function rootEquivalent(r){
-    const pid=(r.PRINCIPAL_ID||'').toLowerCase();
-    const nm=(r.NAME||'').toLowerCase();
-    if(pid.includes(':root')||nm==='root')return{label:'AWS Root Account',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
-    if(nm.includes('global admin')||nm.includes('globaladmin')||pid.includes('globaladmin'))
-      return{label:'Azure Global Administrator',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
-    if(nm.includes('super admin')||nm.includes('superadmin')||pid.includes('superadmin'))
-      return{label:'GCP Workspace Super Admin',color:'#dc2626',bg:'#fef2f2',border:'#fecaca'};
-    return null;
-  }
-
-  function identType(r){
-    const pid=(r.PRINCIPAL_ID||'').toLowerCase();
-    const nm=(r.NAME||'').toLowerCase();
-    const pt=(r.PROVIDER_TYPE||'').toLowerCase();
-    const rootEq=rootEquivalent(r);
-    if(rootEq)return rootEq;
-    // Real LQL-verified type from LW_CE_LINKED_IDENTITIES.RELATION_TYPE (server-attached
-    // as r._lqlType) takes priority over string-pattern guessing below — it's classified
-    // data straight from the source, not an ARN/name heuristic. Only covers identities
-    // that appear in a linked-identity relationship (e.g. group membership, role chaining);
-    // falls through to the heuristics for identities with no such relationship.
-    const lqlType=r._lqlType; // {cloud:'AWS'|'AZURE'|'GCP', type:'USER'|'ROLE'|...} or null
-    // NOTE: INSTANCE_PROFILE is deliberately NOT mapped to IAM Role here — an ARN-based
-    // check further below reliably classifies actual instance profiles as their own
-    // 'Instance Profile' type; folding them into 'IAM Role' here would hide them from
-    // anything that filters on that distinct type (e.g. the EC2 Instance Profile tab).
-    if(lqlType&&lqlType.type==='ROLE')return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
-    if(lqlType&&lqlType.type==='USER'){
-      // Cloud is carried alongside type specifically so an Azure user linked via
-      // AZURE_USER_TO_GROUP isn't collapsed into the same bare 'USER' bucket as an
-      // AWS IAM user (RELATION_TYPE's own prefix used to be discarded — see lqlTypeMap).
-      if(lqlType.cloud==='AZURE')return{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'};
-      if(lqlType.cloud==='GCP')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-      return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    }
-    if(lqlType&&lqlType.type==='GOOGLE_ACCOUNT')return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    if(lqlType&&lqlType.type==='SERVICE_ACCOUNT')return lqlType.cloud==='AZURE'
-      ?{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'}
-      :{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
-
-    if(pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com'))return{label:'Service Account',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
-    if(pid.includes(':assumed-role/')||pid.includes('/sts:'))return{label:'Assumed Role',color:'#b45309',bg:'#fffbeb',border:'#fde68a'};
-    if(pid.includes(':group/'))return{label:'IAM Group',color:'#be185d',bg:'#fdf2f8',border:'#fbcfe8'};
-    if(pid.includes(':instance-profile/'))return{label:'Instance Profile',color:'#0e7490',bg:'#ecfeff',border:'#a5f3fc'};
-    // Azure/GCP identities are classified from PROVIDER_TYPE before the AWS-style ARN/name
-    // heuristics below — those heuristics (":user/", "user" in name, "role" in name) are
-    // AWS-shaped and otherwise misfire on Azure/GCP records whose NAME or PRINCIPAL_ID
-    // happens to contain those substrings, mislabeling them as generic AWS types.
-    if(pt==='azure'||pt==='gcp'){
-      // Azure AD / GCP Workspace human users have PROVIDER_TYPE just 'azure'/'gcp' (no
-      // serviceprincipal/aad marker) and no AWS-style ARN — but their PRINCIPAL_ID is an
-      // email/UPN (e.g. user@tenant.onmicrosoft.com, user#EXT#@tenant.onmicrosoft.com,
-      // user@workspace-domain.com). Any gserviceaccount.com address already matched the
-      // Service Account check above, so an '@' here means a real person, not a service.
-      if(pid.includes('@'))return pt==='azure'
-        ?{label:'Azure User',color:'#0078D4',bg:'#eff6ff',border:'#bfdbfe'}
-        :{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-      // Azure Service Principals / App Registrations (e.g. automation identities like
-      // "lacework_security_audit", "azure-cli-*", FortiGate/FortiManager service accounts)
-      // have a bare GUID PRINCIPAL_ID with no email — distinct from human Azure AD users,
-      // whose ID always contains '@'. No linked-identity relationship is recorded for most
-      // of them either (no group membership), so this is the last-resort signal.
-      if(pt==='azure'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(pid))
-        return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
-    }
-    if(pid.includes(':role/')||nm.includes('role'))return{label:'IAM Role',color:'#0369a1',bg:'#f0f9ff',border:'#bae6fd'};
-    if(pid.includes(':user/')||nm.includes('user'))return{label:'IAM User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    if(pt.includes('serviceprincipal')||pt.includes('aad'))return{label:'Azure Service Principal',color:'#7c3aed',bg:'#f5f3ff',border:'#ddd6fe'};
-    if(pt.includes('user'))return{label:'User',color:'#065f46',bg:'#ecfdf5',border:'#a7f3d0'};
-    return{label:'Identity',color:'#475569',bg:'#f8fafc',border:'#e2e8f0'};
   }
 
   function shortName(r){
@@ -3219,7 +4050,7 @@ function renderIdentities(rows,err){
   }
 
   function cloudGroupHtml(cloud,label){
-    var cloudRows=rows.filter(function(r){return cspOfIdentity(r)===cloud;}).sort(function(a,b){
+    var cloudRows=pruneToAdmin(cloud,rows.filter(function(r){return cspOfIdentity(r)===cloud;})).sort(function(a,b){
       // Root accounts first, then no-MFA identities, then Critical→High→Medium→Low, then risk score.
       var aRoot=rootEquivalent(a)?0:1, bRoot=rootEquivalent(b)?0:1;
       if(aRoot!==bRoot)return aRoot-bRoot;
@@ -3232,7 +4063,8 @@ function renderIdentities(rows,err){
       if(aSev!==bSev)return aSev-bSev;
       return((b.METRICS&&b.METRICS.risk_score)||0)-((a.METRICS&&a.METRICS.risk_score)||0);
     });
-    var hdr='<div style="padding:6px 0 8px;margin-top:16px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#111827;border-bottom:2px solid #11182733;margin-bottom:4px">'+e(label)+' <span style="font-weight:400;color:#9ca3af">('+cloudRows.length+')</span></div>';
+    var pruneNote='showing Admin-privilege Users, IAM Roles &amp; Root only';
+    var hdr='<div style="padding:6px 0 8px;margin-top:16px;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#111827;border-bottom:2px solid #11182733;margin-bottom:4px">'+e(label)+' <span style="font-weight:400;color:#9ca3af">('+cloudRows.length+') &middot; '+pruneNote+'</span></div>';
     return hdr+(cloudRows.length?(typeFilterBarHtml(cloud,cloudRows)+identTable(cloudRows)):'<div class="state">No '+e(label)+' found</div>');
   }
 
@@ -3815,27 +4647,81 @@ let _currentLabTab='global';
 // Identity graph state
 var _igNodePos={};var _igNW=185;var _igNH=38;var _igTrustMap={};
 
+// ── Identity risk classification (client mirror of the server-side helpers near
+// calcRiskScore()) — Admin + No-MFA + (unused entitlements ≥80% OR access key ≥180d old)
+// → flat 80. Otherwise falls back to the raw FortiCNAPP CIEM risk_score. ──
+function isServiceAccount(r){
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase(),p=(r.PROVIDER_TYPE||'').toLowerCase();
+  return pid.includes('serviceaccount')||nm.includes('serviceaccount')||pid.includes('.iam.gserviceaccount.com')||p.includes('serviceprincipal')||p.includes('aad');
+}
+function isRoleType(r){
+  const pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase();
+  return (pid.includes(':role/')||pid.includes(':assumed-role/')||nm.includes('role'))&&!isServiceAccount(r);
+}
+function isHighPermissive(r){
+  const risks=(r.METRICS&&r.METRICS.risks)||[];
+  const sev=((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase();
+  return risks.includes('ALLOWS_FULL_ADMIN')||risks.includes('EXCESSIVE_PERMISSIONS')||sev==='critical'||sev==='high';
+}
+function isNoMfa(r){
+  const risks=(r.METRICS&&r.METRICS.risks)||[];
+  return risks.includes('PASSWORD_LOGIN_NO_MFA')||!r.MFA_ENABLED;
+}
+function unusedPctOf(r){
+  const ec=r.ENTITLEMENT_COUNTS||{};
+  const unusedCnt=ec.entitlements_unused_count,totalCnt=ec.entitlements_total_count||ec.entitlements_count;
+  return ec.entitlements_unused_percentage!=null?ec.entitlements_unused_percentage
+    :(unusedCnt!=null&&totalCnt?(unusedCnt/totalCnt)*100:null);
+}
+// Access-key age field name unverified — see docs/superpowers/specs/2026-07-28-risk-findings-
+// weighting-design.md. Checks common casings; falls back to not-old if none match.
+function isOldAccessKey(r,thresholdDays){
+  thresholdDays=thresholdDays||180;
+  const raw=r.ACCESS_KEYS;
+  const keys=Array.isArray(raw)?raw:(raw&&typeof raw==='object'?[raw]:[]);
+  return keys.some(k=>{
+    if(!k||typeof k!=='object')return false;
+    const created=k.create_date||k.CREATE_DATE||k.createDate||k.CreateDate||k.created_at||k.CREATED_AT;
+    if(!created)return false;
+    const ageDays=(Date.now()-new Date(created).getTime())/86400000;
+    return Number.isFinite(ageDays)&&ageDays>=thresholdDays;
+  });
+}
+function isAdminNoMfaIdentity(r){
+  return !isServiceAccount(r)&&!isRoleType(r)&&isHighPermissive(r)&&isNoMfa(r);
+}
+function identityRiskScore(r){
+  const qualifies=isAdminNoMfaIdentity(r)&&((unusedPctOf(r)??0)>=80||isOldAccessKey(r));
+  return qualifies?80:Math.min(100,(r.METRICS?.risk_score||0)*100);
+}
+
 // Cloud Security Posture Score: higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100.
-// Alert: 95  |  CVE: riskScore×10  |  Compliance: 80  |  Identity: risk_score×100  |  Secret: 75
+// Alert: CRITICAL=80/HIGH=60/MEDIUM=40  |  CVE: riskScore×10 (only riskScore≥8)  |  Compliance: 80  |  Identity: see identityRiskScore()  |  Secret: 10
 function calcPostureScore(d){
   const risks=[];
-  (d.alerts||[]).forEach(()=>risks.push(95));
-  (d.vulns||[]).forEach(r=>risks.push(Math.min(100,parseFloat(r.riskScore||0)*10)));
+  (d.alerts||[]).forEach(r=>{const s=(r.severity||'').toLowerCase();risks.push(s==='critical'?80:s==='high'?60:40);});
+  (d.vulns||[]).forEach(r=>{const rs=parseFloat(r.riskScore||0);if(rs>=8)risks.push(Math.min(100,rs*10));});
   (d.compliance||[]).forEach(()=>risks.push(80));
-  (d.identities||[]).forEach(r=>risks.push(Math.min(100,(r.METRICS?.risk_score||0)*100)));
-  (d.secretsAll||[]).forEach(()=>risks.push(75));
+  (d.identities||[]).forEach(r=>risks.push(identityRiskScore(r)));
+  (d.secretsAll||[]).forEach(()=>risks.push(10));
   return Math.max(0, Math.round(risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100));
 }
-// 90–100 Green · 60–89 Orange · 0–59 Red  (higher = better posture)
-function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Review Only Required – Least Vulnerable':p>=50?'Action Required – Vulnerable':'Immediate Action Required – Highly Vulnerable';}
+// Cloud Security Score maturity model — combines Option 2's progression with Option 1's
+// executive meaning. Primary label is the tier name only (no negative wording); the
+// executive interpretation is exposed separately via scoreTierDetail() for a tooltip/detail
+// panel, not printed on the gauge itself.
+// 81–100 Optimized (blue) · 61–80 Advanced (green) · 31–60 Managed (orange) · 0–30 Foundational (red)
+function scoreColor(p){return p>=81?'#3b82f6':p>=61?'#22c55e':p>=31?'#f59e0b':'#ef4444';}
+function scoreTier(p){return p>=81?'Optimized':p>=61?'Advanced':p>=31?'Managed':'Foundational';}
+function scoreTierDetail(p){return p>=81?'Mature cloud security posture with proactive risk management and continuous improvement':p>=61?'Security posture is strong with effective controls and manageable residual risk':p>=31?'Core controls are established, but security gaps and optimization opportunities remain':'Security controls are immature; significant exposure and remediation priorities exist';}
+function scoreBand(p){return scoreTier(p);}
 
 function renderRiskFindings(d){
   const p=calcPostureScore(d);
   const color=scoreColor(p);
   const band=scoreBand(p);
-  const na=d.alerts?.length??0,nv=d.vulns?.length??0,nc=d.compliance?.length??0,ni=d.identities?.length??0,ns=(d.secretsAll||[]).length;
+  const na=d.alerts?.length??0,nv=riskFindingHostExposure(d).length,nc=d.compliance?.length??0,ni=riskFindingIdentities(d.identities).length,ns=(d.secretsAll||[]).length;
   document.getElementById('rf-k-a').textContent=na;
   document.getElementById('rf-k-v').textContent=nv;
   document.getElementById('rf-k-c').textContent=nc;
@@ -3848,26 +4734,36 @@ function renderRiskFindings(d){
   document.getElementById('ov-c').textContent=nc;
   const base='https://'+d.account;
   const groups=[
-    {key:'Alert',     label:'High Fidelity Alerts',       color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>({title:r.alertName,     copyVal:r.alertName||r.alertId,   detail:r.alertType,score:95}))},
-    {key:'CVE',       label:'Host Exposure',   color:'#f97316', tab:'vulns',       items:(d.vulns||[]).map(r=>({title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId,        detail:(r.featureKey?.name||'')+' · '+(r.evalCtx?.hostname||''),score:parseFloat(r.riskScore||0)*10}))},
-    {key:'Identity',  label:'Identities',                 color:'#8b5cf6', tab:'identities',  items:(d.identities||[]).map(r=>({title:r.NAME||r.PRINCIPAL_ID, copyVal:r.NAME||r.PRINCIPAL_ID, detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:(r.METRICS?.risk_score||0)*100}))},
+    {key:'Alert',     label:'High Fidelity Alerts',       color:'#ef4444', tab:'alerts',      items:(d.alerts||[]).map(r=>{const s=(r.severity||'').toLowerCase();return{title:r.alertName,     copyVal:r.alertName||r.alertId,   detail:r.alertType,score:s==='critical'?80:s==='high'?60:40};})},
+    {key:'CVE',       label:'Host Exposure',   color:'#f97316', tab:'vulns',       items:riskFindingHostExposure(d).map(r=>{const mt=r.machineTags||{};
+      // machineTags.Hostname/Name (the actual instance identity) — NOT evalCtx.hostname,
+      // which is the agent's own self-reported hostname and can legitimately differ from the
+      // instance's real identity (e.g. "my-tools" vs "ip-172-31-19-180...") on the exact same
+      // host, misleadingly implying a third, unrelated host in the detail text.
+      const hostLabel=mt.Name||mt.Hostname||r.evalCtx?.hostname||'';
+      return{title:r.vulnId||r.cveId, copyVal:r.vulnId||r.cveId, detail:(r.featureKey?.name||'')+' · '+hostLabel,score:parseFloat(r.cveRiskScore??r.riskScore??0)*10};})},
+    {key:'Identity',  label:'Identities',                 color:'#8b5cf6', tab:'identities',  items:riskFindingIdentities(d.identities).map(r=>({title:r.NAME||r.PRINCIPAL_ID, copyVal:r.NAME||r.PRINCIPAL_ID, detail:(r.PROVIDER_TYPE||'')+' · No MFA',score:identityRiskScore(r)}))},
     {key:'Compliance',label:'Critical Misconfigurations', color:'#f59e0b', tab:'compliance',  items:(d.compliance||[]).map(r=>({title:r.title,     copyVal:r.alertId||r.title,       detail:(r.cloud||'').toUpperCase()+' · '+r.violations+' violations',score:80}))},
-    {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:90}))},
+    {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:10}))},
   ].filter(g=>g.items.length);
   if(!groups.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
   const rows=groups.map(g=>{
-    const hdr='<tr style="background:#f8fafc;border-top:2px solid '+g.color+'">'
-      +'<td colspan="3" style="padding:7px 12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:'+g.color+'"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)+'</td>'
-      +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" data-tab="'+g.tab+'" onclick="nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
-      +'</tr>';
-    const detail=g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
+    const bodyId='rf-grp-'+g.key;
+    const hdr='<tbody><tr class="rf-grp-toggle" data-body="'+bodyId+'" style="cursor:pointer;background:#f8fafc;border-top:2px solid '+g.color+'">'
+      +'<td colspan="3" style="padding:7px 12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:'+g.color+'">'
+        +'<span class="rf-grp-chevron" style="display:inline-block;width:11px;font-size:9px;color:'+g.color+'">&#9654;</span>'
+        +'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)
+      +'</td>'
+      +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" data-tab="'+g.tab+'" onclick="event.stopPropagation();nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
+      +'</tr></tbody>';
+    const detail='<tbody id="'+bodyId+'" style="display:none">'+g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
       +'<td class="p" colspan="2" style="display:flex;align-items:center;gap:4px">'+e(tr(r.title,48))+'<button class="cp-btn" data-cp="'+e(r.copyVal||r.title)+'" title="Copy">'+cpIcon+'</button></td>'
       +'<td class="m">'+e(tr(r.detail,36))+'</td>'
       +'<td class="r"><span class="risk-score">'+Math.round(r.score)+'</span></td>'
-    +'</tr>').join('');
+    +'</tr>').join('')+'</tbody>';
     return hdr+detail;
   }).join('');
-  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th colspan="2">Finding</th><th>Detail</th><th>Risk Score</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+  setBody('rf-table','<div class="tbl-wrap"><table><thead><tr><th colspan="2">Finding</th><th>Detail</th><th>Risk Score</th></tr></thead>'+rows+'</table></div>');
 }
 
 // ── CSP detection helpers (client-side) ──────────────────────────────────────
@@ -3903,10 +4799,10 @@ function calcCspScore(d,csp){
     const s=(r.severity||'').toLowerCase();
     if(s==='critical')C++;else H++;
   });
-  // Identities — bucket by risk_score (0–1 scale)
+  // Identities — bucket by identityRiskScore() (0–100 scale)
   (d.identities||[]).filter(r=>cspOfIdentity(r)===csp).forEach(r=>{
-    const rs=r.METRICS?.risk_score||0;
-    if(rs>=0.8)C++;else if(rs>=0.5)H++;else if(rs>=0.2)M++;else L++;
+    const score=identityRiskScore(r);
+    if(score>=80)C++;else if(score>=50)H++;else if(score>=20)M++;else L++;
   });
   const total=C+H+M+L;
   if(total===0)return null;
@@ -3937,8 +4833,8 @@ function renderCspLab(d,csp){
   const scoreEl=document.getElementById('clab-score');
   if(scoreEl){scoreEl.textContent=p;scoreEl.style.color=color;}
   const bandEl=document.getElementById('clab-band-txt');
-  if(bandEl)bandEl.textContent=band;
-  const goalTier=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';
+  if(bandEl){bandEl.textContent=band;bandEl.title=scoreTierDetail(p);}
+  const goalTier=scoreTier(p).toUpperCase();
   const factors=[
     {label:'Identities',   count:identities.length,   color:identities.length>0?'#ef4444':'#22c55e',   nav:'identities', mitre:{tactic:'Priv. Escalation',id:'TA0004',c:'#8b5cf6'}, badge:true},
     {label:'Exposed Hosts',count:exposedHosts.length,  color:exposedHosts.length>0?'#f97316':'#22c55e',  nav:'vulns',      mitre:{tactic:'Initial Access',id:'TA0001',c:'#ef4444'},   badge:true, tooltip:exposedHostsTooltip(exposedHosts)},
@@ -4033,7 +4929,8 @@ function renderLab(d){
   const color=scoreColor(p);
   const band=scoreBand(p);
   const ls=document.getElementById('lab-score');ls.textContent=p;ls.style.color=color;
-  document.getElementById('lab-band-txt').textContent=band;
+  const labBandEl=document.getElementById('lab-band-txt');
+  labBandEl.textContent=band;labBandEl.title=scoreTierDetail(p);
   // Compute internet-exposed hosts for the Exposed Hosts node and per-host graphs
   const {map:_hmap,critMisc:_critMisc}=buildAssetRiskMap(d);
   const _allHosts=Object.values(_hmap);
@@ -4047,7 +4944,7 @@ function renderLab(d){
   // which already lists every internetExposed host with no score gate.
   const _exposedHosts=_allHosts.filter(function(h){return h.internetExposed===true;})
     .sort(function(a,b){return b.normalizedScore-a.normalizedScore;});
-  const goalTier=p>=90?'ACHIEVED':p>=50?'VULNERABLE':'HIGH RISK';
+  const goalTier=scoreTier(p).toUpperCase();
   const factors=[
     {label:'Identities',   count:(d.identities||[]).length, color:(d.identities||[]).length>0?'#ef4444':'#22c55e', nav:'identities', mitre:{tactic:'Priv. Escalation',id:'TA0004',c:'#8b5cf6'}, badge:true},
     {label:'Crit. Alerts', count:(d.alerts||[]).length,      color:(d.alerts||[]).length>0?'#ef4444':'#22c55e',     nav:'alerts',     mitre:{tactic:'Discovery',id:'TA0007',c:'#f97316'},        badge:true},
@@ -4079,7 +4976,7 @@ function closeHostGraph(){
   if(ov)ov.style.display='none';
 }
 
-function openHostGraph(hostName){
+function openHostGraph(hostName,resourceName){
   // ── Determine if this is a private host (from secretsAll) or internet-exposed ──
   var privHost=_renderedPrivMap&&(_renderedPrivMap[hostName.toLowerCase()]||_renderedPrivMap[hostName]);
   var isPrivate=!!privHost;
@@ -4130,7 +5027,10 @@ function openHostGraph(hostName){
   var hexFactors=factors.map(function(f,i){
     return{label:f.label,count:f.count,color:f.color,nav:f.nav,mitre:mFact[i]};
   });
-  var hn=hostName.length>20?hostName.substring(0,19)+'…':hostName;
+  // Resource Name (e.g. "my-blogs"), when known, is far more identifiable in the hex
+  // diagram than the raw hostname — prefer it, falling back to the raw hostname.
+  var hnSource=resourceName||hostName;
+  var hn=hnSource.length>20?hnSource.substring(0,19)+'…':hnSource;
   var svg=hexKillChainSvg({
     attacker:{label:isPrivate?'LATERAL ATTACK':'ATTACKER',color:isPrivate?'#ea580c':'#ff5e3a'},
     network:{label:isPrivate?'Private Network':'Internet',color:isPrivate?'#ea580c':'#3b82f6'},
@@ -4154,7 +5054,7 @@ function openHostGraph(hostName){
   if(secCnt>0)remItems.push('Remove '+secCnt+' exposed secret'+(secCnt!==1?'s':''));
 
   var html='<div style="border-bottom:1px solid '+tbd+';padding:8px 20px;background:'+tbg+';display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-    +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(hostName)+'</span>'
+    +'<span style="font-family:SFMono-Regular,Consolas,monospace;font-size:13px;font-weight:700;color:#111827">'+e(hnSource)+'</span>'
     +'<span style="font-size:9px;font-weight:700;color:'+tc+';letter-spacing:.08em;border:1px solid '+tbd+';border-radius:3px;padding:2px 7px">'+tier+'</span>'
     +(!isPrivate&&host.publicIP?'<span style="font-size:9px;font-weight:600;color:#dc2626;background:#fee2e2;border-radius:3px;padding:2px 8px">'+e(host.publicIP)+'</span>':'')
     +(isPrivate?'<span style="font-size:9px;color:#6b7280">Lateral movement risk &middot; '+secCnt+' exposed credential'+(secCnt!==1?'s':'')+'</span>':'')
@@ -4164,7 +5064,7 @@ function openHostGraph(hostName){
   +'<div style="padding:8px 0">'+svg+'</div>'
   +(remItems.length?'<div style="padding:10px 20px;background:#f0fdf4;border-top:1px solid #bbf7d0;font-size:11px;font-weight:600;color:#166534">&#10003; To close this attack path: '+remItems.join(' &nbsp;&middot;&nbsp; ')+'</div>':'');
 
-  document.getElementById('host-graph-title').textContent=(isPrivate?'Lateral Attack Path — ':'Attack Path — ')+hostName;
+  document.getElementById('host-graph-title').textContent=(isPrivate?'Lateral Attack Path — ':'Attack Path — ')+hnSource;
   document.getElementById('host-graph-body').innerHTML=html;
   document.getElementById('host-graph-overlay').style.display='flex';
 
@@ -4213,6 +5113,10 @@ async function load(){
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
     renderPublicStorage(d);
+    renderFortiGate(d);
+    renderExposedAssets(d);
+    renderAttackPaths(d);
+    renderInternetHostExposedBeta(d);
     renderAssetRisk(d);
     updateRiskScore(calcGlobalScoreFromCsp(d));
     updateCspGauges(d);
@@ -4279,8 +5183,8 @@ function updateRiskScore(p){
   updateLadder(p);
 }
 function updateLadder(p){
-  const band=p<50?'urgent':p<90?'attention':'proactive';
-  ['urgent','attention','proactive'].forEach(b=>{
+  const band=p<31?'foundational':p<61?'managed':p<81?'advanced':'optimized';
+  ['foundational','managed','advanced','optimized'].forEach(b=>{
     const el=document.getElementById('bubble-'+b);
     if(!el)return;
     el.setAttribute('opacity', b===band ? '1' : '0.35');
@@ -4332,7 +5236,7 @@ function updateCspGauges(d){
     const raw=calcCspScore(d,csp);
     const p=raw!==null?raw:100;
     const color=scoreColor(p);
-    const band=p>=90?'REVIEW ONLY':p>=50?'VULNERABLE':'HIGH RISK';
+    const band=scoreTier(p).toUpperCase();
     const arc=document.getElementById('csp-arc-'+csp);
     const scoreEl=document.getElementById('csp-score-'+csp);
     const bandEl=document.getElementById('csp-band-'+csp);
@@ -4341,7 +5245,7 @@ function updateCspGauges(d){
     const subEl=document.getElementById('csp-sub-'+csp);
     if(arc){arc.setAttribute('stroke',color);arc.setAttribute('stroke-dasharray',(p/100*arcLen)+' '+arcLen);}
     if(scoreEl){scoreEl.textContent=p;scoreEl.setAttribute('fill',color);}
-    if(bandEl){bandEl.textContent=band;bandEl.setAttribute('fill',color);}
+    if(bandEl){bandEl.textContent=band;bandEl.setAttribute('fill',color);bandEl.setAttribute('title',scoreTierDetail(p));}
     if(labelEl){labelEl.textContent=cspLabel[csp];}
     if(orgEl)orgEl.textContent=co||'—';
     // FortiAccount: prefer d.subAccount (from LW key file / env), else CSP-derived names
@@ -4490,7 +5394,7 @@ function _fgArrowCycle(){
   },3000);
 }
 setTimeout(_fgArrowCycle,5000);
-// Card cycle — show for 8s, hide, wait _fgFreqSec, repeat
+// Card cycle — show for 10s, hide, wait _fgFreqSec, repeat
 function _fgRunCycle(){
   if(_fgCycleTimer)clearTimeout(_fgCycleTimer);
   if(_fgHideTimer)clearTimeout(_fgHideTimer);
@@ -4498,7 +5402,7 @@ function _fgRunCycle(){
   _fgHideTimer=setTimeout(function(){
     _fgHideCard();
     _fgCycleTimer=setTimeout(_fgRunCycle,_fgFreqSec*1000);
-  },8000);
+  },10000);
 }
 function applyFactFreq(val){
   _fgFreqSec=parseInt(val,10)||30;
@@ -4841,6 +5745,16 @@ document.addEventListener('click',function(ev){
       xb.innerHTML=(open?'&#9654; ':'&#9660; ')+'CVEs';
     }
   }
+  const gb=ev.target.closest('.rf-grp-toggle');
+  if(gb){
+    var gbd=document.getElementById(gb.dataset.body);
+    if(gbd){
+      var gopen=gbd.style.display!=='none';
+      gbd.style.display=gopen?'none':'table-row-group';
+      var chev=gb.querySelector('.rf-grp-chevron');
+      if(chev)chev.innerHTML=gopen?'&#9654;':'&#9660;';
+    }
+  }
 });
 
 async function loadTrustPrincipals(btn){
@@ -5020,7 +5934,7 @@ function closeMachPanel(){document.getElementById('mach-overlay').style.display=
 document.addEventListener('click',function(ev){
   var btn=ev.target.closest('.goto-host-card-btn');
   if(!btn)return;
-  openHostGraph(btn.dataset.hostname||'');
+  openHostGraph(btn.dataset.hostname||'',btn.dataset.resourcename||'');
 });
 
 // ── Host Attack Path modal ─────────────────────────────────────────────────────
@@ -5406,18 +6320,21 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
   <svg viewBox="0 0 400 245" style="display:block;width:100%;overflow:visible">
     <defs>
       <linearGradient id="mg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">
-        <stop offset="0%"    stop-color="#ef4444"/>
-        <stop offset="50%"   stop-color="#ef4444"/>
-        <stop offset="50%"   stop-color="#f59e0b"/>
-        <stop offset="97.5%" stop-color="#f59e0b"/>
-        <stop offset="97.5%" stop-color="#22c55e"/>
-        <stop offset="100%"  stop-color="#22c55e"/>
+        <stop offset="0%"     stop-color="#ef4444"/>
+        <stop offset="20.6%"  stop-color="#ef4444"/>
+        <stop offset="20.6%"  stop-color="#f59e0b"/>
+        <stop offset="65.45%" stop-color="#f59e0b"/>
+        <stop offset="65.45%" stop-color="#22c55e"/>
+        <stop offset="90.45%" stop-color="#22c55e"/>
+        <stop offset="90.45%" stop-color="#3b82f6"/>
+        <stop offset="100%"   stop-color="#3b82f6"/>
       </linearGradient>
     </defs>
     <path fill="none" stroke="#e2e8f0" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>
     <path id="garc" fill="none" stroke="url(#mg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="0 550" d="M 25,205 A 175,175 0 0,1 375,205"/>
-    <line x1="200" y1="10" x2="200" y2="44"  stroke="white" stroke-width="3" stroke-linecap="round"/>
-    <line x1="350" y1="156" x2="383" y2="146" stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="86" y1="48" x2="108" y2="79"   stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="260" y1="20" x2="248" y2="57"  stroke="white" stroke-width="3" stroke-linecap="round"/>
+    <line x1="357" y1="91" x2="326" y2="113" stroke="white" stroke-width="3" stroke-linecap="round"/>
     <text id="mscore" x="200" y="162" text-anchor="middle" font-size="64" font-weight="900" letter-spacing="-2" font-family="-apple-system,sans-serif" fill="#94a3b8">—</text>
     <text x="25"  y="232" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">0</text>
     <text x="375" y="232" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,sans-serif" fill="#cbd5e1">100</text>
@@ -5432,15 +6349,62 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
-function scoreColor(p){return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';}
-function scoreBand(p){return p>=90?'Review Only Required – Least Vulnerable':p>=50?'Action Required – Vulnerable':'Immediate Action Required – Highly Vulnerable';}
+function scoreColor(p){return p>=81?'#3b82f6':p>=61?'#22c55e':p>=31?'#f59e0b':'#ef4444';}
+function scoreTier(p){return p>=81?'Optimized':p>=61?'Advanced':p>=31?'Managed':'Foundational';}
+function scoreTierDetail(p){return p>=81?'Mature cloud security posture with proactive risk management and continuous improvement':p>=61?'Security posture is strong with effective controls and manageable residual risk':p>=31?'Core controls are established, but security gaps and optimization opportunities remain':'Security controls are immature; significant exposure and remediation priorities exist';}
+function scoreBand(p){return scoreTier(p);}
+function isServiceAccount(r){
+  var pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase(),p=(r.PROVIDER_TYPE||'').toLowerCase();
+  return pid.indexOf('serviceaccount')!==-1||nm.indexOf('serviceaccount')!==-1||pid.indexOf('.iam.gserviceaccount.com')!==-1||p.indexOf('serviceprincipal')!==-1||p.indexOf('aad')!==-1;
+}
+function isRoleType(r){
+  var pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase();
+  return (pid.indexOf(':role/')!==-1||pid.indexOf(':assumed-role/')!==-1||nm.indexOf('role')!==-1)&&!isServiceAccount(r);
+}
+function isHighPermissive(r){
+  var risks=(r.METRICS&&r.METRICS.risks)||[];
+  var sev=((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase();
+  return risks.indexOf('ALLOWS_FULL_ADMIN')!==-1||risks.indexOf('EXCESSIVE_PERMISSIONS')!==-1||sev==='critical'||sev==='high';
+}
+function isNoMfa(r){
+  var risks=(r.METRICS&&r.METRICS.risks)||[];
+  return risks.indexOf('PASSWORD_LOGIN_NO_MFA')!==-1||!r.MFA_ENABLED;
+}
+function unusedPctOf(r){
+  var ec=r.ENTITLEMENT_COUNTS||{};
+  var unusedCnt=ec.entitlements_unused_count,totalCnt=ec.entitlements_total_count||ec.entitlements_count;
+  return ec.entitlements_unused_percentage!=null?ec.entitlements_unused_percentage
+    :(unusedCnt!=null&&totalCnt?(unusedCnt/totalCnt)*100:null);
+}
+// Access-key age field name unverified — see docs/superpowers/specs/2026-07-28-risk-findings-
+// weighting-design.md. Checks common casings; falls back to not-old if none match.
+function isOldAccessKey(r,thresholdDays){
+  thresholdDays=thresholdDays||180;
+  var raw=r.ACCESS_KEYS;
+  var keys=Array.isArray(raw)?raw:(raw&&typeof raw==='object'?[raw]:[]);
+  return keys.some(function(k){
+    if(!k||typeof k!=='object')return false;
+    var created=k.create_date||k.CREATE_DATE||k.createDate||k.CreateDate||k.created_at||k.CREATED_AT;
+    if(!created)return false;
+    var ageDays=(Date.now()-new Date(created).getTime())/86400000;
+    return isFinite(ageDays)&&ageDays>=thresholdDays;
+  });
+}
+function isAdminNoMfaIdentity(r){
+  return !isServiceAccount(r)&&!isRoleType(r)&&isHighPermissive(r)&&isNoMfa(r);
+}
+function identityRiskScore(r){
+  var up=unusedPctOf(r);
+  var qualifies=isAdminNoMfaIdentity(r)&&((up==null?0:up)>=80||isOldAccessKey(r));
+  return qualifies?80:Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100);
+}
 function calcScore(d){
   var risks=[];
-  (d.alerts||[]).forEach(function(){risks.push(95);});
-  (d.vulns||[]).forEach(function(r){risks.push(Math.min(100,parseFloat(r.riskScore||0)*10));});
+  (d.alerts||[]).forEach(function(r){var s=(r.severity||'').toLowerCase();risks.push(s==='critical'?80:s==='high'?60:40);});
+  (d.vulns||[]).forEach(function(r){var rs=parseFloat(r.riskScore||0);if(rs>=8)risks.push(Math.min(100,rs*10));});
   (d.compliance||[]).forEach(function(){risks.push(80);});
-  (d.identities||[]).forEach(function(r){risks.push(Math.min(100,(r.METRICS&&r.METRICS.risk_score||0)*100));});
-  (d.secretsAll||[]).forEach(function(){risks.push(75);});
+  (d.identities||[]).forEach(function(r){risks.push(identityRiskScore(r));});
+  (d.secretsAll||[]).forEach(function(){risks.push(10);});
   return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
 function buildSteps(d,p){
@@ -5468,7 +6432,7 @@ function refresh(){
     var color=scoreColor(p);
     document.getElementById('garc').setAttribute('stroke-dasharray',(p/100*550).toFixed(1)+' 550');
     var ms=document.getElementById('mscore');if(ms){ms.textContent=p;ms.setAttribute('fill',color);}
-    var mb=document.getElementById('m-band');if(mb){mb.textContent=scoreBand(p);mb.style.color=color;}
+    var mb=document.getElementById('m-band');if(mb){mb.textContent=scoreBand(p);mb.style.color=color;mb.title=scoreTierDetail(p);}
 buildSteps(d,p);
     document.getElementById('ldot').className='dot ok';
     document.getElementById('ltime').textContent=new Date().toLocaleTimeString();
@@ -6418,6 +7382,14 @@ function computeEffectivePublicStorage(data) {
   return { findings, epByBucket };
 }
 
+// Cloud Security Score maturity model — mirrors the client scoreColor/scoreTier exactly.
+// Primary label is the tier name only (no negative wording); scoreTierDetail() is the
+// executive interpretation, surfaced as a tooltip/caption rather than printed on the gauge.
+// 81–100 Optimized (blue) · 61–80 Advanced (green) · 31–60 Managed (orange) · 0–30 Foundational (red)
+function scoreTierColor(p){return p>=81?'#3b82f6':p>=61?'#22c55e':p>=31?'#f59e0b':'#ef4444';}
+function scoreTier(p){return p>=81?'Optimized':p>=61?'Advanced':p>=31?'Managed':'Foundational';}
+function scoreTierDetail(p){return p>=81?'Mature cloud security posture with proactive risk management and continuous improvement':p>=61?'Security posture is strong with effective controls and manageable residual risk':p>=31?'Core controls are established, but security gaps and optimization opportunities remain':'Security controls are immature; significant exposure and remediation priorities exist';}
+
 // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly.
 // Shared by both report builders (MultiCloud + per-cloud CSPM score gauges).
 function computeCspScores(data) {
@@ -6451,9 +7423,9 @@ function computeCspScores(data) {
       findings.push({ type:'Misconfiguration', title: r.title||'—', weight, rawSeverity: r.severity||'—' });
     });
     (data.identities||[]).filter(r=>cspOfIdentity(r)===csp).forEach(r=>{
-      const rs=(r.METRICS&&r.METRICS.risk_score)||0;
+      const score=identityRiskScore(r);
       let weight;
-      if(rs>=0.8){C++;weight='Critical';}else if(rs>=0.5){H++;weight='High';}else if(rs>=0.2){M++;weight='Medium';}else{L++;weight='Low';}
+      if(score>=80){C++;weight='Critical';}else if(score>=50){H++;weight='High';}else if(score>=20){M++;weight='Medium';}else{L++;weight='Low';}
       const label = r.NAME || (r.PRINCIPAL_ID||'').split('/').pop() || r.PRINCIPAL_ID || '—';
       findings.push({ type:'Identity', title: label, weight, rawSeverity: (r.METRICS&&r.METRICS.risk_severity)||'—' });
     });
@@ -6471,9 +7443,10 @@ function computeCspScores(data) {
   const cspCounts   = { aws: awsCalc.counts, azure: azureCalc.counts, gcp: gcpCalc.counts };
   const cspVals   = ['aws','azure','gcp'].map(c => cspScores[c] !== null ? cspScores[c] : 100);
   const score     = Math.round(cspVals.reduce((s,v)=>s+v,0)/cspVals.length);
-  const sBand     = score>=90 ? 'Review Only Required – Least Vulnerable' : score>=50 ? 'Action Required – Vulnerable' : 'Immediate Action Required – Highly Vulnerable';
-  const sColor    = score>=90 ? '#22c55e' : score>=50 ? '#f59e0b' : '#ef4444';
-  return { cspScores, cspFindings, cspCounts, score, sBand, sColor };
+  const sBand     = scoreTier(score);
+  const sColor    = scoreTierColor(score);
+  const sDetail   = scoreTierDetail(score);
+  return { cspScores, cspFindings, cspCounts, score, sBand, sColor, sDetail };
 }
 
 // Shared TOC card renderer — big colored count + category color-coding so the
@@ -6607,7 +7580,12 @@ function hexKillChainSvg(spec) {
   svg += '<polygon points="' + hexPoints(TX, CY, TW, TH) + '" fill="' + target.tierColor + '" filter="url(#' + sid + 'd)">';
   if (target.tooltip) svg += '<title>' + esc(target.tooltip) + '</title>';
   svg += '</polygon>';
-  svg += '<text x="' + TX + '" y="' + (CY - TH / 2 + 22) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white">' + esc(target.label) + '</text>';
+  // Label sits near the hex's tapered top edge (narrowest point), so a long string can
+  // overflow past the polygon's slanted sides even after the ~20-char truncation callers
+  // already do — textLength/lengthAdjust forces it to fit within a safe width regardless
+  // of exact character count, instead of guessing per-string truncation lengths.
+  var targetLabelAttrs = (target.label && target.label.length > 12) ? ' textLength="100" lengthAdjust="spacingAndGlyphs"' : '';
+  svg += '<text x="' + TX + '" y="' + (CY - TH / 2 + 22) + '" text-anchor="middle" font-size="10" font-weight="700" fill="white"' + targetLabelAttrs + '>' + esc(target.label) + '</text>';
   if (target.subLabel) svg += '<text id="hg-geo-txt" x="' + TX + '" y="' + CY + '" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.75)" font-style="italic">' + esc(target.subLabel) + '</text>';
   svg += '<text x="' + TX + '" y="' + (CY + TH / 2 - 14) + '" text-anchor="middle" font-size="9" font-weight="800" fill="rgba(255,255,255,.9)" letter-spacing="1.5">' + esc(target.tier) + '</text>';
   if (target.badge) {
@@ -6724,7 +7702,7 @@ function buildReportHtml(data, meta) {
   }
 
   // Server-side scoring — mirrors client calcGlobalScoreFromCsp / calcCspScore exactly
-  const { cspScores, score, sBand, sColor } = computeCspScores(data);
+  const { cspScores, score, sBand, sColor, sDetail } = computeCspScores(data);
   const total  = alerts.length + vulns.length + compliance.length + identities.length;
 
   // Helpers
@@ -7110,8 +8088,8 @@ function buildReportHtml(data, meta) {
     const arcLen=550, fill=Math.round((score/100)*arcLen);
     function miniGauge(label, p, bgColor) {
       const arcL=314, f=Math.round((p/100)*arcL);
-      const c=p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444';
-      const band=p>=90?'REVIEW ONLY':p>=50?'VULNERABLE':'HIGH RISK';
+      const c=scoreTierColor(p);
+      const band=scoreTier(p).toUpperCase();
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:4px">'+
         '<div style="font-size:9px;font-weight:900;letter-spacing:.12em;padding:3px 10px;border-radius:4px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
         '<svg viewBox="-10 -10 270 155" style="width:130px;overflow:visible">'+
@@ -7129,22 +8107,26 @@ function buildReportHtml(data, meta) {
       '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
       '    <defs><linearGradient id="rg" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
       '<stop offset="0%" stop-color="#ef4444"/>'+
-      '<stop offset="50%"   stop-color="#ef4444"/>'+
-      '<stop offset="50%"   stop-color="#f59e0b"/>'+
-      '<stop offset="97.5%" stop-color="#f59e0b"/>'+
-      '<stop offset="97.5%" stop-color="#22c55e"/>'+
-      '<stop offset="100%" stop-color="#22c55e"/>'+
+      '<stop offset="20.6%"   stop-color="#ef4444"/>'+
+      '<stop offset="20.6%"   stop-color="#f59e0b"/>'+
+      '<stop offset="65.45%" stop-color="#f59e0b"/>'+
+      '<stop offset="65.45%" stop-color="#22c55e"/>'+
+      '<stop offset="90.45%" stop-color="#22c55e"/>'+
+      '<stop offset="90.45%" stop-color="#3b82f6"/>'+
+      '<stop offset="100%" stop-color="#3b82f6"/>'+
       '</linearGradient></defs>\n'+
       '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
       '    <path fill="none" stroke="url(#rg)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
-      '    <line x1="200" y1="32" x2="200" y2="62"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
-      '    <line x1="350" y1="156" x2="383" y2="146" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="86" y1="48" x2="108" y2="79"   stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="260" y1="20" x2="248" y2="57"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="357" y1="91" x2="326" y2="113" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
       '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
       '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
       '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
       '  </svg>\n'+
       '  <div style="text-align:center;font-size:.82rem;font-weight:700;letter-spacing:.08em;color:white;margin-top:2px;text-transform:uppercase">'+esc(sBand)+'</div>\n'+
-      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#22c55e;font-weight:800">Review Only Required</span></div>\n'+
+      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.75);margin-top:6px">'+esc(sDetail)+'</div>\n'+
+      '  <div style="text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.1em;color:rgba(255,255,255,0.55);margin-top:6px;text-transform:uppercase">The objective is to achieve <span style="color:#3b82f6;font-weight:800">Optimized</span></div>\n'+
       '  </div>\n';
   })()+
   '  <div class="meta-row">\n' +
@@ -7158,11 +8140,9 @@ function buildReportHtml(data, meta) {
     const awsP   = cspScores.aws   !== null ? cspScores.aws   : 100;
     const azureP = cspScores.azure !== null ? cspScores.azure : 100;
     const gcpP   = cspScores.gcp   !== null ? cspScores.gcp   : 100;
-    function cspBand(p){ return p>=90?'Review Only':p>=50?'Vulnerable':'High Risk'; }
-    function cspColor(p){ return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444'; }
     function bigGauge(label, bgColor, logoSvg, p){
       const arcL=314, f=Math.round((p/100)*arcL);
-      const c=cspColor(p), band=cspBand(p);
+      const c=scoreTierColor(p), band=scoreTier(p);
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;min-width:200px">'+
         '<div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+
           logoSvg+label+
@@ -7193,7 +8173,7 @@ function buildReportHtml(data, meta) {
         (hasGcp   ? bigGauge('GCP',   '#1a73e8', gcpLogo,   gcpP)   : '')+
       '</div>\n'+
       '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem 1.5rem;margin-top:auto;font-size:.82rem;color:#64748b;text-align:center">\n'+
-      '  Scores reflect CSPM compliance posture per cloud environment. <strong style="color:#1e293b">90–100</strong> = Review Only &nbsp;·&nbsp; <strong style="color:#f59e0b">50–89</strong> = Vulnerable &nbsp;·&nbsp; <strong style="color:#ef4444">0–49</strong> = High Risk\n'+
+      '  Scores reflect CSPM compliance posture per cloud environment. <strong style="color:#3b82f6">81–100</strong> = Optimized &nbsp;·&nbsp; <strong style="color:#22c55e">61–80</strong> = Advanced &nbsp;·&nbsp; <strong style="color:#f59e0b">31–60</strong> = Managed &nbsp;·&nbsp; <strong style="color:#ef4444">0–30</strong> = Foundational\n'+
       '</div>\n'+
       '</section>\n';
   })()+
@@ -7501,12 +8481,16 @@ function buildReportHtml2(data, meta) {
     return '  <div id="risk-score" style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
       '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
       '    <defs><linearGradient id="rg2" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
-      '<stop offset="0%" stop-color="#ef4444"/><stop offset="50%" stop-color="#ef4444"/>'+
-      '<stop offset="50%" stop-color="#f59e0b"/><stop offset="97.5%" stop-color="#f59e0b"/>'+
-      '<stop offset="97.5%" stop-color="#22c55e"/><stop offset="100%" stop-color="#22c55e"/>'+
+      '<stop offset="0%" stop-color="#ef4444"/><stop offset="20.6%" stop-color="#ef4444"/>'+
+      '<stop offset="20.6%" stop-color="#f59e0b"/><stop offset="65.45%" stop-color="#f59e0b"/>'+
+      '<stop offset="65.45%" stop-color="#22c55e"/><stop offset="90.45%" stop-color="#22c55e"/>'+
+      '<stop offset="90.45%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#3b82f6"/>'+
       '</linearGradient></defs>\n'+
       '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
       '    <path fill="none" stroke="url(#rg2)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <line x1="86" y1="48" x2="108" y2="79"   stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="260" y1="20" x2="248" y2="57"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="357" y1="91" x2="326" y2="113" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
       '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
       '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
       '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
@@ -7522,15 +8506,13 @@ function buildReportHtml2(data, meta) {
   '  </div>\n</div>\n' +
   '<div class="toc"><h3>Report Contents</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
   (function() {
-    function cspBand(p){ return p>=90?'Review Only':p>=50?'Vulnerable':'High Risk'; }
-    function cspColor(p){ return p>=90?'#22c55e':p>=50?'#f59e0b':'#ef4444'; }
     function weightBadge(w) {
       const m={Critical:'badge-critical',High:'badge-high',Medium:'badge-medium',Low:'badge-low'};
       return '<span class="badge '+(m[w]||'badge-info')+'">'+esc(w)+'</span>';
     }
     function bigGauge(label, bgColor, p) {
       const arcL=314, f=Math.round((p/100)*arcL);
-      const c=cspColor(p), band=cspBand(p);
+      const c=scoreTierColor(p), band=scoreTier(p);
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px">'+
         '<div style="font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
         '<svg viewBox="-10 -10 270 160" style="width:200px;overflow:visible">'+
@@ -7737,7 +8719,7 @@ function buildReportHtml3(data, meta) {
     function miniGauge(label, bgColor, p) {
       const pv = p !== null ? p : 100;
       const arcL=314, f=Math.round((pv/100)*arcL);
-      const c=pv>=90?'#22c55e':pv>=50?'#f59e0b':'#ef4444';
+      const c=scoreTierColor(pv);
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:4px">'+
         '<div style="font-size:9px;font-weight:900;letter-spacing:.12em;padding:3px 10px;border-radius:4px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
         '<svg viewBox="-10 -10 270 155" style="width:120px;overflow:visible">'+
@@ -7750,12 +8732,16 @@ function buildReportHtml3(data, meta) {
     return '  <div style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
       '  <svg viewBox="0 0 400 240" style="display:block;width:100%;overflow:visible">\n'+
       '    <defs><linearGradient id="rg3" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="375" y2="0">'+
-      '<stop offset="0%" stop-color="#ef4444"/><stop offset="50%" stop-color="#ef4444"/>'+
-      '<stop offset="50%" stop-color="#f59e0b"/><stop offset="97.5%" stop-color="#f59e0b"/>'+
-      '<stop offset="97.5%" stop-color="#22c55e"/><stop offset="100%" stop-color="#22c55e"/>'+
+      '<stop offset="0%" stop-color="#ef4444"/><stop offset="20.6%" stop-color="#ef4444"/>'+
+      '<stop offset="20.6%" stop-color="#f59e0b"/><stop offset="65.45%" stop-color="#f59e0b"/>'+
+      '<stop offset="65.45%" stop-color="#22c55e"/><stop offset="90.45%" stop-color="#22c55e"/>'+
+      '<stop offset="90.45%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#3b82f6"/>'+
       '</linearGradient></defs>\n'+
       '    <path fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="34" stroke-linecap="round" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
       '    <path fill="none" stroke="url(#rg3)" stroke-width="34" stroke-linecap="round" stroke-dasharray="'+fill+' '+arcLen+'" d="M 25,205 A 175,175 0 0,1 375,205"/>\n'+
+      '    <line x1="86" y1="48" x2="108" y2="79"   stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="260" y1="20" x2="248" y2="57"  stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
+      '    <line x1="357" y1="91" x2="326" y2="113" stroke="rgba(255,255,255,0.4)" stroke-width="2.5" stroke-linecap="round"/>\n'+
       '    <text x="200" y="165" text-anchor="middle" font-size="72" font-weight="900" letter-spacing="-2" font-family="-apple-system,Inter,sans-serif" fill="white">'+score+'</text>\n'+
       '    <text x="-8" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">0</text>\n'+
       '    <text x="408" y="212" text-anchor="middle" font-size="14" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="rgba(255,255,255,0.45)">100</text>\n'+
@@ -8335,6 +9321,7 @@ function startApp(listeningPort, protocol) {
       console.error(`[mock] Failed to load ${MOCK_FILE}:`, e.message);
     }
   } else {
+    loadCacheFromDisk(); // restore last-known-good data immediately, before the first live fetch
     resolveReachableIP(LW_ACCOUNT).then(ip => { accountIP = ip; }).catch(() => {})
       .finally(() => {
         refreshData().catch(e => console.error('[startup]', e.message));
