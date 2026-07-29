@@ -8,76 +8,55 @@
 
 ## Plain English: What, How, and Why
 
-### What is the score?
+### There are two scores in this tool — don't confuse them
 
-Every cloud environment assessed by this tool receives a single number between **0 and 100**.
+- **Cloud Security Posture Score** — the main gauge on the dashboard and the number shown in
+  generated reports. It's a straight **average of every individual finding's risk weight**
+  across Alerts, CVEs, Compliance, Identities, and Secrets — one flat pool, no per-cloud
+  grouping.
+- **CSP Lab per-cloud scores** — a separate comparison view (AWS / Azure / GCP tabs) used to
+  see *where* risk concentrates. Each cloud gets its own score from its own findings, and the
+  Lab's "Global" number is the plain average of those three — it is **not** the same number as
+  the main Posture Score gauge, and the two will often disagree (that's expected — they measure
+  different things).
 
-**Higher is better.** A score of 100 means no security issues were detected. A score of 0 means the environment is saturated with critical problems across every category. Most real-world environments sit somewhere in the middle.
-
-Think of it like a health check-up result — it gives you one clear number to share with leadership, and then the dashboard lets you drill into exactly where the problems are.
+This guide covers both, in the order you'd actually look at them.
 
 ---
 
-### How is it calculated?
+### 1. Cloud Security Posture Score (the main gauge)
 
-The score is built in two steps.
+**What it is:** one number, 0–100, higher is better. It's the average "badness" of every open
+finding, inverted — no findings at all means a perfect 100.
 
-**Step 1 — One score per cloud provider (AWS, Azure, GCP)**
-
-For each cloud, we look at three types of security findings:
-
-- **High-Fidelity Alerts** — real-time threats detected by FortiCNAPP's AI engine (anomaly detection and correlated attack patterns)
-- **Compliance Violations** — cloud configuration rules that are failing against industry benchmarks (CIS, NIST, SOC 2, etc.)
-- **Identity Risks** — cloud accounts and roles that have excessive permissions or signs of misuse
-
-Each finding is sorted into one of four severity buckets: **Critical**, **High**, **Medium**, or **Low**.
-
-The score penalty works like this — each bucket has a maximum amount it can deduct from 100:
-
-| Severity | Max deduction | Real-world meaning |
-|----------|:------------:|-------------------|
-| Critical | 40 points | Immediate threat — active attack path, authentication bypass, root-level exposure |
-| High | 30 points | Serious gap — exploitable misconfiguration, privileged identity at risk |
-| Medium | 20 points | Needs attention — policy drift, over-permissioned role, unreviewed access |
-| Low | 10 points | Informational — best-practice deviation, minor hygiene issue |
-
-The key insight is that the penalty grows **logarithmically**, not linearly. This means:
-
-- The **1st** critical finding hurts your score more than the **10th** one does.
-- A large volume of low-priority findings does not make your score collapse if your critical issues are clean.
-- This reflects how risk actually works in operations: once you know about a class of problem, each additional instance adds less new risk than the first one did.
-
-**Step 2 — One global score**
-
-The global score displayed on the main gauge is the straight average of the three cloud scores:
+**The logic:** every finding gets a fixed risk weight based on *what kind of finding it is and
+how severe it is*, not a raw count. Averaging (rather than summing) means the score reflects the
+overall mix of your findings, not just how many there are — a tenant with 3 findings and a tenant
+with 300 findings of the same severity mix land at the same score.
 
 ```
-Global Score = (AWS Score + Azure Score + GCP Score) / 3
+postureScore = max(0, round(100 − mean(findingRiskScores)))
 ```
 
-If a cloud has no findings at all, it contributes a perfect 100 to the average.
+| Finding type | Risk weight | Why |
+|---|---|---|
+| High-Fidelity Alert — Critical | 80 | Alerts are FortiCNAPP's AI-correlated, active-threat detections — already the highest-confidence signal in the tool, so severity still matters within that set |
+| High-Fidelity Alert — High | 60 | |
+| High-Fidelity Alert — Medium | 40 | |
+| CVE (Internet Threat Exposure) | `riskScore × 10` (max 100), **only CVEs with `riskScore ≥ 8`** | Below-8 CVEs are common and rarely represent a real, exploitable threat on their own — including them would dilute the score with noise. `riskScore` already blends CVSS severity with exploitability and network exposure, so scaling it ×10 turns FortiCNAPP's own composite judgment directly into the weight, per CVE |
+| Critical Misconfiguration | 80 | Policy violations against CIS/NIST/SOC2-style benchmarks — a real control gap, but typically not an active attack in progress the way an Alert is |
+| Identity — Admin **and** No-MFA **and** (unused entitlements ≥ 80% **or** an access key ≥ 180 days old) | 80 | This is the identity most likely to actually get abused: a human admin account with no second factor, *and* either evidence it's stale (barely used, most of its permissions dormant) or evidence of poor credential hygiene (a long-lived, never-rotated key). Any one of unused-permissions-heavy or old-key is enough — both point at the same underlying problem, an account nobody is actively maintaining |
+| Identity — everything else | `risk_score × 100` (max 100) | Falls back to FortiCNAPP's own CIEM risk score for service accounts, roles, MFA-protected users, and admins that don't meet the staleness/hygiene bar above |
+| Secret (discovered credential) | 10 | A discovered secret is a real finding, but on its own — unpaired with proof it's live, privileged, or reachable — it's the lowest-signal item in the pool. It still pulls the average down, just not as hard as an active alert or an admin account with no MFA |
 
----
+Non-obvious effect worth knowing: because the score is a **mean**, changing any one weight
+(as above) doesn't just change how that finding type looks — it reshapes the whole average.
+Lowering Secrets from their old value and gating CVEs at `riskScore ≥ 8` both push the typical
+tenant's score *up*, since fewer/lighter findings are dragging the mean down. That's an intended
+consequence of this weighting, not a bug — but it does mean scores shown in reports generated
+before vs. after this change aren't directly comparable.
 
-### Why does it work this way?
-
-**The old approach had a real problem.**
-
-Traditional scoring takes every finding, assigns it a weight (e.g. 95 for critical, 80 for compliance), and averages them all together. The result: one critical alert in a 5,000-asset environment scores exactly the same as one critical alert in a 10-asset environment. That is not realistic, and it leads to two bad outcomes:
-
-1. **Score shock** — a single finding drops a large, mostly clean environment from 100 to 5. Security teams lose confidence in the number.
-2. **Alert fatigue** — a flood of low-priority items tanks the score even when nothing truly dangerous is happening, making it hard to see what matters.
-
-**The new model fixes both problems.**
-
-- **Severity buckets** ensure a critical issue always weighs more than a medium one — they are never mixed together in a way that lets one cancel out the other.
-- **Logarithmic scaling** means volume does not punish you unfairly. Ten medium findings are worse than one, but not ten times worse.
-- **Per-cloud scoring first** means your AWS score reflects your AWS risk, not a diluted blend of all three clouds. If Azure is clean but AWS has issues, that shows clearly.
-- **The score stays meaningful** — a score of 88 with one unresolved critical alert is a useful, actionable number. A score of 5 for the same situation is demoralizing and stops being useful as a communication tool.
-
----
-
-## Score Bands
+#### Score bands
 
 | Score | Security Posture | Colour | Meaning |
 |:-----:|-----------------|:------:|---------|
@@ -85,79 +64,120 @@ Traditional scoring takes every finding, assigns it a weight (e.g. 95 for critic
 | 50 – 89 | Some Attention Needed | Amber | Real gaps exist. Prioritise remediation — especially any Critical or High findings. |
 | 0 – 49 | URGENT | Red | High risk exposure. Immediate, focused action required. |
 
+> On-screen, this is the gauge labeled **"Cloud Security Risk Score"** at the top of the
+> Overview page — same number, same formula, just the display name shown to a reader.
+
 ---
 
-## Technical Reference
+### 1a. Three CVE thresholds — don't confuse them either
 
-### Per-CSP Score Formula
+CVEs get filtered at three different, independently-tuned cutoffs across the tool. Each one
+exists for a different purpose, and they intentionally disagree with each other:
+
+| Where | Threshold | Field | Why this cutoff |
+|---|---|---|---|
+| **Posture score** (§1 above) | `riskScore ≥ 8` | `riskScore` (host-composite metric, can vary per host for the same CVE) | The score's own weighting formula — below-8 CVEs are common and rarely represent a real, standalone exploitable threat, so they're excluded to avoid diluting the mean |
+| **Private Host Most Exposed** / **Internet-Exposed Host (Beta)** panels | `cveRiskScore ≥ 9` | `cveRiskScore` (the CVE's own intrinsic severity — consistent across every host it appears on) | A tighter, panel-specific view of only the highest-severity CVEs on a given host, filtered client-side on top of the posture score's already-fetched ≥8 pool (9 is a strict subset, so no extra API call is needed) |
+| **Risk Findings Inventory → Host Exposure** | `cveRiskScore ≥ 9.95` | `cveRiskScore` | The tightest cut — only CVEs whose *displayed* risk score (`Math.round(cveRiskScore × 10)`) reads a full **100**. In live data, `cveRiskScore` never actually reaches the raw scale's true max of 10 (observed max ≈ 9.98), so an exact `=== 10` filter would silently return zero rows; 9.95 is the correct cutoff where the rounded display hits 100. Sourced from a separate, fully-paginated fetch (`fetchHighRiskVulns()`, any severity) rather than the posture score's 500-row-capped pool, then further restricted to hosts also confirmed internet-exposed |
+
+The practical effect: a CVE can appear in the posture score's pool without showing up in Private
+Host Most Exposed, and can appear there without qualifying for the Risk Findings Inventory's Host
+Exposure count. That's by design — each view answers a narrower question than the last.
+
+---
+
+### 2. CSP Lab per-cloud scores
+
+**What it is:** three separate 0–100 scores, one per cloud provider, plus a "Global" number that
+averages them. Used in the Lab view to answer "which of my clouds is riskiest," not to drive the
+main gauge.
+
+**The logic — rate-based, not count-based.** Each cloud's findings (Alerts, Compliance,
+Identities — CVEs and Secrets aren't tagged to a specific cloud by the API, so they're excluded
+here) are sorted into four severity buckets: Critical, High, Medium, Low. The penalty is a
+weighted average of each bucket's **share of that cloud's total findings**, not the raw count:
 
 ```
-penalty = 40 × log₁₁(1 + C)
-        + 30 × log₁₁(1 + H)
-        + 20 × log₁₁(1 + M)
-        + 10 × log₁₁(1 + L)
+penalty = 40 × (Critical / total)
+        + 30 × (High / total)
+        + 20 × (Medium / total)
+        + 10 × (Low / total)
 
-CSP score = max(0, round(100 − min(100, penalty)))
+CSP score = max(0, round(100 − penalty))
 ```
 
-Where `log₁₁(x) = ln(x) / ln(11)` and C / H / M / L are finding counts per severity bucket.
+**Why rate-based:** a cloud with far more inventory (say AWS with 233 identities vs. Azure's 30)
+shouldn't be penalized just for having more assets to find things in — only a genuinely worse
+*ratio* of critical/high findings should lower the score. Counting raw findings would make a big,
+well-instrumented AWS account look artificially riskier than a small, under-scanned Azure account
+purely because more of its surface area gets looked at.
 
 **Bucket assignment:**
 
 | Finding | Bucket rule |
-|---------|------------|
-| Alert — Critical | → C |
-| Alert — High | → H |
-| Compliance violation — Critical severity | → C |
-| Compliance violation — High severity | → H |
-| Identity — `risk_score ≥ 0.80` | → C |
-| Identity — `risk_score ≥ 0.50` | → H |
-| Identity — `risk_score ≥ 0.20` | → M |
-| Identity — `risk_score < 0.20` | → L |
+|---|---|
+| Alert — Critical | → Critical |
+| Alert — High | → High |
+| Alert — Medium | → Medium |
+| Compliance violation — Critical severity | → Critical |
+| Compliance violation — High (or any non-Critical) severity | → High |
+| Identity — Admin + No-MFA + (unused ≥ 80% or key ≥ 180d old), or `identityRiskScore ≥ 80` | → Critical |
+| Identity — `identityRiskScore ≥ 50` | → High |
+| Identity — `identityRiskScore ≥ 20` | → Medium |
+| Identity — `identityRiskScore < 20` | → Low |
 
-> CVEs (vulnerabilities) and Secrets are not included in the per-CSP score because the FortiCNAPP API does not tag them to a specific cloud provider. They appear in the global findings panels but do not contribute to the CSP gauge scores.
+> CVEs and Secrets are not included in the per-CSP score because the FortiCNAPP API does not tag
+> them to a specific cloud provider. They appear in the global findings panels and drive the main
+> Posture Score, but not the CSP Lab gauges.
 
-### Alert Query (High-Fidelity Filter)
-
-Only alerts that meet **all** of the following criteria are counted:
-
-| Filter | Value |
-|--------|-------|
-| Severity | Critical or High |
-| Category | Anomaly or Composite |
-| Status | Open or In Progress |
-| Look-back window | 21 days (split into 7-day API chunks) |
-
-Anomaly and Composite are FortiCNAPP's AI-generated alert categories — they represent machine-learning detections and correlated attack patterns, not simple policy checks. This filter removes noise and surfaces only the findings that indicate real, active threats.
-
-### Global Score Formula
+**Global (Lab) score:**
 
 ```
 Global Score = round((AWS Score + Azure Score + GCP Score) / 3)
 ```
 
-Each cloud with zero findings contributes 100 to the average.
+Each cloud with zero findings contributes a perfect 100 to the average.
 
-### Worked Example
+### Alert Query (High-Fidelity Filter)
 
-**Environment:** AWS with 2 Critical alerts, 5 High compliance violations, 20 Medium identity risks.
+Only alerts that meet **all** of the following criteria are counted, anywhere in the tool:
+
+| Filter | Value |
+|--------|-------|
+| Severity | Critical, High, or Medium |
+| Category | Anomaly or Composite |
+| Status | Open or In Progress |
+| Look-back window | 21 days (split into 7-day API chunks) |
+
+Anomaly and Composite are FortiCNAPP's AI-generated alert categories — they represent
+machine-learning detections and correlated attack patterns, not simple policy checks. This filter
+removes noise and surfaces only the findings that indicate real, active threats.
+
+### Worked Example — CSP Lab per-cloud score
+
+**Environment:** AWS with 2 Critical alerts, 5 High compliance violations, 20 Medium identity
+risks (27 findings total, none Low).
 
 ```
-C = 2   H = 5   M = 20   L = 0
+C = 2   H = 5   M = 20   L = 0   total = 27
 
-penalty = 40 × log₁₁(3)  +  30 × log₁₁(6)  +  20 × log₁₁(21)  +  0
-        = 40 × 0.458      +  30 × 0.748      +  20 × 1.326
-        = 18.3            +  22.4            +  26.5
-        = 67.2
+penalty = 40 × (2/27)  +  30 × (5/27)  +  20 × (20/27)  +  10 × (0/27)
+        = 40 × 0.0741   +  30 × 0.1852   +  20 × 0.7407
+        = 2.96           +  5.56           +  14.81
+        = 23.33
 
-AWS Score = round(100 − 67.2) = 33
+AWS Score = max(0, round(100 − 23.33)) = 77
 ```
 
 If Azure scores 85 and GCP scores 92:
 
 ```
-Global Score = round((33 + 85 + 92) / 3) = round(70) = 70  →  Amber
+Lab Global Score = round((77 + 85 + 92) / 3) = round(84.7) = 85  →  Amber-to-Green border
 ```
+
+Note this 85 is the **Lab's** global number — it is unrelated to the main dashboard's Cloud
+Security Posture Score gauge, which is computed separately (see §1 above) from the full,
+un-bucketed finding pool including CVEs and Secrets.
 
 ---
 

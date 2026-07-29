@@ -18,4 +18,5 @@ sudo docker run --rm -d \
   -p 443:8443 \
   --env-file .env \
   -v letsencrypt:/etc/letsencrypt \
+  -v rca-cache:/app/data \
   rca-dashboard
