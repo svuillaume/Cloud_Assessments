@@ -713,6 +713,20 @@ async function fetchHighRiskVulns() {
   return allRows;
 }
 
+// Shared "Machine status in (Online, Launched)" check — module-scope so both fetchVulns()
+// and refreshData()'s highRiskVulns correction can apply the same exclusion. Without it,
+// stopped/deallocated hosts leak into any dataset that skips this (confirmed live:
+// fetchHighRiskVulns() itself doesn't filter by machine status at all).
+const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
+function isMachineOffline(mt) {
+  const mtObj = mt && typeof mt === 'object' && !Array.isArray(mt) ? mt : null;
+  const mtArr = Array.isArray(mt) ? mt : null;
+  const state = mtObj
+    ? (mtObj.State || mtObj.PowerState || mtObj.status || '')
+    : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
+  return !!(state && OFFLINE_RE.test(state));
+}
+
 async function fetchVulns() {
   function vulnQuery(sev) {
     return post('Vulnerabilities/Hosts/search', {
@@ -751,6 +765,11 @@ async function fetchVulns() {
     const mt = r.machineTags;
     if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
       const ev = getExposureEvidence(mt);
+      // Preserve Lacework's own raw tag before overwriting it — the "Internet Exposed
+      // Host" panel deliberately compares against the FortiCNAPP console's own field
+      // (see _renderInternetHostExposedBeta), which can disagree with our stricter
+      // verified signal below.
+      mt.lw_InternetExposureRaw = mt.lw_InternetExposure;
       mt.lw_InternetExposure = ev.exposed ? 'Yes' : 'No';
       mt.lw_RestrictedExternalAccess = ev.restricted ? 'Yes' : 'No';
       r._exposureEvidence = ev;
@@ -771,16 +790,9 @@ async function fetchVulns() {
   //   cveRiskScore >= 8                              — CVE severity threshold
   //   machineTags.lw_InternetExposure === "Yes"      — primary internet exposure check
   //   Fallback: hostRiskInfo.host_risk_factors_breakdown.internet_reachability !== "None"
-  const OFFLINE_RE = /stopped|terminated|deallocat|stopping|shutting|offline/i;
   const filtered = rows.filter(r => {
     // Machine status: Online or Launched (exclude Stopped/Terminated/Deallocated)
-    const mt = r.machineTags;
-    const mtObj = mt && typeof mt === 'object' && !Array.isArray(mt) ? mt : null;
-    const mtArr = Array.isArray(mt) ? mt : null;
-    const state = mtObj
-      ? (mtObj.State || mtObj.PowerState || mtObj.status || '')
-      : (mtArr?.find(t => /^state$/i.test(t.key))?.value || '');
-    if (state && OFFLINE_RE.test(state)) return false;
+    if (isMachineOffline(r.machineTags)) return false;
 
     // CVE severity score >= 8 (fallback: riskScore → hostRiskScore as impact proxy).
     // Deliberately NOT hostRiskScore first — that's Lacework's broader host-composite
@@ -1503,7 +1515,11 @@ async function refreshData() {
   const secrets      = unwrap(s,  'secrets');
   const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [], fortigate: [], all: [] });
   const attackPaths   = unwrap(ap, 'attackPaths');
-  const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns');
+  // fetchHighRiskVulns() itself applies no machine-status filter (unlike fetchVulns()) —
+  // exclude stopped/deallocated/terminated hosts here so every consumer of cache.highRiskVulns
+  // (including the Internet Exposed Host panel) sees only Online/Launched machines, matching
+  // the FortiCNAPP console's own "Machine status in (Online, Launched)" filter.
+  const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns').filter(r => !isMachineOffline(r.machineTags));
   // Apply the same verified-exposure correction fetchVulns() applies to cache.vulns — reuses
   // the getExposureEvidence closure fetchVulns() already computed rather than re-running the
   // CFG queries a second time. Without this, highRiskVulns would use Lacework's raw
@@ -1514,8 +1530,11 @@ async function refreshData() {
       const mt = r.machineTags;
       if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
         const evd = getExposureEvidence(mt);
+        // Preserve Lacework's own raw tag — see matching comment in fetchVulns().
+        mt.lw_InternetExposureRaw = mt.lw_InternetExposure;
         mt.lw_InternetExposure = evd.exposed ? 'Yes' : 'No';
         mt.lw_RestrictedExternalAccess = evd.restricted ? 'Yes' : 'No';
+        r._exposureEvidence = evd;
       }
     }
   }
@@ -2402,11 +2421,11 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <div class="vh-icon"></div>
     <div class="vh-text">
       <div class="vh-title">Internet Exposed Host</div>
-      <div class="vh-sub">Test methodology, for comparison against the standard panels: verified internet-exposed hosts &middot; CVE risk score &ge; 9 only &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
+      <div class="vh-sub">Matches the FortiCNAPP console's own Hosts query: Host Risk Score &ge; 7 &middot; Internet exposed = True &middot; Machine status Online/Launched &middot; has a Vulnerable-status observation &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
     </div>
     <span class="vh-badge" id="cnt-iehb">—</span>
   </div>
-  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (verified) &middot; CVE Risk Score &ge; 9. This is a beta comparison view — not wired into the posture score or other panels.</div>
+  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (FortiCNAPP's own raw tag — not this app's stricter verified SG/NSG/FW-rule signal used elsewhere) &middot; Host Risk Score &ge; 7. This is a beta comparison view — not wired into the posture score or other panels.</div>
   <div id="body-iehb"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
@@ -2875,8 +2894,12 @@ function _renderVulns(rows,err){
     'GOOGLE_OAUTH_TOKEN','GCP_SERVICE_ACCOUNT','AZURE_CLIENT_SECRET','AZURE_SAS_TOKEN'];
   var _privMap={};
   var _exposedHostSet={};
+  var _iehbSet=iehbQualifyingHostSet(_ld);
   allHosts.forEach(function(h){
-    if(h.reach==='Internet Exposed'){_exposedHostSet[h.name.toLowerCase()]=true;return;}
+    // Also exclude any host that qualifies for the Internet Exposed Host panel (raw
+    // exposure tag, not this panel's verified one — see iehbQualifyingHostSet) so the same
+    // host never shows up as both "Private" and "Internet Exposed" across the two tabs.
+    if(h.reach==='Internet Exposed'||_iehbSet[h.name.toLowerCase()]){_exposedHostSet[h.name.toLowerCase()]=true;return;}
     _privMap[h.name.toLowerCase()]={name:h.name,cloud:h.cloud||'',restricted:!!h.restricted,
       instanceId:h.instanceId||'',resourceName:h.resourceName||'',pubIp:h.pubIp||'',
       ciemSecrets:[],genericSecrets:[],vulns:h.vulns||[],maxRisk:h.maxRisk||0,crit:h.crit||0,high:h.high||0};
@@ -3469,25 +3492,65 @@ function renderAttackPaths(d){
 // secrets, and high-permission attached IAM role (AWS instance-profile name matched to a
 // role identity by name — a heuristic, not a guaranteed 1:1; Azure/GCP not implemented,
 // no managed-identity/service-account linkage data is fetched for those clouds yet).
+// Shared with _renderVulns() (Private Host Most Exposed) so the same host never appears in
+// both panels at once. Pure/stateless — recomputes the "Internet Exposed Host" qualifying
+// set (Host Risk Score >= 7 + Lacework's raw, unverified Internet Exposed tag — see the
+// methodology note in _renderInternetHostExposedBeta below) fresh each call, independent of
+// render order. Returns a lowercased-hostname lookup map, not an array.
+function iehbQualifyingHostSet(d){
+  var scores={};
+  ((d&&d.highRiskVulns)||[]).forEach(function(r){
+    var mt=r.machineTags;
+    var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
+    if(!mtObj)return;
+    var exposedRaw=mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure;
+    if(exposedRaw!=='Yes')return;
+    var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
+    if(!h)return;
+    var hl=h.toLowerCase();
+    var hrs=parseFloat(r.hostRiskScore??0);
+    if(!(hl in scores)||hrs>scores[hl])scores[hl]=hrs;
+  });
+  var set={};
+  Object.keys(scores).forEach(function(hl){if(scores[hl]>=7)set[hl]=true;});
+  return set;
+}
 function renderInternetHostExposedBeta(d){
   try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet Exposed Host render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
 }
 function _renderInternetHostExposedBeta(d){
   d=d||{};
-  var vulns=d.vulns||[];
+  // highRiskVulns (cveRiskScore>=9, ANY severity — see fetchHighRiskVulns) is used instead
+  // of the narrower d.vulns (Critical/High severity + cveRiskScore>=8 only — see
+  // fetchVulns), because a host can carry a cveRiskScore>=9 finding that Lacework itself
+  // doesn't label Critical/High, which d.vulns would silently drop before it ever reaches
+  // this panel.
+  var vulns=d.highRiskVulns||[];
   var instanceIamProfile=d.instanceIamProfile||{};
 
-  // ── Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns),
-  // both now gated to CVE risk score >= 9 (hard cutoff — below 9 contributes nothing).
-  // exposureEvidence/reach reuse the exact same verified (SG/NSG/FW + public IP) exposure
-  // signal, not Lacework's raw topological tag.
+  // ── Matches the FortiCNAPP console's own "Hosts" query exactly:
+  //   Hosts > Risk score >= 7             — host.hostRiskScore (Lacework's composite
+  //                                          per-machine score), NOT the per-CVE score
+  //   Vulnerability observation > status is Vulnerable — guaranteed by fetchVulns()/
+  //                                          fetchHighRiskVulns() (status:'Active' filter
+  //                                          server-side)
+  //   Hosts > Machine status in (Online, Launched)      — guaranteed by fetchVulns()'s
+  //                                          own OFFLINE_RE exclusion
+  //   Hosts > Internet exposed is True    — mtObj.lw_InternetExposureRaw, Lacework's own
+  //                                          raw/topological tag, deliberately NOT the
+  //                                          app's stricter verified (SG/NSG/FW-rule)
+  //                                          signal used everywhere else — this panel
+  //                                          exists specifically to compare against the
+  //                                          console's own methodology, and the two can
+  //                                          disagree (a host can be raw-tagged exposed
+  //                                          without an open wildcard rule we can verify).
+  // Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns).
   var hostMap={};
   vulns.forEach(function(r){
-    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
-    if(rs<9)return;
     var mt=r.machineTags;
     var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
-    if(!mtObj||mtObj.lw_InternetExposure!=='Yes')return;
+    var exposedRaw=mtObj?(mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure):null;
+    if(!mtObj||exposedRaw!=='Yes')return;
     var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'?';
     if(!hostMap[h]){
       var cloudRaw=mtObj.VmProvider||'';
@@ -3495,16 +3558,19 @@ function _renderInternetHostExposedBeta(d){
       if(cloud==='google')cloud='gcp';
       hostMap[h]={name:h,pubIp:mtObj.ExternalIp||mtObj.PublicIp||mtObj.publicIp||'',cloud:cloud,
         instanceId:mtObj.InstanceId||'',resourceName:mtObj.Name||'',
-        vulns:[],maxRisk:0,crit:0,exposureEvidence:r._exposureEvidence||null};
+        vulns:[],maxRisk:0,hostRiskScore:0,crit:0,exposureEvidence:r._exposureEvidence||null};
     }
     var host=hostMap[h];
+    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
     if(rs>host.maxRisk)host.maxRisk=rs;
+    var hrs=parseFloat(r.hostRiskScore??0);
+    if(hrs>host.hostRiskScore)host.hostRiskScore=hrs;
     if((r.severity||'').toLowerCase()==='critical')host.crit++;
     host.vulns.push(r);
   });
-  var hosts=Object.values(hostMap).sort(function(a,b){return b.maxRisk-a.maxRisk;});
+  var hosts=Object.values(hostMap).filter(function(h){return h.hostRiskScore>=7;}).sort(function(a,b){return b.hostRiskScore-a.hostRiskScore;});
 
-  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a CVE risk score ≥ 9 were found');return}
+  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a Host Risk Score ≥ 7 were found');return}
   setCount('cnt-iehb',hosts.length,true);
 
   // ── Same correlated-risk map + Verified Path lookup the Host Internet Exposure panel
@@ -3671,6 +3737,7 @@ function _renderInternetHostExposedBeta(d){
             +'</div>'
           +'</div>'
           +'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:3px 10px">&#9888; INTERNET EXPOSED</span>'
+          +' <span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:20px;padding:3px 10px">Host Risk Score '+host.hostRiskScore.toFixed(1)+'</span>'
           +(epChips?'<div style="margin-top:8px">'+epChips+'</div>':'')
           +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Asset Details</div>'
           +detailRow('Hostname',host.name)
@@ -3702,7 +3769,7 @@ function _renderInternetHostExposedBeta(d){
         +'</div>'
       +'</div>'
       +'<div id="'+bodyId+'" style="display:none;padding:16px 18px;border-top:1px solid #e2e8f0;background:#fafafa">'
-      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; risk score &ge; 9</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; Host Risk Score '+host.hostRiskScore.toFixed(1)+'</div>'
       +(arScore
         ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
           +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
@@ -3763,7 +3830,7 @@ function summaryStripBeta(hosts){
     +(tc?'<span class="b b-cr">'+tc+' Critical</span>':'')
     +(th?'<span class="b b-hi">'+th+' High</span>':'')
     +(tf?'<span class="b b-ok">'+tf+' fixable</span>':'')
-    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; CVE Risk Score ≥ 9 &middot; enriched with IAM role (AWS)</span>'
+    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; Host Risk Score ≥ 7 &middot; enriched with IAM role (AWS)</span>'
   +'</div>';
 }
 
