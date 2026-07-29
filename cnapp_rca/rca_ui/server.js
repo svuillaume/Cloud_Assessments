@@ -600,7 +600,7 @@ async function fetchTrueExposure() {
   });
   console.log(`  [forti-inventory] appliances matched by name/tag heuristic: ${fortiInventory.length}`);
 
-  // AWS instance → attached IAM instance-profile ARN, for the "Internet-Exposed Host - Beta"
+  // AWS instance → attached IAM instance-profile ARN, for the "Internet Exposed Host"
   // tab's host→IAM-role linkage. AWS-only for now — Azure/GCP would need managed-identity/
   // service-account data this app doesn't currently fetch. Instance profile name is matched
   // to an IAM role by NAME against `identities` at render time (profile and role share the
@@ -636,7 +636,7 @@ async function fetchExposurePaths() {
   }
   // Unfiltered — every traced Internet→Target path regardless of target type, TARGETS left
   // as its raw (unflattened) array rather than array_to_rows-exploded like the per-type
-  // queries above. Powers the "Internet Exposed Assets" tab, a comprehensive superset of
+  // queries above. Powers the "Internet Accessible Ressources" tab, a comprehensive superset of
   // the type-specific panels (Host Internet Exposure, Public Storage Exposure, FortiGate).
   function qAll() {
     const queryText = `{ source { LW_APA_EXPOSURE_PATHS } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
@@ -1632,10 +1632,10 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,'Inter',Bl
 .sb-logo{display:none}
 .sb-name{font-size:12px;font-weight:600;color:#c9d1d9;letter-spacing:-.1px}
 .sb-sect{padding:14px 14px 4px;font-size:9px;font-weight:700;letter-spacing:.12em;color:#30363d;text-transform:uppercase}
-.sb-item{display:flex;align-items:center;gap:8px;padding:7px 12px;margin:1px 6px;border-radius:5px;cursor:pointer;color:#8b949e;font-size:12px;font-weight:400;transition:background .1s,color .1s;user-select:none;white-space:nowrap}
+.sb-item{display:flex;align-items:flex-start;gap:8px;padding:7px 12px;margin:1px 6px;border-radius:5px;cursor:pointer;color:#8b949e;font-size:12px;font-weight:400;transition:background .1s,color .1s;user-select:none;white-space:normal;line-height:1.35}
 .sb-item:hover{background:#161b22;color:#c9d1d9}
 .sb-item.active{background:#21262d;color:#f0f6fc;font-weight:600;border-left:2px solid var(--accent);padding-left:10px}
-.sb-item svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;opacity:.7}
+.sb-item svg{width:14px;height:14px;margin-top:1px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;opacity:.7}
 .sb-item.active svg{opacity:1}
 .sb-sep{margin:6px 12px;border:none;border-top:1px solid #21262d}
 .sb-spacer{flex:1}
@@ -1977,21 +1977,37 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     High Fidelity Alerts
   </div>
   <div class="sb-sect">Risk Findings</div>
-  <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-    Private Host Most Exposed
+  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
+    Risk Findings Inventory
+  </div>
+  <div class="sb-item" id="nav-attack-paths" onclick="nav('attack-paths')">
+    <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 8.5l7 7"/><path d="M18 6l-6 6"/></svg>
+    Attack Paths
   </div>
   <div class="sb-item" id="nav-identities" onclick="nav('identities')">
     <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
     Identities
   </div>
+  <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
+    <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    Secrets
+  </div>
   <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
     <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
     Critical Misconfigurations
   </div>
-  <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
-    <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-    Secrets
+  <div class="sb-item" id="nav-exposed-assets" onclick="nav('exposed-assets')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+    Internet Accessible Ressources
+  </div>
+  <div class="sb-item" id="nav-iehb" onclick="nav('iehb')">
+    <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M12 8v4"/><circle cx="12" cy="15" r=".5" fill="currentColor"/></svg>
+    Internet Exposed Host
+  </div>
+  <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    Private Host Most Exposed
   </div>
   <div class="sb-item" id="nav-storage" onclick="nav('storage')">
     <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
@@ -2000,22 +2016,6 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="sb-item" id="nav-fortigate" onclick="nav('fortigate')">
     <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
     FortiGate
-  </div>
-  <div class="sb-item" id="nav-exposed-assets" onclick="nav('exposed-assets')">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-    Internet Exposed Assets
-  </div>
-  <div class="sb-item" id="nav-iehb" onclick="nav('iehb')">
-    <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M12 8v4"/><circle cx="12" cy="15" r=".5" fill="currentColor"/></svg>
-    Internet-Exposed Host <span style="font-size:8px;font-weight:800;letter-spacing:.05em;color:#DA291C;background:#fff;border-radius:3px;padding:0 4px;margin-left:4px">BETA</span>
-  </div>
-  <div class="sb-item" id="nav-attack-paths" onclick="nav('attack-paths')">
-    <svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.5 8.5l7 7"/><path d="M18 6l-6 6"/></svg>
-    Attack Paths
-  </div>
-  <div class="sb-item" id="nav-risk" onclick="nav('risk')">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="12" cy="16" r=".5" fill="currentColor"/></svg>
-    Risk Findings Inventory
   </div>
   <div class="sb-sect">Operational Guidance</div>
   <div class="sb-item" id="nav-admin-settings" onclick="nav('admin-settings')">
@@ -2113,7 +2113,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
             letter-spacing="-3" font-family="-apple-system,BlinkMacSystemFont,sans-serif" fill="#94a3b8">—</text>
 
       <!-- Objective tagline — anchored at x=200 (gauge arc center) -->
-      <text x="200" y="228" text-anchor="middle" font-size="9.5" font-weight="600"
+      <text x="200" y="238" text-anchor="middle" font-size="9.5" font-weight="600"
             letter-spacing=".08em" font-family="-apple-system,BlinkMacSystemFont,sans-serif"
             fill="#64748b" text-transform="uppercase">
         <tspan>THE HIGHER THE SCORE, THE MORE MATURE YOUR CLOUD SECURITY POSTURE</tspan>
@@ -2375,13 +2375,13 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="body-fortigate"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
-<!-- ═══ View: Internet Exposed Assets ═══ -->
+<!-- ═══ View: Internet Accessible Ressources ═══ -->
 <div class="view" id="view-exposed-assets">
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Internet Exposed Assets</div>
-      <div class="vh-sub">Every asset with a verified Internet&rarr;Target path (FortiCNAPP Attack Path Analysis) — all types, comprehensive superset of Host/Storage/FortiGate exposure</div>
+      <div class="vh-title">Internet Accessible Ressources</div>
+      <div class="vh-sub">Every asset with a verified Internet&rarr;Target path (FortiCNAPP Attack Path Analysis) — all types, comprehensive superset of Host/Storage exposure</div>
     </div>
     <span class="vh-badge" id="cnt-exposed-assets">—</span>
   </div>
@@ -2389,12 +2389,12 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="body-exposed-assets"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
-<!-- ═══ View: Internet-Exposed Host - Beta ═══ -->
+<!-- ═══ View: Internet Exposed Host ═══ -->
 <div class="view" id="view-iehb">
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Internet-Exposed Host <span style="font-size:9px;font-weight:800;letter-spacing:.05em;color:#fff;background:#DA291C;border-radius:3px;padding:1px 5px;margin-left:4px;vertical-align:middle">BETA</span></div>
+      <div class="vh-title">Internet Exposed Host</div>
       <div class="vh-sub">Test methodology, for comparison against the standard panels: verified internet-exposed hosts &middot; CVE risk score &ge; 9 only &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
     </div>
     <span class="vh-badge" id="cnt-iehb">—</span>
@@ -2491,27 +2491,27 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
 <!-- ═══ View: Risk Findings ═══ -->
 <div class="view" id="view-risk">
-  <div style="text-align:center;padding:24px 32px 16px;background:#fff;border-bottom:1px solid var(--border)">
-    <div style="font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#DA291C;margin-bottom:16px">Critical Risk Findings</div>
-    <svg viewBox="0 0 220 220" width="240" height="240" style="display:block;margin:0 auto;overflow:visible">
-      <circle cx="110" cy="110" r="80" fill="none" stroke="#e2e8f0" stroke-width="32"/>
-      <g transform="rotate(-90,110,110)">
-        <circle id="rf-pseg-a" cx="110" cy="110" r="80" fill="none" stroke="#ef4444" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
-        <circle id="rf-pseg-v" cx="110" cy="110" r="80" fill="none" stroke="#f97316" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
-        <circle id="rf-pseg-i" cx="110" cy="110" r="80" fill="none" stroke="#8b5cf6" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
-        <circle id="rf-pseg-c" cx="110" cy="110" r="80" fill="none" stroke="#f59e0b" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
-        <circle id="rf-pseg-s" cx="110" cy="110" r="80" fill="none" stroke="#0ea5e9" stroke-width="32" stroke-linecap="butt" stroke-dasharray="0 502.65" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+  <div style="text-align:center;padding:18px 24px 14px;background:var(--surface);border-bottom:1px solid var(--border)">
+    <div style="font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">Critical Risk Findings</div>
+    <svg viewBox="0 0 160 160" width="160" height="160" style="display:block;margin:0 auto;overflow:visible">
+      <circle cx="80" cy="80" r="58" fill="none" stroke="var(--border)" stroke-width="16"/>
+      <g transform="rotate(-90,80,80)" opacity=".9">
+        <circle id="rf-pseg-a" cx="80" cy="80" r="58" fill="none" stroke="#ef4444" stroke-width="16" stroke-linecap="butt" stroke-dasharray="0 364.4" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-v" cx="80" cy="80" r="58" fill="none" stroke="#f97316" stroke-width="16" stroke-linecap="butt" stroke-dasharray="0 364.4" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-i" cx="80" cy="80" r="58" fill="none" stroke="#8b5cf6" stroke-width="16" stroke-linecap="butt" stroke-dasharray="0 364.4" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-c" cx="80" cy="80" r="58" fill="none" stroke="#f59e0b" stroke-width="16" stroke-linecap="butt" stroke-dasharray="0 364.4" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
+        <circle id="rf-pseg-s" cx="80" cy="80" r="58" fill="none" stroke="#0ea5e9" stroke-width="16" stroke-linecap="butt" stroke-dasharray="0 364.4" stroke-dashoffset="0" style="transition:stroke-dasharray 1.4s cubic-bezier(.22,1,.36,1),stroke-dashoffset 1.4s cubic-bezier(.22,1,.36,1)"/>
       </g>
-      <text id="rf-pie-total" x="110" y="102" text-anchor="middle" dominant-baseline="middle" fill="#0f172a" font-size="42" font-weight="900" font-family="inherit" letter-spacing="-2">—</text>
-      <text x="110" y="128" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">CRITICAL RISK</text>
-      <text x="110" y="140" text-anchor="middle" fill="#94a3b8" font-size="8" font-weight="700" letter-spacing=".12em">FINDINGS</text>
+      <text id="rf-pie-total" x="80" y="75" text-anchor="middle" dominant-baseline="middle" fill="var(--text)" font-size="28" font-weight="800" font-family="inherit" letter-spacing="-1">—</text>
+      <text x="80" y="93" text-anchor="middle" fill="var(--muted)" font-size="7" font-weight="700" letter-spacing=".1em">CRITICAL RISK</text>
+      <text x="80" y="103" text-anchor="middle" fill="var(--muted)" font-size="7" font-weight="700" letter-spacing=".1em">FINDINGS</text>
     </svg>
-    <div style="display:flex;gap:20px;justify-content:center;margin-top:14px;flex-wrap:wrap;font-size:11px">
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('alerts')"><div style="width:9px;height:9px;border-radius:50%;background:#ef4444"></div><span style="color:#475569">Alerts</span><b id="rf-n-a" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:9px;height:9px;border-radius:50%;background:#f97316"></div><span style="color:#475569">Exposure</span><b id="rf-n-v" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:9px;height:9px;border-radius:50%;background:#8b5cf6"></div><span style="color:#475569">Identities</span><b id="rf-n-i" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:9px;height:9px;border-radius:50%;background:#f59e0b"></div><span style="color:#475569">Misconfigurations</span><b id="rf-n-c" style="margin-left:3px;color:#0f172a">—</b></div>
-      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('secrets-all')"><div style="width:9px;height:9px;border-radius:50%;background:#0ea5e9"></div><span style="color:#475569">Secrets</span><b id="rf-n-s" style="margin-left:3px;color:#0f172a">—</b></div>
+    <div style="display:flex;gap:16px;justify-content:center;margin-top:12px;flex-wrap:wrap;font-size:10.5px">
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('alerts')"><div style="width:8px;height:8px;border-radius:50%;background:#ef4444"></div><span style="color:var(--muted)">Alerts</span><b id="rf-n-a" style="margin-left:2px;color:var(--sub);font-weight:600">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('vulns')"><div style="width:8px;height:8px;border-radius:50%;background:#f97316"></div><span style="color:var(--muted)">Exposure</span><b id="rf-n-v" style="margin-left:2px;color:var(--sub);font-weight:600">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('identities')"><div style="width:8px;height:8px;border-radius:50%;background:#8b5cf6"></div><span style="color:var(--muted)">Identities</span><b id="rf-n-i" style="margin-left:2px;color:var(--sub);font-weight:600">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('compliance')"><div style="width:8px;height:8px;border-radius:50%;background:#f59e0b"></div><span style="color:var(--muted)">Misconfigurations</span><b id="rf-n-c" style="margin-left:2px;color:var(--sub);font-weight:600">—</b></div>
+      <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="nav('secrets-all')"><div style="width:8px;height:8px;border-radius:50%;background:#0ea5e9"></div><span style="color:var(--muted)">Secrets</span><b id="rf-n-s" style="margin-left:2px;color:var(--sub);font-weight:600">—</b></div>
     </div>
   </div>
   <!-- hidden KPI value holders still updated by JS for internal use -->
@@ -2728,7 +2728,7 @@ function buildPie(d){
     {id:'rf-pseg-s',key:'s',n:(d.secretsAll||[]).length},
   ];
   var total=segs.reduce(function(s,c){return s+c.n;},0);
-  var C=502.65,GAP=7;
+  var C=364.4,GAP=5;
   var active=segs.filter(function(s){return s.n>0;}).length||1;
   var usable=C-GAP*active;
   var cum=0;
@@ -2907,12 +2907,12 @@ function _renderVulns(rows,err){
   }
 
   // Internet-Exposed tab/panel removed — internet-exposed hosts are still tracked
-  // elsewhere (Internet-Exposed Host Beta tab, Risk Findings' Host Exposure category via
+  // elsewhere (Internet Exposed Host tab, Risk Findings' Host Exposure category via
   // riskFindingHostExposure()); this panel now shows only Private Hosts, no tab switcher.
   var html='';
 
   // ── Private Hosts panel ────────────────────────────────────────────────────
-  // Card format matches the Internet-Exposed Host - Beta tab's asset-card design
+  // Card format matches the Internet Exposed Host tab's asset-card design
   // (newHostInterExposure.png reference) — two-column card: Asset Details + Cloud Context
   // on the left, Security Findings + Actions on the right, "View all findings" expansion
   // below with correlated risk strip, non-compliance violations, and the full CVE table.
@@ -3321,20 +3321,15 @@ function renderFortiGate(d){
   setBody('body-fortigate','<div class="tbl-wrap"><table><thead><tr><th>Cloud</th><th>Domain / Account</th><th>Target</th><th>Verified Internet Path</th><th>First Seen</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>');
 }
 
-// ── Internet Exposed Assets — unfiltered LW_APA_EXPOSURE_PATHS, every target type, TARGETS
-// left as its raw array (one path record can carry more than one target). Comprehensive
-// superset of the type-specific panels (Host Internet Exposure, Public Storage Exposure,
-// FortiGate) — purely additive, no effect on posture score or any other panel.
-// 'fortigate' → 'Fortinet Appliance', NOT 'FortiGate': Lacework's own type field here covers
-// every Fortinet virtual appliance (FortiGate, FortiAnalyzer, FortiWeb, FortiManager,
-// FortiADC, FortiTester, ...) under this one type, confirmed by cross-checking target names
-// (e.g. "FAZFOSTERR-faz", "FortiManager", "sallam-fadc" all appear here) — it is not
-// FortiGate-specific despite the string. Don't rename this back without re-verifying.
+// ── Internet Accessible Ressources — unfiltered LW_APA_EXPOSURE_PATHS, every target type except
+// 'fortigate' (that type has its own dedicated FortiGate panel — see renderFortiGate()),
+// TARGETS left as its raw array (one path record can carry more than one target).
+// Comprehensive superset of the type-specific panels (Host Internet Exposure, Public
+// Storage Exposure) — purely additive, no effect on posture score or any other panel.
 var EXPOSED_ASSET_TYPE_LABELS={
   's3:bucket':'S3 Bucket','ec2:instance':'EC2 Instance',
   'microsoft.compute/virtualmachines':'Azure VM',
   'microsoft.storage/storageaccounts/blobservices':'Azure Blob Storage',
-  'fortigate':'Fortinet Appliance',
 };
 function exposedAssetTypeLabel(t){return EXPOSED_ASSET_TYPE_LABELS[t]||t||'Unknown';}
 // Flattened {rec,target} rows from the last render — kept so tile clicks can re-filter the
@@ -3387,7 +3382,7 @@ function renderExposedAssets(d){
   var records=((d&&d.exposurePaths&&d.exposurePaths.all)||[]);
   var rows=[];
   records.forEach(function(r){
-    (r.TARGETS||[]).forEach(function(t){rows.push({rec:r,target:t});});
+    (r.TARGETS||[]).forEach(function(t){if(t.type!=='fortigate')rows.push({rec:r,target:t});});
   });
   _exposedAssetsRows=rows;
   renderExposedAssetsUI();
@@ -3460,7 +3455,7 @@ function renderAttackPaths(d){
   renderAttackPathsUI();
 }
 
-// ── Internet-Exposed Host - Beta ─────────────────────────────────────────────
+// ── Internet Exposed Host ────────────────────────────────────────────────────
 // Test methodology for comparison against the existing panels — NOT wired into posture
 // score, alerts, or any other panel. Filter: verified internet-exposed hosts only, CVE risk
 // score >= 9 (hard cutoff, no partial credit below), enriched with Critical misconfigs,
@@ -3468,7 +3463,7 @@ function renderAttackPaths(d){
 // role identity by name — a heuristic, not a guaranteed 1:1; Azure/GCP not implemented,
 // no managed-identity/service-account linkage data is fetched for those clouds yet).
 function renderInternetHostExposedBeta(d){
-  try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet-Exposed Host (Beta) render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
+  try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet Exposed Host render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
 }
 function _renderInternetHostExposedBeta(d){
   d=d||{};
@@ -4747,19 +4742,20 @@ function renderRiskFindings(d){
     {key:'Secret',    label:'Secrets Detected',           color:'#0ea5e9', tab:'secrets-all', items:(d.secretsAll||[]).map(r=>({title:r.SECRET_TYPE||'Secret', copyVal:r.HOSTNAME||r.SECRET_IDENTIFIER||r.SECRET_TYPE, detail:(r.HOSTNAME||'—')+' · '+tr(r.SECRET_IDENTIFIER||'',28),score:10}))},
   ].filter(g=>g.items.length);
   if(!groups.length){setBody('rf-table','<div class="state"><span>No risk findings</span></div>');return;}
+  const scoreBadge=s=>{const cls=s>=80?'b-cr':s>=50?'b-hi':s>=20?'b-me':'b-ok';return'<span class="b '+cls+'">'+Math.round(s)+'</span>';};
   const rows=groups.map(g=>{
     const bodyId='rf-grp-'+g.key;
-    const hdr='<tbody><tr class="rf-grp-toggle" data-body="'+bodyId+'" style="cursor:pointer;background:#f8fafc;border-top:2px solid '+g.color+'">'
-      +'<td colspan="3" style="padding:7px 12px;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:'+g.color+'">'
-        +'<span class="rf-grp-chevron" style="display:inline-block;width:11px;font-size:9px;color:'+g.color+'">&#9654;</span>'
-        +'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)
+    const hdr='<tbody><tr class="rf-grp-toggle" data-body="'+bodyId+'" style="cursor:pointer;background:var(--card)">'
+      +'<td colspan="3" style="padding:8px 12px;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--sub);border-left:3px solid '+g.color+'">'
+        +'<span class="rf-grp-chevron" style="display:inline-block;width:11px;font-size:9px;color:var(--muted)">&#9654;</span>'
+        +'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+g.color+';margin-right:6px;vertical-align:middle"></span>'+e(g.label)
       +'</td>'
-      +'<td style="padding:7px 12px;text-align:right;font-size:11px;font-weight:700;color:'+g.color+'"><a href="#" data-tab="'+g.tab+'" onclick="event.stopPropagation();nav(this.dataset.tab);return false;" style="color:inherit;text-decoration:none;border-bottom:1px dashed currentColor">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
+      +'<td style="padding:8px 12px;text-align:right"><a href="#" data-tab="'+g.tab+'" onclick="event.stopPropagation();nav(this.dataset.tab);return false;" style="display:inline-block;font-size:10px;font-weight:600;color:'+g.color+';background:'+g.color+'14;border-radius:10px;padding:2px 9px;text-decoration:none">'+g.items.length+' finding'+(g.items.length===1?'':'s')+' ↗</a></td>'
       +'</tr></tbody>';
-    const detail='<tbody id="'+bodyId+'" style="display:none">'+g.items.map((r,i)=>'<tr style="'+(i%2?'background:#fafafa':'')+'">'
-      +'<td class="p" colspan="2" style="display:flex;align-items:center;gap:4px">'+e(tr(r.title,48))+'<button class="cp-btn" data-cp="'+e(r.copyVal||r.title)+'" title="Copy">'+cpIcon+'</button></td>'
-      +'<td class="m">'+e(tr(r.detail,36))+'</td>'
-      +'<td class="r"><span class="risk-score">'+Math.round(r.score)+'</span></td>'
+    const detail='<tbody id="'+bodyId+'" style="display:none">'+g.items.map((r,i)=>'<tr style="'+(i%2?'background:var(--card)':'')+'">'
+      +'<td class="p" colspan="2" style="display:flex;align-items:center;gap:4px;padding:6px 12px">'+e(tr(r.title,48))+'<button class="cp-btn" data-cp="'+e(r.copyVal||r.title)+'" title="Copy">'+cpIcon+'</button></td>'
+      +'<td class="m" style="padding:6px 12px">'+e(tr(r.detail,36))+'</td>'
+      +'<td class="r" style="padding:6px 12px">'+scoreBadge(r.score)+'</td>'
     +'</tr>').join('')+'</tbody>';
     return hdr+detail;
   }).join('');
