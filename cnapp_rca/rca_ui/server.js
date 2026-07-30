@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fortinet Rapid Cloud Assessment empowered by FortiCNAPP — Live Dashboard
+// Fortinet Rapid Cloud Assessment Powered by FortiCNAPP — Live Dashboard
 // Usage:  node server.js   |   open http://localhost:8888
 // No npm packages required.
 
@@ -271,7 +271,7 @@ async function post(path, body, timeoutMs = 30000) {
   );
   if (status === 204) return [];
   if (status !== 200 && status !== 201)
-    throw new Error(`POST ${path} → HTTP ${status}: ${JSON.stringify(resp).slice(0, 200)}`);
+    throw new Error(`POST ${path} → HTTP ${status}: ${JSON.stringify(resp).slice(0, 500)}`);
   return Array.isArray(resp?.data) ? resp.data : (Array.isArray(resp) ? resp : []);
 }
 
@@ -904,7 +904,7 @@ async function fetchCompliance() {
     } catch (e) {
       // 429s are already retried with backoff inside post()/withRetry() — reaching here on
       // a 429 means the bucket stayed exhausted through every retry, not a one-off blip.
-      console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,80)}`);
+      console.log(`  [compliance] ${p.policyId} ERR: ${e.message.slice(0,200)}`);
     }
     return null;
   }
@@ -1444,21 +1444,39 @@ function unusedPctOf(r) {
   return ec.entitlements_unused_percentage != null ? ec.entitlements_unused_percentage
     : (unusedCnt != null && totalCnt ? (unusedCnt/totalCnt)*100 : null);
 }
-// Access-key age — field name unverified against a live account or mock snapshot (none
-// available at implementation time; see docs/superpowers/specs/2026-07-28-risk-findings-
-// weighting-design.md). Checks the common casings a FortiCNAPP/AWS-style payload might use;
-// if none match, the key is treated as not-old rather than guessed.
+// Access-key age — verified against a live tenant snapshot (AWS/Azure/GCP all agree on
+// shape): ACCESS_KEYS is an OBJECT keyed by access_key_id, not an array, and each key's
+// creation date is `created_time` — not the create_date/CreateDate casings this function
+// originally guessed at (written with no live data available to confirm against; see
+// docs/superpowers/specs/2026-07-28-risk-findings-weighting-design.md). Only active keys
+// count — an already-disabled key isn't a live rotation risk.
+function accessKeyList(r) {
+  const raw = r.ACCESS_KEYS;
+  if (!raw || typeof raw !== 'object') return [];
+  return Array.isArray(raw) ? raw : Object.values(raw);
+}
 function isOldAccessKey(r, thresholdDays) {
   thresholdDays = thresholdDays || 180;
-  const raw = r.ACCESS_KEYS;
-  const keys = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? [raw] : []);
-  return keys.some(k => {
-    if (!k || typeof k !== 'object') return false;
-    const created = k.create_date || k.CREATE_DATE || k.createDate || k.CreateDate || k.created_at || k.CREATED_AT;
+  return accessKeyList(r).some(k => {
+    if (!k || typeof k !== 'object' || k.active === false) return false;
+    const created = k.created_time || k.create_date || k.CREATE_DATE || k.createDate || k.CreateDate || k.created_at || k.CREATED_AT;
     if (!created) return false;
     const ageDays = (Date.now() - new Date(created).getTime()) / 86400000;
     return Number.isFinite(ageDays) && ageDays >= thresholdDays;
   });
+}
+// Oldest active key's age in days, for display — null if no active keys with a known date.
+function oldestActiveKeyAgeDays(r) {
+  const ages = accessKeyList(r)
+    .filter(k => k && typeof k === 'object' && k.active !== false)
+    .map(k => {
+      const created = k.created_time || k.create_date || k.CREATE_DATE || k.createDate || k.CreateDate || k.created_at || k.CREATED_AT;
+      if (!created) return null;
+      const d = (Date.now() - new Date(created).getTime()) / 86400000;
+      return Number.isFinite(d) ? d : null;
+    })
+    .filter(d => d !== null);
+  return ages.length ? Math.max(...ages) : null;
 }
 function isAdminNoMfaIdentity(r) {
   return !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r);
@@ -1477,6 +1495,25 @@ function calcRiskScore(alerts, vulns, identities) {
   const topCve   = vulns.reduce((m, v) => { const rs = parseFloat(v.riskScore || 0); return rs >= 8 ? Math.max(m, rs * 10) : m; }, 0);
   const alertPts = Math.min(alerts.length * 3, 15);
   return Math.min(100, Math.round(topIdent * 0.60 + topCve * 0.25 + alertPts));
+}
+
+// Reports read from the background-refreshed `cache` rather than querying live on every
+// request (the full refreshData() cycle can take minutes due to rate-limit-driven
+// compliance throttling — see COMPLIANCE_POLICY_CAP notes above). That's intentional and
+// fast for the common case. But if the scheduled refresh cycle has stalled or crashed
+// (confirmed live: report sections lagging behind real cloud state), a report could
+// silently serve data far older than the configured refresh interval with no indication
+// anything was wrong. This is a safety net, not a live-per-request fetch: only refreshes
+// when the cache is stale beyond the configured interval (+10% grace), so normal report
+// generation still just reads the cache as before.
+async function ensureFreshCache() {
+  if (!cache.fetchedAt) return;
+  const ageMs = Date.now() - new Date(cache.fetchedAt).getTime();
+  const maxAgeMs = dynamicInterval * 1000 * 1.1;
+  if (ageMs <= maxAgeMs) return;
+  console.log(`[report] cache is ${Math.round(ageMs/60000)}min old (limit ${Math.round(maxAgeMs/60000)}min) — refreshing before generating report`);
+  try { await refreshData(); }
+  catch (e) { console.error('[report] pre-generation refresh failed, serving existing cache:', e.message); }
 }
 
 async function refreshData() {
@@ -1975,7 +2012,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <span style="font-size:20px;font-weight:500;color:#fff;letter-spacing:.04em;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;line-height:1">RTINET</span>
     </div>
     <div style="font-size:9px;font-weight:600;color:#6b7280;letter-spacing:.08em;text-transform:uppercase;margin-left:1px">Rapid Cloud Assessment</div>
-    <div style="font-size:8px;font-weight:500;color:#DA291C;letter-spacing:.06em;text-transform:uppercase;margin-left:1px">empowered by FortiCNAPP</div>
+    <div style="font-size:8px;font-weight:500;color:#DA291C;letter-spacing:.06em;text-transform:uppercase;margin-left:1px">Powered by FortiCNAPP</div>
   </div>
   <div class="sb-sect">Dashboard</div>
   <div class="sb-item active" id="nav-overview" onclick="nav('overview')">
@@ -2046,20 +2083,6 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <a id="rpt2-btn-link" href="/report2" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
       <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       Generate Cloud Security Report
-    </a>
-  </div>
-  <!-- Condensed, chart-first executive summary — /report3 -->
-  <div style="padding:0 0 6px">
-    <a id="rpt3-btn-link" href="/report3" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
-      <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.1-3-3-4 4"/></svg>
-      Generate Cloud Overview Report
-    </a>
-  </div>
-  <!-- Narrative assessment-style report (Scope/Methodology/Control Areas/Evidence/Actions) — /report4 -->
-  <div style="padding:0 0 6px">
-    <a id="rpt4-btn-link" href="/report4" target="_blank" class="rpt-btn" style="display:flex;text-decoration:none">
-      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><circle cx="12" cy="15" r="3"/><path d="M12 13v-1"/></svg>
-      Generate Report_BETA
     </a>
   </div>
   <!-- Sidebar meta -->
@@ -2199,7 +2222,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     <span id="ov-c" style="display:none"></span>
 
   </div>
-  <div class="footer">Fortinet Rapid Cloud Assessment empowered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment Powered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span id="footer-interval">—</span> &nbsp;·&nbsp; <span id="countdown">—</span> &nbsp;·&nbsp; <span id="footer-time"></span></div>
 </div><!-- /view-overview -->
 
 <!-- ═══ View: CSPM Score per CSP ═══ -->
@@ -2295,7 +2318,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
     </div>
   </div>
-  <div class="footer">Fortinet Rapid Cloud Assessment empowered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span class="footer-interval-ref">—</span> &nbsp;·&nbsp; <span id="footer-time-csp"></span></div>
+  <div class="footer">Fortinet Rapid Cloud Assessment Powered by FortiCNAPP &nbsp;·&nbsp; Auto-refresh every <span class="footer-interval-ref">—</span> &nbsp;·&nbsp; <span id="footer-time-csp"></span></div>
 </div><!-- /view-csp-scores -->
 
 <!-- ═══ View: Critical Alerts ═══ -->
@@ -6417,7 +6440,7 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
 <div class="sec-title">Exploit Simulation Layer</div>
 <div class="steps" id="steps"></div>
 <div class="meta">
-  <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment empowered by FortiCNAPP<br>
+  <span class="dot" id="ldot"></span>Fortinet Rapid Cloud Assessment Powered by FortiCNAPP<br>
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
@@ -6524,14 +6547,14 @@ const REPORT_CSS = `
             --color-critical: #DA291C;          /* Fortinet Red */
             --color-critical-bg: #FDECEA;
             --color-critical-border: #DA291C;
-            --color-high: #CC4A1A;              /* Dark orange-red — distinct from Critical */
-            --color-high-bg: #FDF0E8;
+            --color-high: #B87700;              /* Darkened accent-orange — readable on white at AA contrast */
+            --color-high-bg: #FFF6DF;
             --color-medium: #B7770D;            /* Amber */
             --color-medium-bg: #FEF9E7;
-            --color-low: #2C5280;               /* Muted blue — informational/low risk */
-            --color-low-bg: #EDF2F9;
-            --color-success: #1E7A3E;
-            --color-success-bg: #E8F5ED;
+            --color-low: #307FE2;               /* Accent blue — informational/low risk */
+            --color-low-bg: #EAF2FD;
+            --color-success: #2A9D66;           /* Accent green */
+            --color-success-bg: #E7F7EF;
             --color-primary: #DA291C;           /* Fortinet Red — all primary accents */
             --color-primary-light: #F04030;
             --color-primary-dark: #000000;      /* Fortinet Black — all dark backgrounds */
@@ -6540,6 +6563,12 @@ const REPORT_CSS = `
             --color-border: #D5D5D5;
             --color-bg-light: #F5F5F5;
             --color-bg-section: #FAFAFA;
+            /* ── Extended accent palette (non-severity groupings, e.g. report4 finding categories) ── */
+            --accent-blue: #307FE2;
+            --accent-orange: #FFB900;
+            --accent-green: #3CB17E;
+            --accent-purple: #9063CD;
+            --accent-teal: #2CCCD3;
         }
 
         @keyframes rec-glow {
@@ -6590,6 +6619,10 @@ const REPORT_CSS = `
 
             /* ── Tighten spacing for print — prevent large whitespace gaps ── */
             body { padding: 0 2rem; }
+            /* Cover's 62vh min-height is for on-screen presence only — on a printed
+               page it leaves no room for whatever immediately follows (e.g. report2's
+               per-cloud gauges, meant to share the cover's page). Let it size to content. */
+            .report-cover { min-height: auto !important; padding: 2rem 2.5rem 1.5rem !important; margin-bottom: 1rem !important; }
             h2 { margin: 1.5rem 0 1.2rem !important; }
             h3 { margin: 1.5rem 0 0.75rem !important; padding-bottom: 0.4rem !important; }
             h4 { margin: 1rem 0 0.5rem !important; }
@@ -6603,6 +6636,19 @@ const REPORT_CSS = `
             /* Keep banner + findings table together — no orphaned banner pages */
             .rec-context-banner { break-after: avoid; break-inside: avoid; }
             .findings-driver { break-inside: avoid; }
+
+            /* Collapsed findings panels must still print in full — a PDF report can't
+               omit rows just because they were collapsed for on-screen navigation. Plain
+               div/class toggle (not native <details>) so this override reliably applies
+               through Chromium's print pagination — see collapsibleFindings() comment. */
+            .rpt-collapse { border: none !important; margin: 0.5rem 0 !important; }
+            .rpt-collapse-summary { pointer-events: none; background: none !important; padding: 0.3rem 0 !important; }
+            .rpt-collapse-summary .rpt-collapse-chevron { display: none; }
+            .rpt-collapse-body { display: block !important; padding: 0 !important; }
+
+            /* A static PDF can't run the unlock interaction — show the lock card as a
+               plain placeholder, not a dead input/button. */
+            .fc-lock-row, .fc-lock-error { display: none !important; }
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -6619,16 +6665,22 @@ const REPORT_CSS = `
             font-size: 14px;
         }
 
-        /* ── Header ── */
-        header {
+        /* ── Topbar ── */
+        .report-topbar {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 1.2rem 2rem;
+            gap: 14px;
+            height: 54px;
+            padding: 0 2rem;
             background: var(--color-primary-dark);
             margin-bottom: 0;
         }
-        header img { height: 42px; }
+        .report-topbar-left { display: flex; align-items: center; gap: 14px; }
+        .report-topbar .brand-logo { height: 18px; width: auto; color: #fff; flex-shrink: 0; }
+        .report-topbar .brand-sep { width: 1px; height: 18px; background: rgba(255,255,255,0.2); flex-shrink: 0; }
+        .report-topbar .topbar-title { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.75); letter-spacing: 1.8px; text-transform: uppercase; }
+        .report-topbar .topbar-sub { font-size: 11px; color: rgba(255,255,255,0.5); }
 
         /* ── PDF export button (screen only) ── */
         .pdf-export-btn {
@@ -6642,16 +6694,18 @@ const REPORT_CSS = `
             background: var(--color-primary);
             color: #fff;
             border: none;
-            border-radius: 6px;
-            padding: 10px 18px;
-            font-size: 13px;
+            border-radius: 999px;
+            padding: 11px 22px;
+            font-size: 12px;
             font-weight: 700;
-            letter-spacing: .02em;
+            letter-spacing: 1px;
+            text-transform: uppercase;
             cursor: pointer;
-            box-shadow: 0 4px 14px rgba(0,0,0,.25);
+            box-shadow: 0 4px 20px rgba(218,41,28,.4);
             font-family: inherit;
+            transition: all .2s;
         }
-        .pdf-export-btn:hover { background: var(--color-primary-light); }
+        .pdf-export-btn:hover { background: var(--color-primary-light); transform: translateY(-2px); box-shadow: 0 8px 28px rgba(218,41,28,.5); }
 
         /* ── Cover / Title ── */
         .report-cover {
@@ -6700,7 +6754,8 @@ const REPORT_CSS = `
         /* ── Section Headers ── */
         h2 {
             font-size: 1.6rem;
-            font-weight: 700;
+            font-weight: 800;
+            letter-spacing: -0.01em;
             color: var(--color-primary-dark);
             border-left: 5px solid var(--color-primary);
             padding-left: 1rem;
@@ -6730,7 +6785,7 @@ const REPORT_CSS = `
         .toc {
             background: var(--color-bg-light);
             border: 1px solid var(--color-border);
-            border-radius: 8px;
+            border-radius: 14px;
             padding: 1.5rem 2rem;
             margin: 1.5rem auto 2rem;
         }
@@ -6740,7 +6795,7 @@ const REPORT_CSS = `
             min-width: 0;
             border: 1px solid var(--color-border);
             border-top: 4px solid var(--color-primary);
-            border-radius: 8px;
+            border-radius: 14px;
             padding: 1rem 1.1rem;
             background: white;
             text-decoration: none;
@@ -6778,6 +6833,79 @@ const REPORT_CSS = `
             line-height: 1.45;
         }
 
+        /* ── Dashboard Tile — big number + short label, no eyebrow/subtitle ── */
+        .dash-tile-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+        @media screen and (max-width: 900px) { .dash-tile-grid { grid-template-columns: repeat(2, 1fr); } }
+        .dash-tile {
+            border: 1px solid var(--color-border);
+            border-radius: 14px;
+            padding: 1.75rem 1rem;
+            background: white;
+            text-align: center;
+            text-decoration: none;
+            display: block;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            transition: box-shadow 0.15s, transform 0.15s;
+        }
+        .dash-tile:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.14); transform: translateY(-2px); }
+        .dash-tile .dt-count {
+            font-size: 2.4rem;
+            font-weight: 900;
+            line-height: 1;
+            margin-bottom: 0.6rem;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+        .dash-tile .dt-label { font-size: 0.92rem; color: var(--color-text); line-height: 1.35; }
+
+        /* ── Cloud Services Security Risk Score panel ── */
+        .csp-panel { background: #f1f3f8; border-radius: 20px; padding: 2rem; margin: 1rem 0; }
+        .csp-panel-title { font-size: 1.7rem; font-weight: 800; color: #0f172a; margin: 0 0 0.35rem; border-left: 4px solid var(--color-primary); padding-left: 0.9rem; }
+        .csp-panel-subtitle { font-size: 0.72rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #64748b; padding-left: 1.3rem; margin: 0 0 1.75rem; }
+        .csp-cards-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem; }
+        .csp-card2 { background: #fff; border-radius: 16px; padding: 1.5rem; box-shadow: 0 4px 16px rgba(15,23,42,0.07); position: relative; overflow: hidden; }
+        .csp-card2-top { position: absolute; top: 0; left: 0; right: 0; height: 4px; }
+        .csp-card2-head { display: flex; align-items: center; justify-content: space-between; margin: 0.5rem 0 1.75rem; }
+        .csp-monitored { font-size: 0.76rem; font-weight: 700; color: #16a34a; display: inline-flex; align-items: center; gap: 5px; }
+        .csp-monitored::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #16a34a; flex-shrink: 0; }
+        .csp-ring-row { display: flex; align-items: center; gap: 1.5rem; margin-bottom: 1.5rem; }
+        .csp-ring-score { font-size: 2.6rem; font-weight: 900; line-height: 1; letter-spacing: -0.02em; }
+        .csp-ring-max { font-size: 0.9rem; color: #94a3b8; font-weight: 600; margin: 0.25rem 0 0.35rem; }
+        .csp-ring-tier { font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #64748b; }
+        .csp-stats-box { background: #f8fafc; border-radius: 12px; padding: 1rem 0.4rem; display: grid; grid-template-columns: repeat(4,1fr); gap: 0.4rem; margin-bottom: 1.25rem; }
+        .csp-stats-box .csn { font-size: 1.35rem; font-weight: 800; text-align: center; }
+        .csp-stats-box .csl { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #64748b; text-align: center; margin-top: 2px; }
+        .csp-cta-btn { display: block; text-align: center; width: 100%; padding: 0.9rem; border-radius: 10px; background: linear-gradient(135deg,#3b82f6,#2563eb); color: #fff !important; font-size: 0.76rem; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; text-decoration: none; box-shadow: 0 4px 12px rgba(37,99,235,0.3); box-sizing: border-box; }
+        .csp-summary-strip { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; display: grid; grid-template-columns: repeat(4,1fr); padding: 1.75rem 1rem; }
+        .csp-summary-strip .css-num { font-size: 2rem; font-weight: 900; text-align: center; color: #0f172a; }
+        .csp-summary-strip .css-label { font-size: 0.68rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #64748b; text-align: center; margin-top: 0.3rem; }
+
+        /* ── FortiCNAPP solution card — "why it matters + how FortiCNAPP helps", per section ── */
+        .fc-solution { background: #F5F5F5; border: 1px solid var(--color-border); border-left: 4px solid var(--color-primary); border-radius: 0 12px 12px 0; padding: 1.5rem 1.75rem; margin: 1rem 0 1.5rem; }
+        .fc-solution-head { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-primary-dark); margin-bottom: 1rem; }
+        .fc-solution-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem 2rem; margin-bottom: 1.25rem; }
+        .fc-label { display: block; font-size: 0.65rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-primary); margin-bottom: 0.3rem; }
+        .fc-solution-grid p { font-size: 0.82rem; color: var(--color-text); line-height: 1.55; margin: 0; }
+        .fc-outcomes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem 2rem; padding-top: 1.1rem; border-top: 1px solid var(--color-border); }
+        .fc-outcomes ul { margin: 0.3rem 0 0 1.1rem; padding: 0; }
+        .fc-outcomes li { font-size: 0.8rem; color: var(--color-text); line-height: 1.6; margin-bottom: 0.2rem; }
+
+        /* ── Fortinet-only section lock gate — client-side only (no server session for
+           report viewing), so this is a courtesy gate for internal/partner content, not
+           a security boundary. Printed PDFs are generated headless with no unlock
+           interaction, so a gated section always renders as the locked card, never the
+           content underneath — kept out of the customer-facing export by construction. */
+        .fc-lock-gate { max-width: 480px; margin: 2rem auto; text-align: center; border: 1px solid var(--color-border); border-top: 4px solid var(--color-primary); border-radius: 16px; padding: 2.5rem 2rem; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .fc-lock-icon { font-size: 2rem; margin-bottom: 0.75rem; }
+        .fc-lock-title { font-size: 1rem; font-weight: 800; color: var(--color-primary-dark); margin-bottom: 0.5rem; }
+        .fc-lock-desc { font-size: 0.82rem; color: var(--color-text-muted); line-height: 1.6; margin-bottom: 1.5rem; }
+        .fc-lock-row { display: flex; gap: 0.5rem; }
+        .fc-lock-row input { flex: 1; padding: 0.65rem 0.9rem; border: 1px solid var(--color-border); border-radius: 8px; font-size: 0.85rem; font-family: inherit; outline: none; }
+        .fc-lock-row input:focus { border-color: var(--color-primary); }
+        .fc-lock-row button { padding: 0.65rem 1.3rem; border: none; border-radius: 8px; background: var(--color-primary); color: #fff; font-weight: 700; font-size: 0.82rem; cursor: pointer; font-family: inherit; white-space: nowrap; }
+        .fc-lock-row button:hover { background: var(--color-primary-light); }
+        .fc-lock-error { display: none; color: var(--color-critical); font-size: 0.78rem; margin-top: 0.9rem; }
+
         /* ── KPI Cards ── */
         .kpi-grid { width: 100%; margin: 3rem 0; overflow: hidden; }
         .kpi-grid::after { content: ""; display: table; clear: both; }
@@ -6786,7 +6914,7 @@ const REPORT_CSS = `
             width: 22%;
             margin-right: 4%;
             background: white;
-            border-radius: 10px;
+            border-radius: 16px;
             padding: 1.75rem 1.25rem;
             box-shadow: 0 2px 6px rgba(0,0,0,0.08);
             border: 1px solid var(--color-border);
@@ -6808,12 +6936,12 @@ const REPORT_CSS = `
         /* ── Badges ── */
         .badge {
             display: inline-block;
-            padding: 0.18rem 0.6rem;
-            border-radius: 4px;
+            padding: 0.2rem 0.65rem;
+            border-radius: 6px;
             font-size: 0.7rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.4px;
+            letter-spacing: 0.8px;
             white-space: nowrap;
         }
         .badge-critical { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
@@ -6827,6 +6955,26 @@ const REPORT_CSS = `
         .badge-gcp { background: #4285F4; color: white; }
         .badge-mfa-off { background: var(--color-critical-bg); color: var(--color-critical); border: 1px solid var(--color-critical-border); }
         .badge-mfa-on { background: var(--color-success-bg); color: var(--color-success); }
+
+        /* ── Collapsible findings panel — used when a table would otherwise run long ──
+           Plain div + class toggle, not native <details>: Chromium's print pagination
+           engine was confirmed (live, --print-to-pdf) to silently drop a closed
+           <details>'s content for larger tables even with a forced display:block
+           override — a real PDF lost 41+ rows of identity findings with no error. A
+           class-based toggle has no native collapse semantics for print to mis-render. */
+        .rpt-collapse { border: 1px solid var(--color-border); border-radius: 10px; overflow: hidden; margin: 0.75rem 0; }
+        .rpt-collapse-summary {
+            cursor: pointer; user-select: none;
+            display: flex; align-items: center; gap: 8px;
+            padding: 0.7rem 1.1rem;
+            background: var(--color-bg-light);
+            font-size: 0.78rem; font-weight: 700; color: var(--color-text);
+        }
+        .rpt-collapse-chevron { display: inline-block; font-size: 0.65rem; color: var(--color-text-muted); transition: transform 0.15s; }
+        .rpt-collapse.open .rpt-collapse-chevron { transform: rotate(90deg); }
+        .rpt-collapse-body { display: none; padding: 0 0.9rem 0.6rem; }
+        .rpt-collapse.open .rpt-collapse-body { display: block; }
+        .rpt-collapse-body table { margin: 0.5rem 0; }
 
         /* ── Tables ── */
         table {
@@ -6890,7 +7038,7 @@ const REPORT_CSS = `
             background: white;
             border: 1px solid var(--color-border);
             border-top: 4px solid var(--color-primary);
-            border-radius: 8px;
+            border-radius: 14px;
             padding: 1.25rem;
             box-sizing: border-box;
         }
@@ -7066,7 +7214,7 @@ const REPORT_CSS = `
             min-width: 140px;
             border: 1px solid var(--color-border);
             border-top: 3px solid var(--color-critical);
-            border-radius: 6px;
+            border-radius: 10px;
             padding: 0.6rem 0.8rem;
             background: var(--color-bg-section);
             break-inside: avoid;
@@ -7111,7 +7259,7 @@ const REPORT_CSS = `
         .intro-card {
             flex: 1 1 calc(33% - 1rem);
             min-width: 220px;
-            border-radius: 10px;
+            border-radius: 16px;
             padding: 1.75rem 1.75rem;
             background: white;
             border: 1px solid var(--color-border);
@@ -7126,8 +7274,10 @@ const REPORT_CSS = `
             color: var(--color-primary);
             margin-bottom: 0.5rem;
         }
-        .intro-card h4 { margin: 0 0 0.6rem; font-size: 0.95rem; color: var(--color-primary-dark); }
-        .intro-card p { font-size: 0.8rem; color: var(--color-text-muted); line-height: 1.6; margin: 0; }
+        .intro-card h4 { margin: 0 0 0.9rem; font-size: 0.95rem; color: var(--color-primary-dark); }
+        .intro-card p { font-size: 0.85rem; color: var(--color-text-muted); line-height: 1.85; margin: 0; }
+        .intro-card p + p { margin-top: 0.9rem; }
+        .intro-card p strong { color: var(--color-text); font-weight: 700; }
 
         /* ── Findings Driver Summary ── */
         .findings-driver {
@@ -7177,7 +7327,7 @@ const REPORT_CSS = `
             min-width: 260px;
             border: 1px solid var(--color-border);
             border-top: 4px solid var(--color-primary);
-            border-radius: 8px;
+            border-radius: 14px;
             padding: 1.25rem;
             background: var(--color-bg-section);
             break-inside: avoid;
@@ -7227,9 +7377,9 @@ const REPORT_CSS = `
         /* ── Misc ── */
         .section-divider {
             border: none;
-            border-top: 1px solid var(--color-border);
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--color-border), transparent);
             margin: 4rem 0 0;
-            opacity: 0.5;
         }
         section.pagebreak {
             padding-top: 1rem;
@@ -7259,6 +7409,77 @@ const REPORT_CSS = `
             vertical-align: middle;
         }
     `;
+
+// Self-contained inline SVG — no external image request, matches the Fortinet
+// wordmark used across the org's other customer-facing templates.
+const FORTINET_LOGO_SVG = '<svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 487.6 55" aria-label="Fortinet"><path fill="currentColor" d="M279.9 11.7V0h13.4v54.8h-13.4V11.7zM220.9 0h51.7v11.8h-24.3v43.1H235V11.8h-14.1V0zm266.7 0v11.8h-24.3v43.1H450V11.8h-14.1V0h51.7zM0 0h58v11.8H13.4v11.7h38v11.8h-38v19.5H0V0zm374.5 0h54v11.8h-40.6v9.8h33.3v11.8h-33.3v9.8h41.3V55h-54.7V0zm-10.3 15.5v39.3h-13.4V15.5c0-2.1-1.6-3.7-3.7-3.7h-30v43.1h-13.4V0h45c8.5 0 15.5 7 15.5 15.5zM200.3 0h-45.7v54.8H168V35.3h30c1.6.1 2.9 1.4 2.9 3v16.6h13.4V38.1c0-2.9-1.6-5.4-4-6.8 2.9-2.7 4.7-6.6 4.7-10.8v-5.8c.1-8.1-6.5-14.7-14.7-14.7zm1.4 20.5c0 1.6-1.3 3-3 3H168V11.8h30.7c1.6 0 3 1.3 3 3v5.7z"/><path fill="#da291c" d="M144.2 20.4v14.2H122V20.4h22.2zM93.9 54.8H116V40.6H93.9v14.2zm50.3-42.9c0-6.6-5.3-11.9-11.9-11.9h-10.2v14.2h22.1v-2.3zM93.9 0v14.2H116V0H93.9zM65.7 20.4v14.2h22.1V20.4H65.7zM122 54.8h10.2c6.6 0 11.9-5.3 11.9-11.9v-2.3H122v14.2zM65.7 42.9c0 6.6 5.3 11.9 11.9 11.9h10.2V40.6H65.7v2.3zm0-31v2.3h22.1V0H77.6C71 0 65.7 5.3 65.7 11.9z"/></svg>';
+
+// Shared report header — replaces the plain-text "FORTINET" wordmark used by
+// buildReportHtml()/2/3/4 with the real logo + topbar layout (logo, separator,
+// report label) so all four reports share one consistent, self-contained header.
+function reportTopbarHtml(subtitle, logoOnly) {
+  if (logoOnly) {
+    return '<div class="report-topbar"><div class="report-topbar-left">' + FORTINET_LOGO_SVG + '</div></div>';
+  }
+  return '<div class="report-topbar"><div class="report-topbar-left">' + FORTINET_LOGO_SVG +
+    '<div class="brand-sep"></div><span class="topbar-title">Rapid Cloud Assessment</span>' +
+    (subtitle ? '<span class="topbar-sub">' + subtitle + '</span>' : '') +
+    '</div></div>';
+}
+
+// Wraps a findings table behind a collapsed toggle once it exceeds `threshold` rows,
+// so a long resource list doesn't force scrolling past it to reach the next section.
+// `label` is a static string authored per call site (e.g. "Critical Findings"), never
+// row data, so it's inlined unescaped.
+//
+// Deliberately NOT built on native <details>/<summary>: Chromium's print/PDF pagination
+// engine (confirmed live, headless --print-to-pdf) silently drops a closed <details>'s
+// content entirely for larger tables — the CSS override that forces display:block on a
+// closed details' child doesn't reliably survive print layout, so whole sections (e.g. a
+// 41-row identity table) vanished from the generated PDF with no visible content and no
+// error. A plain div + class toggle has no such native collapse semantics for the print
+// engine to mis-render — the content is always in normal flow; only a CSS class hides it
+// on screen, and print unconditionally overrides that class away (see .rpt-collapse in
+// the @media print block).
+function collapsibleFindings(tableHtml, count, label, threshold) {
+  if (count <= (threshold || 8)) return tableHtml;
+  return '<div class="rpt-collapse">' +
+    '<div class="rpt-collapse-summary" onclick="this.parentElement.classList.toggle(&quot;open&quot;)"><span class="rpt-collapse-chevron">&#9656;</span> Show all ' + count + ' ' + label + '</div>' +
+    '<div class="rpt-collapse-body">' + tableHtml + '</div></div>';
+}
+
+// Renders a compliance finding's violating-resource list (URN/instance ID + a secondary
+// label like region/type) as a collapsed-by-default panel — shared by buildReportHtml's
+// and buildReportHtml2's compliance tables so both stay in sync. Div+class toggle, not
+// native <details> — see collapsibleFindings() above for why.
+function violatingResourcesHtml(resources, esc) {
+  if (!Array.isArray(resources) || !resources.length) return '';
+  const urnKeys = ['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','PRINCIPAL_ID','NAME'];
+  const firstRow = resources[0] || {};
+  const urnKey = urnKeys.find(k => firstRow[k] !== undefined) || Object.keys(firstRow)[0] || '';
+  if (!urnKey) return '';
+  const labelKeys = ['REGION','LOCATION','CLOUD','TYPE','RESOURCE_TYPE','SUBSCRIPTION_ID'];
+  const labelKey = labelKeys.find(k => firstRow[k] !== undefined) || '';
+  const shown = resources.slice(0, 50);
+  const table = '<table style="width:100%;font-size:9px;border-collapse:collapse">' +
+    '<thead><tr style="background:#f1f5f9"><th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(urnKey)+'</th>'+
+    (labelKey?'<th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(labelKey)+'</th>':'')+
+    '</tr></thead><tbody>'+
+    shown.map((row,ri) => {
+      const urnVal = row[urnKey] !== undefined ? String(row[urnKey]) : '—';
+      const lblVal = labelKey && row[labelKey] !== undefined ? String(row[labelKey]) : '';
+      return '<tr style="'+(ri%2?'background:#f8fafc':'')+'">'
+        +'<td style="padding:2px 6px;font-family:monospace;color:#1e293b;word-break:break-all">'+esc(urnVal)+'</td>'
+        +(labelKey?'<td style="padding:2px 6px;color:#64748b">'+esc(lblVal)+'</td>':'')
+        +'</tr>';
+    }).join('')+
+    (resources.length>50?'<tr><td colspan="2" style="padding:3px 6px;color:#94a3b8;font-style:italic">… and '+(resources.length-50)+' more</td></tr>':'')+
+    '</tbody></table>';
+  return '<div class="rpt-collapse" style="margin-top:6px">' +
+    '<div class="rpt-collapse-summary" style="padding:0.35rem 0.6rem;font-size:10px" onclick="this.parentElement.classList.toggle(&quot;open&quot;)">' +
+    '<span class="rpt-collapse-chevron">&#9656;</span> ' + resources.length + ' Violating Resource' + (resources.length===1?'':'s') +
+    '</div><div class="rpt-collapse-body" style="padding:0 0.4rem 0.3rem">' + table + '</div></div>';
+}
 
 // Produces a deep copy of the cached findings with real infrastructure
 // identifiers swapped for consistent fake placeholders, so a report can be
@@ -7529,6 +7750,16 @@ function tocCardHtml(href, count, color, numLabel, title, sub) {
     '<div class="tc-count" style="color:'+color+'">'+count+'</div>' +
     '<div class="tc-title">'+title+'</div>' +
     '<div class="tc-sub">'+sub+'</div>' +
+  '</a>';
+}
+
+// Simplified dashboard tile — just a big number + short two-line label, no eyebrow/
+// subtitle text. Used by report2's "Critical Risk Findings" summary grid, which needs
+// to read at a glance rather than double as a table of contents like tocCardHtml above.
+function dashboardTileHtml(href, count, color, label) {
+  return '<a href="'+href+'" class="dash-tile">' +
+    '<div class="dt-count" style="color:'+color+'">'+count+'</div>' +
+    '<div class="dt-label">'+label+'</div>' +
   '</a>';
 }
 
@@ -7916,38 +8147,7 @@ function buildReportHtml(data, meta) {
     const ctxRisk = 'Misconfigured or non-compliant control expands the attack surface, enabling unauthorized access or data exposure across '+((r.cloud||'cloud').toUpperCase())+' resources.';
     const bizImpact = 'Regulatory non-compliance, potential data breach, audit failure, and reputational risk.';
     const recFix = (r.description||'').slice(0,200) || 'Remediate the control violation per the policy guidance and re-evaluate in FortiCNAPP.';
-    // Build resource URN sub-list from saved rows
-    var resourceHtml = '';
-    if (Array.isArray(r.resources) && r.resources.length) {
-      // Detect which field is the URN/resource identifier (priority order)
-      var urnKeys = ['URN','RESOURCE_ID','RESOURCE_KEY','RESOURCE_ARN','RESOURCE_IDENTIFIER','INSTANCE_ID','VM_ID','PRINCIPAL_ID','NAME'];
-      var rows = r.resources;
-      // Pick the first key that exists in the first row
-      var firstRow = rows[0] || {};
-      var urnKey = urnKeys.find(function(k){ return firstRow[k] !== undefined; }) || Object.keys(firstRow)[0] || '';
-      // Secondary label key (e.g. region or type)
-      var labelKeys = ['REGION','LOCATION','CLOUD','TYPE','RESOURCE_TYPE','SUBSCRIPTION_ID'];
-      var labelKey = labelKeys.find(function(k){ return firstRow[k] !== undefined; }) || '';
-      if (urnKey) {
-        var shown = rows.slice(0, 50);
-        resourceHtml = '<details open style="margin-top:6px"><summary style="font-size:10px;font-weight:700;color:#DA291C;cursor:pointer;list-style:none">&#9660; '+rows.length+' Violating Resource'+(rows.length===1?'':'s')+'</summary>'+
-          '<div style="margin-top:4px;border:1px solid #e5e7eb;border-radius:4px">'+
-          '<table style="width:100%;font-size:9px;border-collapse:collapse">'+
-          '<thead><tr style="background:#f1f5f9"><th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(urnKey)+'</th>'+
-          (labelKey?'<th style="padding:3px 6px;text-align:left;font-weight:700;color:#64748b">'+esc(labelKey)+'</th>':'')+
-          '</tr></thead><tbody>'+
-          shown.map(function(row,ri){
-            var urnVal = row[urnKey] !== undefined ? String(row[urnKey]) : '—';
-            var lblVal = labelKey && row[labelKey] !== undefined ? String(row[labelKey]) : '';
-            return '<tr style="'+(ri%2?'background:#f8fafc':'')+'">'
-              +'<td style="padding:2px 6px;font-family:monospace;color:#1e293b;word-break:break-all">'+esc(urnVal)+'</td>'
-              +(labelKey?'<td style="padding:2px 6px;color:#64748b">'+esc(lblVal)+'</td>':'')
-              +'</tr>';
-          }).join('')+
-          (rows.length>50?'<tr><td colspan="2" style="padding:3px 6px;color:#94a3b8;font-style:italic">… and '+(rows.length-50)+' more</td></tr>':'')+
-          '</tbody></table></div></details>';
-      }
-    }
+    const resourceHtml = violatingResourcesHtml(r.resources, esc);
     return '<tr'+bg+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
       '<td>'+sevBadge(r.severity)+'</td>'+
@@ -8149,8 +8349,7 @@ function buildReportHtml(data, meta) {
   '  <title>Rapid Cloud Assessment – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span>' +
-  '<span style="color:rgba(255,255,255,.55);font-size:11px">RAPID CLOUD ASSESSMENT</span></header>\n' +
+  reportTopbarHtml('Cloud Security Risk Findings') + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Cloud Security Risk Findings</div>\n' +
@@ -8216,8 +8415,9 @@ function buildReportHtml(data, meta) {
       const arcL=314, f=Math.round((p/100)*arcL);
       const c=scoreTierColor(p), band=scoreTier(p);
       return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;min-width:200px">'+
-        '<div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+
-          logoSvg+label+
+        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;height:34px;padding:0 18px;border-radius:999px;color:#fff;background:'+bgColor+'">'+
+          '<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex-shrink:0">'+logoSvg+'</span>'+
+          '<span style="font-size:13px;font-weight:900;letter-spacing:.1em;line-height:1">'+label+'</span>'+
         '</div>'+
         '<svg viewBox="-10 -10 270 160" style="width:200px;overflow:visible">'+
           '<path fill="none" stroke="#e2e8f0" stroke-width="18" stroke-linecap="round" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
@@ -8228,9 +8428,9 @@ function buildReportHtml(data, meta) {
         '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:-4px">CSPM Security Score — <span style="color:'+c+';font-weight:700">'+p+'/100</span></div>'+
       '</div>';
     }
-    const awsLogo='<svg viewBox="0 0 24 14" width="28" height="16" style="margin-right:5px"><path fill="#FF9900" d="M6.76 5.52c0 .28.03.5.08.66.06.16.14.33.25.51.04.06.05.12.05.17 0 .08-.05.15-.15.23l-.5.33c-.07.05-.14.07-.2.07-.08 0-.16-.04-.24-.11a2.5 2.5 0 01-.29-.38 6.3 6.3 0 01-.25-.47c-.63.74-1.42 1.11-2.37 1.11-.68 0-1.22-.19-1.61-.58-.39-.38-.59-.89-.59-1.52 0-.67.24-1.22.72-1.62.48-.4 1.12-.6 1.93-.6.27 0 .54.02.83.07.29.04.58.11.89.19v-.56c0-.58-.12-1-.37-1.23-.25-.24-.67-.35-1.27-.35-.27 0-.55.03-.84.1-.29.06-.57.15-.85.27-.13.06-.22.09-.28.1-.06.02-.1.03-.13.03-.12 0-.17-.08-.17-.25v-.4c0-.13.02-.23.06-.29.04-.06.12-.12.24-.18.27-.14.6-.26.98-.35.38-.1.79-.14 1.22-.14.93 0 1.61.21 2.05.63.43.42.65 1.06.65 1.92v2.54zm-3.27 1.22c.26 0 .53-.05.81-.14.28-.1.53-.27.74-.51.13-.15.22-.32.27-.51.05-.2.08-.43.08-.7v-.34a6.7 6.7 0 00-.72-.13 5.9 5.9 0 00-.74-.05c-.52 0-.9.1-1.16.31-.25.21-.38.5-.38.89 0 .36.09.63.28.81.18.19.44.27.82.27zm6.25.84c-.14 0-.24-.02-.3-.07-.07-.04-.12-.14-.17-.28L7.4 2.6c-.05-.15-.07-.25-.07-.3 0-.12.06-.18.18-.18h.73c.15 0 .25.02.31.07.06.04.11.14.16.28l1.36 5.36 1.26-5.36c.04-.15.09-.24.15-.28.06-.05.17-.07.31-.07h.6c.15 0 .25.02.31.07.06.04.12.14.15.28l1.28 5.43 1.4-5.43c.05-.15.1-.24.16-.28.06-.05.16-.07.3-.07h.7c.12 0 .18.06.18.18 0 .04-.01.08-.02.13l-.03.17-1.85 6.63c-.05.15-.1.24-.17.28-.06.05-.16.07-.3.07h-.64c-.15 0-.25-.02-.31-.07-.06-.05-.12-.15-.15-.29L12.2 3.32l-1.25 5.11c-.04.15-.09.24-.15.29-.06.05-.17.07-.31.07h-.65zm9.94.18c-.4 0-.8-.05-1.18-.14-.38-.1-.68-.2-.88-.32-.12-.07-.2-.15-.23-.22a.56.56 0 01-.05-.22v-.41c0-.17.06-.25.18-.25.05 0 .1.01.15.03.05.02.12.05.2.09.27.12.57.21.89.28.32.06.63.1.95.1.5 0 .9-.09 1.17-.26.27-.18.41-.43.41-.76 0-.22-.07-.41-.21-.56-.14-.15-.41-.29-.8-.41l-1.14-.35c-.58-.18-1-.45-1.27-.8a1.9 1.9 0 01-.4-1.17c0-.34.07-.64.22-.9.15-.26.35-.49.6-.67.25-.19.53-.33.86-.43.33-.1.68-.14 1.04-.14.18 0 .37.01.55.04.19.02.36.06.53.1.16.04.32.09.46.14.15.06.26.11.34.17.11.07.19.15.23.22.04.07.06.16.06.28v.38c0 .17-.06.26-.18.26-.06 0-.16-.03-.29-.1-.44-.2-.93-.3-1.48-.3-.46 0-.82.08-1.07.23-.25.15-.38.38-.38.7 0 .23.08.43.23.58.15.15.44.3.86.43l1.12.35c.57.18.98.43 1.23.76.25.33.37.7.37 1.12 0 .35-.07.66-.2.94-.14.28-.33.52-.58.72-.25.2-.55.35-.9.46-.36.1-.75.16-1.17.16z"/></svg>';
-    const azureLogo='<svg viewBox="0 0 18 14" width="26" height="16" style="margin-right:5px"><path fill="#fff" d="M10.46 0L6.3 7.27l4.27 4.8H3.5L0 14h18L10.46 0z"/></svg>';
-    const gcpLogo='<svg viewBox="0 0 24 24" width="18" height="18" style="margin-right:5px"><circle cx="12" cy="12" r="12" fill="none"/><path fill="#4285F4" d="M12 5.5a6.5 6.5 0 015.5 9.98l1.42 1.42A8.5 8.5 0 0012 3.5v2z"/><path fill="#EA4335" d="M5.52 17.52A6.5 6.5 0 0112 5.5v-2A8.5 8.5 0 003.5 18.94l2.02-1.42z"/><path fill="#FBBC05" d="M12 18.5a6.47 6.47 0 01-6.48-1l-2.02 1.44A8.5 8.5 0 0012 20.5v-2z"/><path fill="#34A853" d="M17.5 15.48A6.47 6.47 0 0112 18.5v2a8.5 8.5 0 006.92-4.6l-1.42-1.42z"/></svg>';
+    const awsLogo='<svg viewBox="0 0 24 14" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path fill="#FF9900" d="M6.76 5.52c0 .28.03.5.08.66.06.16.14.33.25.51.04.06.05.12.05.17 0 .08-.05.15-.15.23l-.5.33c-.07.05-.14.07-.2.07-.08 0-.16-.04-.24-.11a2.5 2.5 0 01-.29-.38 6.3 6.3 0 01-.25-.47c-.63.74-1.42 1.11-2.37 1.11-.68 0-1.22-.19-1.61-.58-.39-.38-.59-.89-.59-1.52 0-.67.24-1.22.72-1.62.48-.4 1.12-.6 1.93-.6.27 0 .54.02.83.07.29.04.58.11.89.19v-.56c0-.58-.12-1-.37-1.23-.25-.24-.67-.35-1.27-.35-.27 0-.55.03-.84.1-.29.06-.57.15-.85.27-.13.06-.22.09-.28.1-.06.02-.1.03-.13.03-.12 0-.17-.08-.17-.25v-.4c0-.13.02-.23.06-.29.04-.06.12-.12.24-.18.27-.14.6-.26.98-.35.38-.1.79-.14 1.22-.14.93 0 1.61.21 2.05.63.43.42.65 1.06.65 1.92v2.54zm-3.27 1.22c.26 0 .53-.05.81-.14.28-.1.53-.27.74-.51.13-.15.22-.32.27-.51.05-.2.08-.43.08-.7v-.34a6.7 6.7 0 00-.72-.13 5.9 5.9 0 00-.74-.05c-.52 0-.9.1-1.16.31-.25.21-.38.5-.38.89 0 .36.09.63.28.81.18.19.44.27.82.27zm6.25.84c-.14 0-.24-.02-.3-.07-.07-.04-.12-.14-.17-.28L7.4 2.6c-.05-.15-.07-.25-.07-.3 0-.12.06-.18.18-.18h.73c.15 0 .25.02.31.07.06.04.11.14.16.28l1.36 5.36 1.26-5.36c.04-.15.09-.24.15-.28.06-.05.17-.07.31-.07h.6c.15 0 .25.02.31.07.06.04.12.14.15.28l1.28 5.43 1.4-5.43c.05-.15.1-.24.16-.28.06-.05.16-.07.3-.07h.7c.12 0 .18.06.18.18 0 .04-.01.08-.02.13l-.03.17-1.85 6.63c-.05.15-.1.24-.17.28-.06.05-.16.07-.3.07h-.64c-.15 0-.25-.02-.31-.07-.06-.05-.12-.15-.15-.29L12.2 3.32l-1.25 5.11c-.04.15-.09.24-.15.29-.06.05-.17.07-.31.07h-.65zm9.94.18c-.4 0-.8-.05-1.18-.14-.38-.1-.68-.2-.88-.32-.12-.07-.2-.15-.23-.22a.56.56 0 01-.05-.22v-.41c0-.17.06-.25.18-.25.05 0 .1.01.15.03.05.02.12.05.2.09.27.12.57.21.89.28.32.06.63.1.95.1.5 0 .9-.09 1.17-.26.27-.18.41-.43.41-.76 0-.22-.07-.41-.21-.56-.14-.15-.41-.29-.8-.41l-1.14-.35c-.58-.18-1-.45-1.27-.8a1.9 1.9 0 01-.4-1.17c0-.34.07-.64.22-.9.15-.26.35-.49.6-.67.25-.19.53-.33.86-.43.33-.1.68-.14 1.04-.14.18 0 .37.01.55.04.19.02.36.06.53.1.16.04.32.09.46.14.15.06.26.11.34.17.11.07.19.15.23.22.04.07.06.16.06.28v.38c0 .17-.06.26-.18.26-.06 0-.16-.03-.29-.1-.44-.2-.93-.3-1.48-.3-.46 0-.82.08-1.07.23-.25.15-.38.38-.38.7 0 .23.08.43.23.58.15.15.44.3.86.43l1.12.35c.57.18.98.43 1.23.76.25.33.37.7.37 1.12 0 .35-.07.66-.2.94-.14.28-.33.52-.58.72-.25.2-.55.35-.9.46-.36.1-.75.16-1.17.16z"/></svg>';
+    const azureLogo='<svg viewBox="0 0 18 14" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><path fill="#fff" d="M10.46 0L6.3 7.27l4.27 4.8H3.5L0 14h18L10.46 0z"/></svg>';
+    const gcpLogo='<svg viewBox="0 0 24 24" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"><circle cx="12" cy="12" r="12" fill="none"/><path fill="#4285F4" d="M12 5.5a6.5 6.5 0 015.5 9.98l1.42 1.42A8.5 8.5 0 0012 3.5v2z"/><path fill="#EA4335" d="M5.52 17.52A6.5 6.5 0 0112 5.5v-2A8.5 8.5 0 003.5 18.94l2.02-1.42z"/><path fill="#FBBC05" d="M12 18.5a6.47 6.47 0 01-6.48-1l-2.02 1.44A8.5 8.5 0 0012 20.5v-2z"/><path fill="#34A853" d="M17.5 15.48A6.47 6.47 0 0112 18.5v2a8.5 8.5 0 006.92-4.6l-1.42-1.42z"/></svg>';
     const hasAws=cspScores.aws!==null, hasAzure=cspScores.azure!==null, hasGcp=cspScores.gcp!==null;
     const detectedCSPs=[hasAws&&'AWS',hasAzure&&'Azure',hasGcp&&'GCP'].filter(Boolean).join(', ')||'No CSP data detected';
     return '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:70vh;display:flex;flex-direction:column">\n'+
@@ -8301,7 +8501,7 @@ function buildReportHtml2(data, meta) {
   function sevBadge(s) { const m={critical:'badge-critical',high:'badge-high',medium:'badge-medium',low:'badge-low'}; return '<span class="badge '+(m[(s||'').toLowerCase()]||'badge-info')+'">'+esc(s||'—')+'</span>'; }
   function cspBadge(c) { const m={aws:'badge-aws',azure:'badge-azure',gcp:'badge-gcp'}; return '<span class="badge '+(m[(c||'').toLowerCase()]||'badge-info')+'">'+esc((c||'').toUpperCase()||'—')+'</span>'; }
 
-  const { cspScores, cspFindings, cspCounts, score, sBand, sColor } = computeCspScores(data);
+  const { cspScores, cspCounts, score, sBand, sColor } = computeCspScores(data);
   const total = alerts.length + vulns.length + compliance.length + identities.length;
 
   // ── Identity classification helpers ───────────────────────────────────────
@@ -8340,6 +8540,34 @@ function buildReportHtml2(data, meta) {
   // ── 7. Cloud Admin & Cloud User — High Permissive + No MFA ────────────────
   const adminUserRows = identities.filter(r => !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r));
 
+  // ── CIEM: identities with an active access key ≥180 days old (isOldAccessKey, server.js~1451) ──
+  const oldAccessKeyRows = identities.filter(r => isOldAccessKey(r));
+
+  // Checks the already-fetched cache.exposurePaths (LW_APA_EXPOSURE_PATHS graph-traced
+  // Internet→Target attack paths) for a confirmed hop-by-hop path to this host — a
+  // stronger signal than the topological lw_InternetExposure tag alone. Matches by EC2
+  // instance ID first (exact), falling back to hostname/displayName containment for both
+  // EC2 and Azure VM targets. Purely additive — doesn't change exposed/not-exposed
+  // classification, only adds a "Verified Path" badge when a live traced path exists.
+  function verifiedExposurePath(hostGroup) {
+    const ep = data.exposurePaths;
+    if (!ep) return false;
+    const firstRow = hostGroup.rows[0] || {};
+    const mt = (firstRow.machineTags && typeof firstRow.machineTags === 'object') ? firstRow.machineTags : {};
+    const instanceId = mt.InstanceId || '';
+    const nameLower = (hostGroup.name || '').toLowerCase();
+    const hitsEc2 = (ep.ec2 || []).some(p => {
+      const t = p.TARGET || {};
+      return (instanceId && t.key && t.key.id === instanceId) ||
+        (nameLower && t.displayName && t.displayName.toLowerCase().includes(nameLower));
+    });
+    if (hitsEc2) return true;
+    return (ep.azureVm || []).some(p => {
+      const t = p.TARGET || {};
+      return nameLower && t.displayName && t.displayName.toLowerCase() === nameLower;
+    });
+  }
+
   // ── 8. IAM / RBAC roles (AWS, Azure, GCP) — High Permissive + Unused Privilege ≥ 80% ─
   const iamRoleRows = identities.filter(r => {
     const up = unusedPctOf(r);
@@ -8365,11 +8593,21 @@ function buildReportHtml2(data, meta) {
 
   // ── 10/11. Vuln hosts grouped by internet exposure (shared with Report 1) ─
   const { hosts: vulnHostsAll, exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(vulns);
+  // A host can be raw-tagged not-exposed (lw_InternetExposure, topological) while
+  // FortiCNAPP's own traced Internet→host path engine (exposurePaths) confirms a live
+  // route — the two signals can disagree (confirmed live: RJ-RSYSLOG had 29 Critical CVEs
+  // invisible in this report because its topological tag lagged behind the verified traced
+  // path). Treat a verified path as authoritative for exposed/private classification here,
+  // not just a decorative "Verified Path" badge on hosts already classified exposed.
+  const effectivelyExposed = h => h.exposed || verifiedExposurePath(h);
   const exposedVulnHosts = vulnHostsAll
-    .filter(h => h.exposed)
+    .filter(effectivelyExposed)
     .map(h => ({ ...h, rows: h.rows.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? 0) >= 9) }))
     .filter(h => h.rows.length > 0);
-  const privateVulnHosts = vulnHostsAll.filter(h => !h.exposed);
+  const privateVulnHosts = vulnHostsAll.filter(h => !effectivelyExposed(h));
+  // Dashboard tile — total Critical CVE count across exposed hosts, distinct from the
+  // host-count tile (a dashboard KPI, not used by the host-exposure section itself).
+  const criticalCveExposedHostCount = exposedVulnHosts.reduce((sum, h) => sum + h.rows.length, 0);
 
   function vulnRowCells(r, i) {
     const rs = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
@@ -8390,16 +8628,17 @@ function buildReportHtml2(data, meta) {
   function hostGroupsHtml(hostList) {
     return hostList.map(h => {
       const badge = h.exposed ? '<span class="badge badge-critical">&#9889; Internet Exposed</span>' : '<span class="badge badge-info">Internal Only</span>';
+      const table = '<table class="exec-table"><thead><tr>' +
+        '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+        '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
+        '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>';
       return '<div class="host-group'+(h.exposed?' exposed':'')+'">' +
         '<div class="host-group-header">' +
           '<span class="host-name">'+esc(h.name)+'</span>' + badge +
           (h.pubIp ? '<span class="host-ip">'+esc(h.pubIp)+'</span>' : '') +
           '<span class="host-cve-count">'+h.rows.length+' CVE'+(h.rows.length===1?'':'s')+'</span>' +
         '</div>' +
-        '<table class="exec-table"><thead><tr>' +
-        '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
-        '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
-        '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>' +
+        collapsibleFindings(table, h.rows.length, 'CVEs') +
       '</div>';
     }).join('');
   }
@@ -8420,23 +8659,32 @@ function buildReportHtml2(data, meta) {
   compliance.forEach(r => { const c = (r.cloud||'other').toLowerCase(); (compByCloud[c] = compByCloud[c] || []).push(r); });
   const compCloudGroups = Object.keys(compByCloud).sort().map(c => {
     const rows = compByCloud[c];
-    return '<div class="host-group">' +
-      '<div class="host-group-header">' + cspBadge(c) + '<span class="host-cve-count">'+rows.length+' finding'+(rows.length===1?'':'s')+'</span></div>' +
-      '<table class="exec-table"><thead><tr><th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:220px">Finding</th><th style="width:280px">Description</th><th style="width:70px">Violations</th></tr></thead><tbody>' +
+    const table = '<table class="exec-table"><thead><tr><th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:220px">Finding</th><th style="width:280px">Description</th><th style="width:70px">Violations</th></tr></thead><tbody>' +
       rows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
         '<td class="narrow">'+(i+1)+'</td><td>'+sevBadge(r.severity)+'</td>'+
-        '<td class="wide"><strong>'+esc(r.title||'—')+'</strong></td>'+
+        '<td class="wide"><strong>'+esc(r.title||'—')+'</strong>'+violatingResourcesHtml(r.resources, esc)+'</td>'+
         '<td class="wide">'+esc((r.description||'').slice(0,180))+'</td>'+
         '<td style="text-align:center">'+esc(r.violations||0)+'</td></tr>').join('') +
-      '</tbody></table></div>';
+      '</tbody></table>';
+    return '<div class="host-group" id="non-compliance-'+esc(c)+'">' +
+      '<div class="host-group-header">' + cspBadge(c) + '<span class="host-cve-count">'+rows.length+' finding'+(rows.length===1?'':'s')+'</span></div>' +
+      collapsibleFindings(table, rows.length, 'findings') +
+      '</div>';
   }).join('');
 
-  // ── 4. Host Exposure & Risk Diagrams — top 2 highest-risk hosts ────────────
+  // ── 4. Internet-Exposed Host Risk Diagrams — top 2 highest-risk exposed hosts ──
   const { map: assetMap } = computeAssetRiskMap(vulns, secretsAll, compliance);
-  const topAssets = Object.values(assetMap).sort((a,b) => b.normalizedScore - a.normalizedScore).slice(0, 2);
+  // Same verified-path reclassification as exposedVulnHosts below — computeAssetRiskMap's
+  // internetExposed only reads the raw lw_InternetExposure tag, so this diagram could pick
+  // its "top 2 exposed hosts" from a stale/incomplete exposed set, same root cause as the
+  // host-exposure table bug above (confirmed live with RJ-RSYSLOG).
+  Object.values(assetMap).forEach(a => {
+    if (!a.internetExposed && verifiedExposurePath({ name: a.name, rows: [] })) a.internetExposed = true;
+  });
+  const topAssets = Object.values(assetMap).filter(a => a.internetExposed).sort((a,b) => b.normalizedScore - a.normalizedScore).slice(0, 2);
   const hostDiagramsHtml = topAssets.length ? topAssets.map(a =>
     '<div style="margin-bottom:2rem;padding:1.5rem;border:1px solid var(--color-border);border-radius:8px;background:#fff">' + hostRiskDiagramSvg(a, esc) + '</div>'
-  ).join('') : '<div class="section-summary"><p>No hosts with correlated risk data were found in this assessment window.</p></div>';
+  ).join('') : '<div class="section-summary"><p>No internet-exposed hosts with correlated risk data were found in this assessment window.</p></div>';
 
   // ── 13. List of Secrets ──────────────────────────────────────────────────────
   const secretsAllRows = secretsAll.length ? secretsAll.map((r,i) => {
@@ -8472,82 +8720,318 @@ function buildReportHtml2(data, meta) {
     }).join('') : '<tr><td colspan="'+cols+'" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
   }
 
+  // ── CIEM: access-key rotation rows ─────────────────────────────────────────
+  function oldAccessKeyRowsHtml(rows) {
+    return rows.length ? rows.map((r,i) => {
+      const ageDays = oldestActiveKeyAgeDays(r);
+      return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+        '<td><strong>'+esc(identityLabel(r))+'</strong><br><small class="text-muted">'+esc(r.PRINCIPAL_ID||'')+'</small></td>'+
+        '<td>'+cspBadge(cloudOfIdentity(r))+'</td>'+
+        '<td style="text-align:center"><span class="badge badge-high">'+(ageDays!=null?Math.round(ageDays)+' days':'—')+'</span></td>'+
+        '<td>'+(r.LAST_USED_TIME?fmt(r.LAST_USED_TIME):'<span class="text-muted">Never / Unknown</span>')+'</td>'+
+        '</tr>';
+    }).join('') : '<tr><td colspan="4" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
+  }
+
+  // ── Internet-Accessible Storage ─────────────────────────────────────────────
+  // Raw data.publicStorage only has policy/ACL-confirmed findings AND can still contain
+  // known-stale CSPM snapshot entries (a resource the last scan saw as public but that no
+  // longer exists live). computeEffectivePublicStorage() (server.js~7568) is the same merge
+  // the dashboard's Public Storage Exposure panel uses: it drops those stale entries and
+  // adds buckets found only via a verified traced Internet path (cache.exposurePaths.s3/
+  // azureBlob) that never had a policy/ACL finding of their own — without it this section
+  // silently showed 1 stale Azure entry while missing every traced-path-only S3 bucket.
+  const publicStorageRows = computeEffectivePublicStorage(data).findings;
+  function publicStorageRowsHtml(rows) {
+    return rows.length ? rows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
+      '<td>'+cspBadge(r.cloud)+'</td>'+
+      '<td><strong>'+esc(r.name||'—')+'</strong></td>'+
+      '<td>'+esc(r.resourceType||'—')+'</td>'+
+      '<td>'+sevBadge(r.severity)+'</td>'+
+      '<td><small class="text-muted">'+esc(r.account||'—')+'</small></td>'+
+      '<td class="wide"><code style="font-size:0.78rem;word-break:break-all">'+esc(r.urn||'—')+'</code></td>'+
+      '</tr>').join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
+  }
+
+  // Stat callout — cites the 2026 Fortinet Cloud Security Report (survey of 1,163
+  // cybersecurity leaders/practitioners) to ground each risk category in the wider
+  // industry picture, not just this tenant's own numbers. Reuses .section-summary, the
+  // dark red-accent callout box already used elsewhere in this report.
+  function statCalloutHtml(label, text) {
+    return '<div class="section-summary"><div class="ss-title">'+esc(label)+'</div><p>'+text+'</p></div>';
+  }
+
+  // "Why this matters + how FortiCNAPP helps" — one per risk-finding section, sourced from
+  // the FortiCNAPP capability mapping matrix. capability/provides/doIt/manage are the
+  // matrix's own columns; technical/business are arrays of bullet strings synthesized from
+  // that same row to close each section with a concrete outcome, not just a description.
+  function fcSolutionHtml(capability, provides, doIt, manage, technical, business) {
+    return '<div class="fc-solution">'+
+      '<div class="fc-solution-head">Why This Matters &amp; How FortiCNAPP Helps</div>'+
+      '<div class="fc-solution-grid">'+
+        '<div><span class="fc-label">FortiCNAPP Capability</span><p>'+capability+'</p></div>'+
+        '<div><span class="fc-label">What FortiCNAPP Provides</span><p>'+provides+'</p></div>'+
+        '<div><span class="fc-label">What to Do</span><p>'+doIt+'</p></div>'+
+        '<div><span class="fc-label">How to Manage</span><p>'+manage+'</p></div>'+
+      '</div>'+
+      '<div class="fc-outcomes">'+
+        '<div><span class="fc-label">Technical Outcomes</span><ul>'+technical.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>'+
+        '<div><span class="fc-label">Business Outcomes</span><ul>'+business.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>'+
+      '</div>'+
+    '</div>';
+  }
+
   // ── Sections ──────────────────────────────────────────────────────────────
-  const nonComplianceSection = compliance.length ? (
-    '<section id="non-compliance" class="pagebreak">\n<h2>5. Cloud Critical Non-Compliance Findings</h2>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Grouped by cloud provider. Findings are not currently mapped to a named compliance framework (CIS/NIST/PCI) in this integration — severity and policy title are shown as-is from FortiCNAPP.</p>' +
-    compCloudGroups + '\n</section>'
-  ) : '';
+  const rcaIntroSection =
+    '<section style="padding:1.5rem 2rem 0">\n' +
+    '<h2>1. Introduction &mdash; What is the Fortinet Security Maturity Assessment</h2>\n' +
+    '<p style="color:#5A5A5A;font-size:13px;line-height:1.7;margin-bottom:14px">A Security Maturity Assessment (<strong>SMA</strong>), Powered by <strong>FortiCNAPP</strong>, provides '+esc(customer)+' with a clear view of the most critical cloud risks across identity, exposure, secrets, and vulnerabilities so they can prioritize remediation, strengthen resilience, and improve the organization&rsquo;s overall Risk Security Score.</p>\n' +
+    '<p style="color:#5A5A5A;font-size:13px;line-height:1.7;margin-bottom:20px">FortiCNAPP continuously collects cloud telemetry, identities, configurations, and activity data to establish a security baseline, correlates risks across vulnerabilities, misconfigurations, identity exposure, and data risks into a unified Cloud Security Risk Score, and enables teams to prioritize remediation, reduce exposure, and continuously improve cloud security posture.</p>\n' +
+    '<div class="intro-grid">\n' +
+    '<div class="intro-card"><div class="intro-eyebrow">Step 1</div><h4>Collect</h4>' +
+    '<p>FortiCNAPP continuously collects <strong>telemetry, configuration, identity, and activity data</strong> from connected cloud environments&mdash;including <strong>AWS, Azure, GCP, and OCI</strong>.</p></div>\n' +
+    '<div class="intro-card"><div class="intro-eyebrow">Step 2</div><h4>Correlate &amp; Prioritize</h4>' +
+    '<p>FortiCNAPP AI Engine correlates <strong>vulnerabilities, misconfigurations, identity risks, runtime threats, and data exposure</strong> into a <strong>unified Cloud Security Risk Score</strong>.</p></div>\n' +
+    '<div class="intro-card"><div class="intro-eyebrow">Step 3</div><h4>Remediate &amp; Improve</h4>' +
+    '<p>Address the <strong>prioritized findings</strong> that reduce risk, measure improvements, and <strong>continuously monitor</strong> your cloud security posture.</p></div>\n' +
+    '</div>\n' +
+    '</section>';
 
-  const hostDiagramsSection =
-    '<section id="host-diagrams" class="pagebreak">\n<h2>4. Host Internet and Lateral Exposure &amp; Risk Diagram</h2>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Simplified risk-factor breakdown for the two highest correlated-risk hosts in this assessment.</p>' +
-    hostDiagramsHtml + '\n</section>';
+  const ciemSection =
+    '<section id="ciem" class="pagebreak">\n<h2>3. CIEM &amp; Identity Risk</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', 'Identity &amp; Access Security ranks as the top cloud-native concern for <strong>77%</strong> of organizations, and <strong>69%</strong> report having actually experienced an identity/access security incident in the past 12 months — the single most commonly reported category of cloud incident.') +
+    fcSolutionHtml('CIEM',
+      'Analyzes cloud identities, permissions, entitlements, and privilege relationships across AWS, Azure, and GCP. Cloud identities are often over-permissioned, creating risks from excessive entitlements, dormant accounts, and toxic access combinations. Without continuous least-privilege management, organizations face increased exposure to cloud breaches, account takeover, and data exfiltration.',
+      'Remove excessive permissions, enforce least privilege, disable unused identities.',
+      'Continuously monitor identity risk, perform entitlement reviews, track privilege changes.',
+      ['Full visibility into over-privileged identities and stale access keys across all clouds', 'Automated least-privilege recommendations based on actual entitlement usage', 'Continuous entitlement drift detection'],
+      ['Reduces the #1 cited cloud breach vector (identity compromise)', 'Lowers audit findings tied to excessive access', 'Strengthens regulatory compliance posture (SOC 2, ISO 27001)']
+    ) +
+    '<h3 id="ciem-mfa" style="margin-top:2rem">Admin &amp; User — High Permissive, No MFA</h3>\n' +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:180px">Identity</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Login</th></tr></thead><tbody>' +
+      identityRowsHtml(adminUserRows, false) + '</tbody></table>',
+      adminUserRows.length, 'identities'
+    ) +
+    '<h3 id="ciem-keys">Access Keys Not Rotated &ge; 180 Days</h3>\n' +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:180px">Identity</th><th style="width:70px">Cloud</th><th style="width:100px">Key Age</th><th style="width:130px">Last Used</th></tr></thead><tbody>' +
+      oldAccessKeyRowsHtml(oldAccessKeyRows) + '</tbody></table>',
+      oldAccessKeyRows.length, 'identities'
+    ) + '\n</section>';
 
-  const adminUserSection =
-    '<section id="admin-user" class="pagebreak">\n<h2>6. Cloud Admin &amp; Cloud User — High Permissive, No MFA</h2>\n' +
-    '<table class="exec-table"><thead><tr><th style="width:180px">Identity</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Login</th></tr></thead><tbody>' +
-    identityRowsHtml(adminUserRows, false) + '</tbody></table>\n</section>';
+  const secretsSshSection =
+    '<section id="secrets-ssh" class="pagebreak">\n<h2>4. Secrets &amp; SSH Key Exposure</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', 'A single exposed credential or private key is often the pivot point in a breach: an overprivileged identity paired with an exposed secret turns an isolated finding into a direct path to compromise. Identity-related incidents were reported by <strong>69%</strong> of organizations in the past 12 months.') +
+    fcSolutionHtml('Agentless CWPP',
+      'Agentless workload discovery and security analysis to identify exposed secrets and sensitive artifacts across cloud workloads.',
+      'Remove exposed secrets, rotate credentials, eliminate hardcoded keys.',
+      'Continuously scan workloads, monitor credential exposure, integrate remediation workflows with DevSecOps.',
+      ['Agentless scanning finds hardcoded secrets and permissive SSH keys with zero deployment overhead', 'Direct integration with DevSecOps remediation workflows'],
+      ['Prevents credential-based lateral movement and data breach', 'Reduces incident response cost and time-to-remediate']
+    ) +
+    '<h3 id="secrets-list" style="margin-top:2rem">Secrets Found on Hosts</h3>\n' +
+    (secretsAll.length ? collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th><th style="width:80px">OS</th><th style="width:120px">Secret Type</th><th style="width:220px">Secret Identifier</th><th style="width:130px">Last Seen</th></tr></thead><tbody>' +
+      secretsAllRows + '</tbody></table>',
+      secretsAll.length, 'secrets'
+    ) : '<p style="text-align:center;color:#999;padding:1.5rem">No secrets found</p>') +
+    '<h3 id="ssh-keys">Permissive SSH Keys Access</h3>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Private key files with permissions looser than chmod 400 — readable/writable beyond the owner.</p>' +
+    (sshKeys.length ? collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:280px">File Path</th><th style="width:100px">Key Type</th><th style="width:90px">Permissions</th></tr></thead><tbody>' +
+      sshKeyRows + '</tbody></table>',
+      sshKeys.length, 'SSH keys'
+    ) : '<p style="text-align:center;color:#999;padding:1.5rem">No overly-permissive SSH keys found</p>') + '\n</section>';
 
-  const iamRolesSection =
-    '<section id="iam-roles" class="pagebreak">\n<h2>7. IAM / RBAC Roles — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">"Linked Identities — Inbound" lists every principal (AWS account/user/role, Azure service principal, GCP service account, or federated identity) whose trust policy allows it to assume this role.</p>' +
-    '<table class="exec-table"><thead><tr><th style="width:150px">Role</th><th style="width:60px">Cloud</th><th style="width:70px">Privilege</th><th style="width:55px">MFA</th><th style="width:100px">Last Used</th><th style="width:75px">Unused Entitlements</th><th>Linked Identities — Inbound</th></tr></thead><tbody>' +
-    identityRowsHtml(iamRoleRows, true, true) + '</tbody></table>\n</section>';
+  const hostExposureSection =
+    '<section id="host-exposure" class="pagebreak">\n<h2>5. Internet-Exposed Host Risk</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>59%</strong> of organizations cite Workload &amp; Runtime Security as a top cloud-native concern, and <strong>42%</strong> report an actual workload/runtime security incident in the past 12 months — attackers use automation to find exposed, vulnerable hosts faster than manual review can keep up with.') +
+    statCalloutHtml('FortiGuard Labs Global Threat Landscape Report', 'Internet-facing systems are continuously targeted: FortiGuard Labs recorded <strong>122 billion</strong> exploitation attempts in 2025 — every internet-exposed host in this assessment is a live target in that volume.') +
+    fcSolutionHtml('Agentless CWPP + CSPM + Risk Score',
+      'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths.',
+      'Reduce unnecessary exposure, harden configurations, patch vulnerabilities.',
+      'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation.',
+      ['Verified, hop-by-hop traced exposure paths — not just topological exposure tags', 'Correlates vulnerability severity with actual internet reachability'],
+      ['Shrinks the external attack surface attackers scan first', 'Prioritizes limited remediation resources on real exposure, not noise']
+    ) +
+    '<h3 style="margin-top:2rem">Risk Diagram — Two Highest-Risk Exposed Hosts</h3>\n' +
+    hostDiagramsHtml +
+    '<h3>High-Vulnerability Internet-Exposed Hosts</h3>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Showing CVEs with a Risk Score &ge; 9.0 on internet-exposed hosts. A green "Verified Path" badge means FortiCNAPP traced an actual hop-by-hop Internet&rarr;host network path — not just a topological exposure tag.</p>' +
+    fcSolutionHtml('Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)',
+      'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify the highest-risk hosts.',
+      'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls.',
+      'Continuously track vulnerability posture, monitor Risk Score changes, enforce remediation SLAs, validate risk reduction after fixes.',
+      ['Multi-factor Risk Score (Impact, Package, Container) ranks hosts by true exploitability, not raw CVE count', 'Continuous re-scoring validates that remediation actually reduced risk'],
+      ['Focuses engineering effort on the handful of hosts that matter most', 'Demonstrable, measurable risk reduction over time for leadership reporting']
+    ) +
+    (exposedVulnHosts.length ?
+      '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+exposedVulnHosts.length+'</strong> Host'+(exposedVulnHosts.length===1?'':'s')+'</span></div>\n' +
+      exposedVulnHosts.map(h => {
+        const verified = verifiedExposurePath(h);
+        const badge = '<span class="badge badge-critical">&#9889; Internet Exposed</span>' + (verified ? ' <span class="badge badge-success">&#10003; Verified Path</span>' : '');
+        const table = '<table class="exec-table"><thead><tr>' +
+          '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+          '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
+          '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>';
+        return '<div class="host-group exposed">' +
+          '<div class="host-group-header">' +
+            '<span class="host-name">'+esc(h.name)+'</span>' + badge +
+            (h.pubIp ? '<span class="host-ip">'+esc(h.pubIp)+'</span>' : '') +
+            '<span class="host-cve-count">'+h.rows.length+' CVE'+(h.rows.length===1?'':'s')+'</span>' +
+          '</div>' +
+          collapsibleFindings(table, h.rows.length, 'CVEs') +
+        '</div>';
+      }).join('')
+    : '<p style="text-align:center;color:#999;padding:1.5rem">No internet-exposed hosts with high-risk CVEs found</p>') +
+    '\n</section>';
 
-  const serviceAccountsSection =
-    '<section id="service-accounts" class="pagebreak">\n<h2>8. Cloud Service Accounts — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
-    '<table class="exec-table"><thead><tr><th style="width:180px">Service Account</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Used</th><th style="width:90px">Unused Entitlements</th></tr></thead><tbody>' +
-    identityRowsHtml(serviceAccountRows, true) + '</tbody></table>\n</section>';
-
-  const exposedVulnSection = exposedVulnHosts.length ? (
-    '<section id="vuln-exposed" class="pagebreak">\n<h2>9. High Vulnerability — Internet-Exposed Hosts</h2>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Showing CVEs with a Risk Score &ge; 9.0 on internet-exposed hosts.</p>' +
-    '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+exposedVulnHosts.length+'</strong> Host'+(exposedVulnHosts.length===1?'':'s')+'</span></div>\n' +
-    hostGroupsHtml(exposedVulnHosts) + '\n</section>'
-  ) : '';
+  const storageSection =
+    '<section id="storage" class="pagebreak">\n<h2>6. Internet-Accessible Storage</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>66%</strong> of organizations cite Data Exposure &amp; Privacy Security as a top concern, and <strong>54%</strong> report an actual data exposure incident in the past 12 months. A single misconfigured storage bucket can turn into a direct path to a breach when combined with an overprivileged identity.') +
+    fcSolutionHtml('CSPM + DSPM',
+      'Detects cloud misconfigurations, public exposure, and sensitive data risks.',
+      'Remove public access, correct permissions, enable encryption and access controls.',
+      'Continuously monitor storage posture, enforce policies, detect configuration drift.',
+      ['Combines policy/ACL checks with verified traced internet paths to catch storage exposure that pure CSPM scans miss', 'Configuration-drift detection flags changes as they happen'],
+      ['Prevents the most common cause of cloud data breaches (public storage)', 'Protects customer trust and avoids regulatory data-exposure penalties']
+    ) +
+    (publicStorageRows.length ? collapsibleFindings(
+      '<table class="exec-table" style="margin-top:16px"><thead><tr><th style="width:70px">Cloud</th><th style="width:180px">Resource</th><th style="width:180px">Type</th><th style="width:70px">Severity</th><th style="width:160px">Account</th><th>Resource URN</th></tr></thead><tbody>' +
+      publicStorageRowsHtml(publicStorageRows) + '</tbody></table>',
+      publicStorageRows.length, 'storage resources'
+    ) : '<p style="text-align:center;color:#999;padding:1.5rem;margin-top:16px">No internet-accessible storage found</p>') + '\n</section>';
 
   const privateVulnSection = privateVulnHosts.length ? (
-    '<section id="vuln-private" class="pagebreak">\n<h2>10. High Vulnerability — Private Hosts</h2>\n' +
+    '<section id="vuln-private" class="pagebreak">\n<h2>7. Private Host Vulnerability</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>66%</strong> of organizations lack strong confidence in their ability to detect and respond to cloud threats in real time, up from 64% the prior year — internal, non-internet-facing hosts are often the biggest blind spot in that gap.') +
+    fcSolutionHtml('Agentless CWPP Vulnerability Management',
+      'Identifies vulnerable workloads and software weaknesses without requiring agents.',
+      'Patch vulnerabilities, harden workloads, segment critical systems.',
+      'Continuously assess vulnerabilities, prioritize based on exploitability and business impact.',
+      ['Agentless coverage of internal hosts with zero deployment friction', 'Exploitability-based prioritization, not just CVSS severity'],
+      ['Reduces lateral-movement risk after an initial breach', 'Lowers the blast radius of any single compromised host']
+    ) +
     '<div class="host-exposure-summary"><span class="hes-item"><strong>'+privateVulnHosts.length+'</strong> Host'+(privateVulnHosts.length===1?'':'s')+'</span></div>\n' +
     hostGroupsHtml(privateVulnHosts) + '\n</section>'
   ) : '';
 
-  const sshKeysSection = sshKeys.length ? (
-    '<section id="ssh-keys" class="pagebreak">\n<h2>11. SSH Keys — Too Open</h2>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Private key files with permissions looser than chmod 400 — readable/writable beyond the owner.</p>' +
-    '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:280px">File Path</th><th style="width:100px">Key Type</th><th style="width:90px">Permissions</th></tr></thead><tbody>' +
-    sshKeyRows + '</tbody></table>\n</section>'
+  const nonComplianceSection = compliance.length ? (
+    '<section id="non-compliance" class="pagebreak">\n<h2>8. Cloud Critical Non-Compliance Findings</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>70%</strong> of organizations cite Configuration &amp; Posture Security as a top cloud-native concern, and <strong>65%</strong> report an actual configuration/posture-related incident in the past 12 months — the second most common category of cloud incident after identity.') +
+    fcSolutionHtml('CSPM',
+      'Continuous cloud posture assessment, compliance monitoring, and misconfiguration detection.',
+      'Remediate critical findings and assign ownership.',
+      'Maintain compliance dashboards, monitor posture drift, automate policy enforcement.',
+      ['Continuous, automated posture checks across every connected cloud account', 'Policy-level findings with resource-level violation detail'],
+      ['Reduces audit prep time and compliance risk (CIS/NIST/PCI)', 'Demonstrates due diligence to auditors, regulators, and customers']
+    ) +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Grouped by cloud provider. Findings are not currently mapped to a named compliance framework (CIS/NIST/PCI) in this integration — severity and policy title are shown as-is from FortiCNAPP.</p>' +
+    compCloudGroups + '\n</section>'
   ) : '';
 
-  const secretsSection = secretsAll.length ? (
-    '<section id="secrets" class="pagebreak">\n<h2>12. Secrets Found</h2>\n' +
-    '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:140px">Instance ID</th><th style="width:80px">OS</th><th style="width:120px">Secret Type</th><th style="width:220px">Secret Identifier</th><th style="width:130px">Last Seen</th></tr></thead><tbody>' +
-    secretsAllRows + '</tbody></table>\n</section>'
-  ) : '';
+  const iamRolesSection =
+    '<section id="iam-roles" class="pagebreak">\n<h2>9. IAM / RBAC Roles — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>81%</strong> of organizations using a cloud security platform prioritize security outcomes such as fewer misconfigurations and <strong>reduced excessive permissions</strong> as the measure of program success.') +
+    fcSolutionHtml('CIEM',
+      'Identifies overprivileged users, unused permissions, and risky access paths.',
+      'Reduce permissions, implement least privilege, enforce MFA.',
+      'Perform continuous entitlement analysis, access reviews, and privilege optimization.',
+      ['Inbound trust-policy analysis shows exactly who can assume each over-privileged role', 'Usage-based entitlement scoring, not just granted permissions'],
+      ['Closes privilege-escalation paths before they’re exploited', 'Supports least-privilege compliance requirements']
+    ) +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">"Linked Identities — Inbound" lists every principal (AWS account/user/role, Azure service principal, GCP service account, or federated identity) whose trust policy allows it to assume this role.</p>' +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:150px">Role</th><th style="width:60px">Cloud</th><th style="width:70px">Privilege</th><th style="width:55px">MFA</th><th style="width:100px">Last Used</th><th style="width:75px">Unused Entitlements</th><th>Linked Identities — Inbound</th></tr></thead><tbody>' +
+      identityRowsHtml(iamRoleRows, true, true) + '</tbody></table>',
+      iamRoleRows.length, 'roles'
+    ) + '\n</section>';
+
+  const serviceAccountsSection =
+    '<section id="service-accounts" class="pagebreak">\n<h2>10. Cloud Service Accounts — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>61%</strong> of organizations cite Data &amp; Identity Complexity — including the sprawl of non-human identities like service accounts — as a top operational challenge to effective cloud security.') +
+    fcSolutionHtml('CIEM',
+      'Analyzes machine identities, service accounts, permissions, and entitlement risks.',
+      'Right-size permissions, remove unused access, replace static credentials.',
+      'Continuously monitor workload identities, enforce least privilege, review service account activity.',
+      ['Extends identity risk analysis to non-human identities, the fastest-growing identity category', 'Flags static, long-lived credentials for rotation'],
+      ['Reduces the sprawling, often-invisible service-account attack surface', 'Prevents a top identity-complexity challenge from becoming a breach vector']
+    ) +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:180px">Service Account</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Used</th><th style="width:90px">Unused Entitlements</th></tr></thead><tbody>' +
+      identityRowsHtml(serviceAccountRows, true) + '</tbody></table>',
+      serviceAccountRows.length, 'service accounts'
+    ) + '\n</section>';
+
+  // ── 11. FortiCNAPP Capability Mapping — rolls up every section's "why it matters /
+  // how FortiCNAPP helps" card into one reference table, plus the capability→outcome
+  // summary and an executive one-liner for leadership audiences skimming to the end. ──
+  const capabilityMappingRows = [
+    ['Secrets &amp; SSH Key Exposure', 'Exposed secrets, SSH keys, API tokens, certificates, and sensitive credentials discovered in cloud workloads', 'Agentless CWPP', 'Agentless workload discovery and security analysis to identify exposed secrets and sensitive artifacts across cloud workloads', 'Remove exposed secrets, rotate credentials, eliminate hardcoded keys', 'Continuously scan workloads, monitor credential exposure, integrate remediation workflows with DevSecOps'],
+    ['CIEM &amp; Identity Risk', 'Excessive permissions, unused privileges, dormant identities, risky IAM/RBAC relationships', 'CIEM', 'Analyzes cloud identities, permissions, entitlements, and privilege relationships across AWS, Azure, and GCP', 'Remove excessive permissions, enforce least privilege, disable unused identities', 'Continuously monitor identity risk, perform entitlement reviews, track privilege changes'],
+    ['Internet-Exposed Host Risk', 'Publicly accessible cloud workloads with vulnerabilities or weak security posture', 'Agentless CWPP + CSPM + Risk Score', 'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths', 'Reduce unnecessary exposure, harden configurations, patch vulnerabilities', 'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation'],
+    ['Prioritized High-Vulnerability Internet-Exposed Hosts', 'Internet-facing hosts with critical vulnerabilities prioritized using exposure, vulnerability severity, exploitability, package risk, container risk, and business impact', 'Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)', 'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify highest-risk hosts', 'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls', 'Continuously track vulnerability posture, monitor Risk Score changes, enforce remediation SLAs, validate risk reduction after fixes'],
+    ['Public Access Storage', 'Cloud storage resources exposed publicly due to incorrect permissions or configuration', 'CSPM + DSPM', 'Detects cloud misconfigurations, public exposure, and sensitive data risks', 'Remove public access, correct permissions, enable encryption and access controls', 'Continuously monitor storage posture, enforce policies, detect configuration drift'],
+    ['Private Host Critical Vulnerability', 'Internal workloads containing critical vulnerabilities without direct internet exposure', 'Agentless CWPP Vulnerability Management', 'Identifies vulnerable workloads and software weaknesses without requiring agents', 'Patch vulnerabilities, harden workloads, segment critical systems', 'Continuously assess vulnerabilities, prioritize based on exploitability and business impact'],
+    ['Cloud Critical Non-Compliance Findings', 'Critical cloud security misconfigurations violating CIS, NIST, PCI-DSS, ISO, or organizational policies', 'CSPM', 'Continuous cloud posture assessment, compliance monitoring, and misconfiguration detection', 'Remediate critical findings and assign ownership', 'Maintain compliance dashboards, monitor posture drift, automate policy enforcement'],
+    ['IAM / RBAC Roles &mdash; High Permissive, Unused Privilege &ge;80%', 'Human identities with excessive permissions where most assigned privileges are unused', 'CIEM', 'Identifies overprivileged users, unused permissions, and risky access paths', 'Reduce permissions, implement least privilege, enforce MFA', 'Perform continuous entitlement analysis, access reviews, and privilege optimization'],
+    ['Cloud Service Accounts &mdash; High Permissive, Unused Privilege &ge;80%', 'Service accounts, workload identities, and service principals with excessive unused permissions', 'CIEM', 'Analyzes machine identities, service accounts, permissions, and entitlement risks', 'Right-size permissions, remove unused access, replace static credentials', 'Continuously monitor workload identities, enforce least privilege, review service account activity'],
+  ];
+  const capabilityOutcomeRows = [
+    ['Agentless CWPP', 'Workload discovery, exposed secrets detection, vulnerability identification, package risk analysis, container risk analysis'],
+    ['CWPP Vulnerability Management + Risk Scores', 'Prioritized remediation of high-impact vulnerabilities using Impact Score, Package Score, Container Score, exposure, and asset context'],
+    ['CIEM', 'Identity entitlement analysis, excessive privilege detection, least-privilege enforcement'],
+    ['CSPM', 'Cloud misconfiguration detection, compliance monitoring, security posture improvement'],
+    ['DSPM', 'Sensitive data discovery, data exposure prevention, privacy risk reduction'],
+    ['FortiCNAPP Risk Score', 'Business-risk prioritization by correlating security findings, exposure, impact, and asset criticality'],
+  ];
+  const capabilityMappingSection =
+    '<section id="capability-mapping" class="pagebreak">\n' +
+    '<div class="fc-lock-gate" id="fc-lock-11">' +
+      '<div class="fc-lock-icon">&#128274;</div>' +
+      '<div class="fc-lock-title">Fortinet-Only Content</div>' +
+      '<div class="fc-lock-desc">This section is restricted to Fortinet personnel. Enter your Fortinet email address to view.</div>' +
+      '<div class="fc-lock-row"><input type="email" id="fc-lock-email-11" placeholder="you@fortinet.com" onkeydown="if(event.key===\'Enter\')fcUnlockSection(\'11\')">' +
+      '<button type="button" onclick="fcUnlockSection(\'11\')">Unlock</button></div>' +
+      '<div class="fc-lock-error" id="fc-lock-error-11">Please enter a valid @fortinet.com email address.</div>' +
+    '</div>' +
+    '<div class="fc-locked-content" id="fc-locked-content-11" style="display:none">' +
+    '<h2>11. FortiCNAPP Capability Mapping</h2>\n' +
+    '<div style="overflow-x:auto"><table class="exec-table" style="min-width:900px"><thead><tr>' +
+    '<th style="width:150px">Security Challenge</th><th style="width:220px">Outcome / Finding</th><th style="width:150px">FortiCNAPP Capability</th><th style="width:220px">What FortiCNAPP Provides</th><th style="width:180px">What to Do?</th><th style="width:220px">How to Manage?</th>' +
+    '</tr></thead><tbody>' +
+    capabilityMappingRows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+r.map(c=>'<td class="wide">'+c+'</td>').join('')+'</tr>').join('') +
+    '</tbody></table></div>\n' +
+    '<h3 style="margin-top:2.5rem">FortiCNAPP Capability &rarr; Security Outcome Mapping</h3>\n' +
+    '<table class="exec-table"><thead><tr><th style="width:280px">FortiCNAPP Capability</th><th>Security Outcomes</th></tr></thead><tbody>' +
+    capabilityOutcomeRows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'><td><strong>'+r[0]+'</strong></td><td class="wide">'+r[1]+'</td></tr>').join('') +
+    '</tbody></table>\n' +
+    statCalloutHtml('Forrester Total Economic Impact&trade; Study &mdash; commissioned by Lacework, 2022', 'A Forrester TEI study of a composite Lacework customer organization documented a <strong>342% ROI over three years</strong>, <strong>$2.3M</strong> in total quantified benefits, and an <strong>$1.79M</strong> net present value. Additional outcomes: up to <strong>86%</strong> reduction in alert volume, <strong>~95%</strong> false-positive elimination, and <strong>80% faster</strong> threat investigation. <em>Date context: this study was commissioned in 2022, prior to the Fortinet acquisition (August 2024), and does not reflect current Security Fabric integration (FortiSOAR, FortiGate, FortiAnalyzer).</em>') +
+    statCalloutHtml('Executive Outcome Statement', 'FortiCNAPP reduces cloud attack risk by correlating workload vulnerabilities, internet exposure, identity privilege, misconfigurations, and data risks into prioritized remediation actions based on business impact &mdash; further reducing Mean Time to Respond (MTTR) to minutes, cutting alert noise, and strengthening compliance posture against frameworks such as CIS, HIPAA, NIST, and PCI-DSS.') +
+    '</div>\n</section>';
 
   const tocCards = [
-    tocCardHtml('#admin-user', adminUserRows.length, '#ef4444', '06 — Admin/User', 'Admin &amp; User MFA Gaps', 'identit'+(adminUserRows.length===1?'y':'ies')),
-    tocCardHtml('#iam-roles', iamRoleRows.length, '#8b5cf6', '07 — Roles', 'High-Permissive IAM / RBAC Roles', 'role'+(iamRoleRows.length===1?'':'s')),
-    tocCardHtml('#service-accounts', serviceAccountRows.length, '#7c3aed', '08 — Service Accts', 'High-Permissive Service Accounts', 'account'+(serviceAccountRows.length===1?'':'s')),
-    exposedVulnHosts.length ? tocCardHtml('#vuln-exposed', exposedVulnHosts.length, '#f97316', '09 — Exposed', 'Internet-Exposed Vuln Hosts', 'host'+(exposedVulnHosts.length===1?'':'s')) : '',
-    privateVulnHosts.length ? tocCardHtml('#vuln-private', privateVulnHosts.length, '#CC4A1A', '10 — Private', 'Private Vuln Hosts', 'host'+(privateVulnHosts.length===1?'':'s')) : '',
-    sshKeys.length ? tocCardHtml('#ssh-keys', sshKeys.length, '#b45309', '11 — SSH', 'SSH Keys Too Open', 'key'+(sshKeys.length===1?'':'s')) : '',
-    secretsAll.length ? tocCardHtml('#secrets', secretsAll.length, '#0ea5e9', '12 — Secrets', 'Secrets Found', 'secret'+(secretsAll.length===1?'':'s')) : '',
-  ].filter(Boolean).join('\n      ');
+    dashboardTileHtml('#ciem-mfa', adminUserRows.length, '#ef4444', 'Admins / Users<br>No MFA'),
+    dashboardTileHtml('#ciem-keys', oldAccessKeyRows.length, '#f59e0b', 'Cloud User Keys Not Rotated<br>&ge; 180 Days'),
+    dashboardTileHtml('#secrets-list', secretsAll.length, '#3b82f6', 'Permissive Secrets<br>Access'),
+    dashboardTileHtml('#ssh-keys', sshKeys.length, '#92400e', 'Permissive SSH<br>Key Access'),
+    dashboardTileHtml('#host-exposure', exposedVulnHosts.length, '#f97316', 'Internet-Exposed<br>Hosts'),
+    dashboardTileHtml('#host-exposure', criticalCveExposedHostCount, '#dc2626', 'Critical CVE<br>Internet Host Exposed'),
+    dashboardTileHtml('#storage', publicStorageRows.length, '#7c3aed', 'Storage<br>Internet Accessible'),
+    dashboardTileHtml('#vuln-private', privateVulnHosts.length, '#9a3412', 'Private Hosts<br>Highly Vulnerable'),
+  ].join('\n      ');
 
   return '<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
   '  <meta charset="UTF-8">\n' +
   '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
-  '  <title>Rapid Cloud Assessment (Beta) – '+esc(customer)+'</title>\n' +
+  '  <title>Security Maturity Assessment (Beta) – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
+  reportTopbarHtml(null, true) + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
-  '  <div class="report-type">Rapid Cloud Assessment · Beta Report 2</div>\n' +
-  '  <h1>Cloud Security Posture Report</h1>\n' +
-  '  <div class="subtitle">'+esc(customer)+'</div>\n' +
+  '  <h1>Security Maturity Assessment Report</h1>\n' +
   (function() {
     const arcLen=550, fill=Math.round((score/100)*arcLen);
     return '  <div id="risk-score" style="margin:1rem auto 0;max-width:380px;width:100%">\n'+
@@ -8574,72 +9058,109 @@ function buildReportHtml2(data, meta) {
   '    <div class="meta-item"><strong>Prepared For</strong>'+esc(customer)+'</div>\n' +
   '    <div class="meta-item"><strong>Report Date</strong>'+dateStr+'</div>\n' +
   '    <div class="meta-item"><strong>Author</strong>'+esc(author)+'</div>\n' +
-  '    <div class="meta-item"><strong>Classification</strong>Confidential (Beta Report)</div>\n' +
+  '    <div class="meta-item"><strong>Classification</strong>Confidential</div>\n' +
   '  </div>\n</div>\n' +
-  '<div class="toc"><h3>Report Contents</h3><div class="toc-cards">\n      '+tocCards+'\n</div></div>\n' +
+  rcaIntroSection +
+  '<div class="toc"><h3>Critical Risk Findings</h3><div class="dash-tile-grid">\n      '+tocCards+'\n</div></div>\n' +
   (function() {
-    function weightBadge(w) {
-      const m={Critical:'badge-critical',High:'badge-high',Medium:'badge-medium',Low:'badge-low'};
-      return '<span class="badge '+(m[w]||'badge-info')+'">'+esc(w)+'</span>';
+    // Ring gauge (donut progress indicator) — replaces the old half-circle arc gauge to
+    // match the new panel design. Circle math: r=52 → circumference ≈326.7; dashoffset
+    // shrinks as score rises, rotated -90deg so the fill starts at 12 o'clock.
+    function ringGauge(p) {
+      const r = 52, circ = 2 * Math.PI * r;
+      const offset = circ * (1 - Math.max(0, Math.min(100, p)) / 100);
+      const c = scoreTierColor(p);
+      return '<svg viewBox="0 0 120 120" width="108" height="108" style="flex-shrink:0">'+
+        '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="#e5e7eb" stroke-width="11"/>'+
+        '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="'+c+'" stroke-width="11" stroke-linecap="round" '+
+          'stroke-dasharray="'+circ.toFixed(1)+'" stroke-dashoffset="'+offset.toFixed(1)+'" transform="rotate(-90 60 60)"/>'+
+      '</svg>';
     }
-    function bigGauge(label, bgColor, p) {
-      const arcL=314, f=Math.round((p/100)*arcL);
-      const c=scoreTierColor(p), band=scoreTier(p);
-      return '<div style="display:flex;flex-direction:column;align-items:center;gap:8px">'+
-        '<div style="font-size:13px;font-weight:900;letter-spacing:.1em;padding:5px 18px;border-radius:6px;color:#fff;background:'+bgColor+'">'+label+'</div>'+
-        '<svg viewBox="-10 -10 270 160" style="width:200px;overflow:visible">'+
-          '<path fill="none" stroke="#e2e8f0" stroke-width="18" stroke-linecap="round" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
-          '<path fill="none" stroke="'+c+'" stroke-width="18" stroke-linecap="round" stroke-dasharray="'+f+' '+arcL+'" d="M 25,130 A 100,100 0 0,1 225,130"/>'+
-          '<text x="125" y="108" text-anchor="middle" font-size="52" font-weight="900" font-family="-apple-system,Inter,sans-serif" fill="'+c+'">'+p+'</text>'+
-          '<text x="125" y="128" text-anchor="middle" font-size="10" font-weight="700" font-family="-apple-system,Inter,sans-serif" fill="#64748b" letter-spacing=".08em">'+band.toUpperCase()+'</text>'+
-        '</svg>'+
-        '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:-4px">CSPM Security Score — <span style="color:'+c+';font-weight:700">'+p+'/100</span></div>'+
-      '</div>';
+    // Per-cloud "VIEW CRITICAL ISSUES" shortcut — deep-links to that cloud's own
+    // Non-Compliance group when one exists (most common source of critical findings),
+    // else falls back to the CIEM/Identity section so the button always goes somewhere useful.
+    function cspCriticalIssuesHref(cspKey) {
+      return (compByCloud[cspKey] || []).length ? '#non-compliance-'+cspKey : '#ciem-mfa';
     }
     function cspCard(label, bgColor, cspKey) {
       const p = cspScores[cspKey];
-      const findings = (cspFindings[cspKey] || []).filter(f => f.weight === 'Critical');
       const counts = cspCounts[cspKey] || { C:0, H:0, M:0, L:0 };
-      const findingsHtml = findings.length ?
-        '<table class="exec-table" style="margin-top:10px;table-layout:fixed;width:100%"><thead><tr>'+
-        '<th style="width:9%">#</th><th style="width:23%">Type</th><th style="width:46%">Finding</th><th style="width:22%">Weight</th>'+
-        '</tr></thead><tbody>'+
-        findings.map((f,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
-          '<td class="narrow">'+(i+1)+'</td>'+
-          '<td style="word-break:break-word">'+esc(f.type)+'</td>'+
-          '<td class="wide" style="word-break:break-word">'+esc(f.title)+'</td>'+
-          '<td>'+weightBadge(f.weight)+'</td>'+
-          '</tr>').join('') +
-        '</tbody></table>' :
-        '<p style="text-align:center;color:#999;font-size:11px;margin-top:10px">No Critical findings detected for '+esc(label)+'.</p>';
-      return '<div style="min-width:0">'+
-        '<div style="display:flex;flex-direction:column;align-items:center">'+bigGauge(label, bgColor, p)+'</div>'+
-        '<div style="font-size:10px;color:#64748b;text-align:center;margin-top:6px">'+
-          counts.C+' Critical &middot; '+counts.H+' High &middot; '+counts.M+' Medium &middot; '+counts.L+' Low'+
+      const c = scoreTierColor(p), band = scoreTier(p);
+      return '<div class="csp-card2">'+
+        '<div class="csp-card2-top" style="background:'+bgColor+'"></div>'+
+        '<div class="csp-card2-head">'+
+          '<span style="font-size:13px;font-weight:900;letter-spacing:.08em;padding:6px 16px;border-radius:6px;color:#fff;background:'+bgColor+'">'+label+'</span>'+
+          '<span class="csp-monitored">Monitored</span>'+
         '</div>'+
-        findingsHtml+
+        '<div class="csp-ring-row">'+
+          ringGauge(p)+
+          '<div><div class="csp-ring-score" style="color:'+c+'">'+p+'</div>'+
+          '<div class="csp-ring-max">/100</div>'+
+          '<div class="csp-ring-tier">'+esc(band)+'</div></div>'+
+        '</div>'+
+        '<div class="csp-stats-box">'+
+          '<div><div class="csn" style="color:var(--color-critical)">'+counts.C+'</div><div class="csl">Critical</div></div>'+
+          '<div><div class="csn" style="color:var(--color-high)">'+counts.H+'</div><div class="csl">High</div></div>'+
+          '<div><div class="csn" style="color:var(--color-medium)">'+counts.M+'</div><div class="csl">Medium</div></div>'+
+          '<div><div class="csn" style="color:var(--color-success)">'+counts.L+'</div><div class="csl">Low</div></div>'+
+        '</div>'+
+        '<a href="'+cspCriticalIssuesHref(cspKey)+'" class="csp-cta-btn">View Critical Issues</a>'+
       '</div>';
     }
     const hasAws=cspScores.aws!==null, hasAzure=cspScores.azure!==null, hasGcp=cspScores.gcp!==null;
-    return '<section class="pagebreak" style="padding:2.5rem 2rem;min-height:60vh;display:flex;flex-direction:column">\n'+
-      '<h2>2. Risk Score per Cloud</h2>\n'+
-      '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Each provider score is 100 minus a severity-weighted, log-scaled penalty across every Alert, Misconfiguration and Identity finding attributed to that cloud (Critical&nbsp;&times;&nbsp;40, High&nbsp;&times;&nbsp;30, Medium&nbsp;&times;&nbsp;20, Low&nbsp;&times;&nbsp;10). The findings driving each score are listed below its gauge.</p>'+
-      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));align-items:start;gap:32px;flex:1;padding:1rem 0">\n'+
+    const activeClouds = ['aws','azure','gcp'].filter(k => cspScores[k] !== null);
+    const totalCritical = activeClouds.reduce((s,k) => s + ((cspCounts[k]||{}).C||0), 0);
+    const totalIssues = activeClouds.reduce((s,k) => { const c=cspCounts[k]||{}; return s+(c.C||0)+(c.H||0)+(c.M||0)+(c.L||0); }, 0);
+    const avgRiskScore = activeClouds.length ? Math.round(activeClouds.reduce((s,k) => s+cspScores[k], 0) / activeClouds.length) : 0;
+    // No "pagebreak" class here — this section must stay on the cover page, directly
+    // below the main MultiCloud gauge, not start a new printed page (see .report-cover
+    // above and the section.pagebreak:first-of-type rule in REPORT_CSS).
+    return '<section style="padding:1.5rem 2rem 2.5rem;display:flex;flex-direction:column">\n'+
+      '<h2>2. Cloud Service Providers Security Risk Score</h2>\n'+
+      statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>88%</strong> of organizations now operate across hybrid or multi-cloud environments, and <strong>81%</strong> rely on two or more cloud providers to run critical workloads — every additional provider adds its own configurations, permissions, and blind spots to track.') +
+      fcSolutionHtml('CSPM + CIEM + CWPP &mdash; Unified Multi-Cloud Risk Correlation',
+        'As cloud environments spread across multiple platforms and scale rapidly, the attack surface becomes increasingly fragmented. New accounts, workloads, identities, applications, and data stores are continuously created, making it challenging for security teams to maintain visibility, correlate risks, and respond effectively across complex cloud environments. FortiCNAPP correlates posture, identity, workload, and secrets findings from every connected cloud into one normalized Risk Score per provider, so fragmentation never becomes a blind spot.',
+        'Review each cloud&rsquo;s score and Critical findings first, starting with the lowest-scoring provider.',
+        'Track score trends over time per cloud, and re-baseline as new accounts, services, and regions are added.',
+        ['One normalized 0-100 score per cloud, computed the same way across AWS, Azure, and GCP so scores are directly comparable', 'Aggregates Alerts, Misconfigurations, and Identity risk into a single per-cloud rollup'],
+        ['Gives leadership a single, comparable risk metric across every cloud provider in use', 'Surfaces which cloud environment needs investment first, without manual cross-tool correlation']
+      ) +
+      '<div class="csp-panel">\n'+
+      '<div class="csp-panel-title">Cloud Service Providers Security Risk Score</div>\n'+
+      '<div class="csp-panel-subtitle">Real-Time CSPM Dashboard Across Multi-Cloud Environments</div>\n'+
+      '<div class="csp-cards-row">\n'+
         (hasAws   ? cspCard('AWS',   '#232F3E', 'aws')   : '')+
         (hasAzure ? cspCard('Azure', '#0078D4', 'azure') : '')+
         (hasGcp   ? cspCard('GCP',   '#1a73e8', 'gcp')   : '')+
         (!hasAws && !hasAzure && !hasGcp ? '<div class="section-summary"><p>No per-cloud data detected in this assessment window.</p></div>' : '')+
+      '</div>\n'+
+      (activeClouds.length ? '<div class="csp-summary-strip">\n'+
+        '<div><div class="css-num">'+totalCritical+'</div><div class="css-label">Total Critical Issues</div></div>\n'+
+        '<div><div class="css-num">'+avgRiskScore+'</div><div class="css-label">Average Risk Score</div></div>\n'+
+        '<div><div class="css-num">'+totalIssues+'</div><div class="css-label">Total Issues to Remediate</div></div>\n'+
+        '<div><div class="css-num">'+activeClouds.length+'</div><div class="css-label">Cloud Providers Monitored</div></div>\n'+
+      '</div>\n' : '')+
       '</div>\n</section>\n';
   })() +
-  hostDiagramsSection + '\n' + nonComplianceSection + '\n' +
-  adminUserSection + '\n' + iamRolesSection + '\n' + serviceAccountsSection + '\n' +
-  exposedVulnSection + '\n' + privateVulnSection + '\n' + sshKeysSection + '\n' + secretsSection + '\n' +
+  ciemSection + '\n' + secretsSshSection + '\n' + hostExposureSection + '\n' + storageSection + '\n' +
+  privateVulnSection + '\n' + nonComplianceSection + '\n' +
+  iamRolesSection + '\n' + serviceAccountsSection + '\n' + capabilityMappingSection + '\n' +
   '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
   '<div style="text-align:center">' +
-  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">RAPID CLOUD ASSESSMENT REPORT (BETA) &mdash; Powered by FortiCNAPP</div>' +
+  '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">Security Maturity Assessment Report - Powered by FortiCNAPP</div>' +
   '<div style="font-size:13px;color:#d1d5db;margin-bottom:10px">Prepared for: '+esc(customer)+' &nbsp;&middot;&nbsp; Report Date: '+dateStr+' &nbsp;&middot;&nbsp; Author: '+esc(author)+'</div>' +
   '<div style="font-size:11px;color:#6b7280">This is a beta report format and its layout/sections may change. Confidential — intended solely for the named recipient.</div>' +
-  '</div></div>\n</body>\n</html>';
+  '</div></div>\n' +
+  '<script>function fcUnlockSection(n){' +
+    'var email=(document.getElementById("fc-lock-email-"+n).value||"").trim().toLowerCase();' +
+    'if(/@fortinet\\.com$/.test(email)){' +
+      'document.getElementById("fc-lock-"+n).style.display="none";' +
+      'document.getElementById("fc-locked-content-"+n).style.display="block";' +
+    '}else{' +
+      'document.getElementById("fc-lock-error-"+n).style.display="block";' +
+    '}' +
+  '}</script>\n' +
+  '</body>\n</html>';
 }
 
 // ── Report 3 (Cloud Overview) — condensed 4-page, chart-first summary for managers ──
@@ -8780,7 +9301,7 @@ function buildReportHtml3(data, meta) {
   '  <title>Cloud Overview Report – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
+  reportTopbarHtml('Cloud Overview') + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Cloud Overview</div>\n' +
@@ -9159,7 +9680,7 @@ function buildReportHtml4(data, meta) {
   '  <title>Rapid Cloud Assessment (BETA) – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  '<header><span style="color:white;font-weight:700;font-size:15px;letter-spacing:.08em">FORTINET</span></header>\n' +
+  reportTopbarHtml('Full Report (BETA)') + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
   '  <div class="report-type">Rapid Cloud Assessment · Full Report (BETA)</div>\n' +
@@ -9630,6 +10151,8 @@ function requestHandler(req, res) {
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
+    (async () => {
+    await ensureFreshCache();
     const reportData = sanitize ? sanitizeCacheData(cache) : cache;
     const reportHtml = buildReportHtml4(reportData, { customer, author });
     const reportPath = path.join(__dirname, 'rca4.html');
@@ -9654,6 +10177,7 @@ function requestHandler(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
+    })();
   } else if (req.url.startsWith('/report3')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
@@ -9664,6 +10188,8 @@ function requestHandler(req, res) {
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
+    (async () => {
+    await ensureFreshCache();
     const reportData = sanitize ? sanitizeCacheData(cache) : cache;
     const reportHtml = buildReportHtml3(reportData, { customer, author });
     const reportPath = path.join(__dirname, 'rca3.html');
@@ -9688,6 +10214,7 @@ function requestHandler(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
+    })();
   } else if (req.url.startsWith('/report2')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
@@ -9698,6 +10225,8 @@ function requestHandler(req, res) {
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
+    (async () => {
+    await ensureFreshCache();
     const reportData = sanitize ? sanitizeCacheData(cache) : cache;
     const reportHtml = buildReportHtml2(reportData, { customer, author });
     const reportPath = path.join(__dirname, 'rca2.html');
@@ -9722,6 +10251,7 @@ function requestHandler(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
+    })();
   } else if (req.url.startsWith('/report')) {
     const qs = new URL(req.url, 'http://localhost').searchParams;
     const customer = (qs.get('customer') || 'Customer').trim();
@@ -9732,6 +10262,8 @@ function requestHandler(req, res) {
       res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
       return;
     }
+    (async () => {
+    await ensureFreshCache();
     const reportData = sanitize ? sanitizeCacheData(cache) : cache;
     const reportHtml = buildReportHtml(reportData, { customer, author });
     const reportPath = path.join(__dirname, 'rca.html');
@@ -9756,6 +10288,7 @@ function requestHandler(req, res) {
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(reportHtml);
+    })();
   } else if (req.method === 'POST' && req.url === '/api/login') {
     let body = '';
     req.on('data', c => body += c);
@@ -9794,7 +10327,7 @@ function startApp(listeningPort, protocol) {
   const mode = MOCK_FILE ? 'MOCK' : 'LIVE';
   const url  = `${protocol}://localhost:${listeningPort}`;
   console.log('\n┌──────────────────────────────────────────────────┐');
-  console.log(`│  Fortinet Rapid Cloud Assessment empowered by FortiCNAPP — ${mode.padEnd(11)}│`);
+  console.log(`│  Fortinet Rapid Cloud Assessment Powered by FortiCNAPP — ${mode.padEnd(11)}│`);
   console.log('├──────────────────────────────────────────────────┤');
   console.log(`│  Account  : ${LW_ACCOUNT.padEnd(37)}│`);
   if (MOCK_FILE) {
