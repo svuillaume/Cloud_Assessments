@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Risk Quantitative Exposure Calculator</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#000;--panel:#0c0c0e;--text:#f5f5f7;--text2:#86868b;--text3:#48484a;--blue:#307FE2;--orange:#FFB900;--red:#DA291C;--green:#3CB17E;--purple:#9063CD;--teal:#2CCCD3;--border:rgba(255,255,255,.1);--border-soft:rgba(255,255,255,.06);--field-bg:rgba(255,255,255,.04)}
+* {
+    box-sizing: border-box;
+}
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+.topbar {
+    max-width: 900px;
+    margin: 0 auto;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 24px;
+    background: rgba(255,255,255,.02);
+    border: 1px solid var(--border-soft);
+    border-bottom: none;
+    border-radius: 12px 12px 0 0;
+}
+.brand-logo {
+    height: 16px;
+    width: auto;
+    color: var(--text);
+    flex-shrink: 0;
+}
+.brand-sep {
+    width: 1px;
+    height: 16px;
+    background: rgba(255,255,255,.15);
+    flex-shrink: 0;
+}
+.topbar-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+}
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 0 0 16px 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.header {
+    padding: 24px 30px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.header h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text);
+}
+.header p {
+    margin: 6px 0 0 0;
+    font-size: 13px;
+    color: var(--text2);
+}
+.tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-soft);
+    background: rgba(255,255,255,.015);
+    overflow-x: auto;
+}
+.tab-button {
+    padding: 15px 25px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text2);
+    font-family: inherit;
+    border-bottom: 3px solid transparent;
+    transition: all 0.3s;
+    white-space: nowrap;
+}
+.tab-button.active {
+    color: var(--text);
+    border-bottom-color: var(--red);
+}
+.tab-button:hover {
+    color: var(--text);
+    background: rgba(255,255,255,.04);
+}
+.tab-content {
+    display: none;
+    padding: 30px;
+}
+.tab-content.active {
+    display: block;
+}
+.section {
+    margin-bottom: 30px;
+    padding-bottom: 30px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.section:last-of-type {
+    border-bottom: none;
+    margin-bottom: 20px;
+    padding-bottom: 0;
+}
+.section h3 {
+    margin: 0 0 20px 0;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 700;
+}
+.section-label {
+    display: inline-block;
+    background: var(--red);
+    color: white;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    margin-right: 8px;
+}
+.input-group {
+    margin: 18px 0;
+}
+.input-group label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 6px;
+    color: var(--text);
+    font-size: 13px;
+}
+input[type="number"], input[type="range"], select {
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: var(--field-bg);
+    color: var(--text);
+    font-family: inherit;
+}
+input[type="number"]:focus, select:focus {
+    outline: none;
+    border-color: rgba(218,41,28,.6);
+    box-shadow: 0 0 0 3px rgba(218,41,28,.15);
+}
+input[type="number"] {
+    width: 150px;
+}
+select {
+    width: 100%;
+    max-width: 400px;
+}
+input[type="range"] {
+    width: 200px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,.12);
+    outline: none;
+    -webkit-appearance: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--red);
+    cursor: pointer;
+    box-shadow: 0 0 0 4px rgba(218,41,28,.15);
+}
+input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--red);
+    cursor: pointer;
+    border: none;
+}
+.range-display {
+    display: inline-block;
+    margin-left: 12px;
+    min-width: 50px;
+    font-weight: 700;
+    color: var(--text);
+}
+.help-text {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 6px;
+    line-height: 1.4;
+}
+.guidance-box {
+    margin-top: 12px;
+    padding: 14px;
+    background: rgba(255,255,255,.03);
+    border-left: 3px solid var(--red);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text2);
+    line-height: 1.6;
+}
+.guidance-box strong {
+    color: var(--text);
+    display: block;
+    margin-bottom: 6px;
+}
+.buttons {
+    display: flex;
+    gap: 10px;
+    margin: 25px 0 20px 0;
+    flex-wrap: wrap;
+}
+button {
+    padding: 12px 24px;
+    font-size: 13px;
+    border: none;
+    border-radius: 24px;
+    cursor: pointer;
+    font-weight: 700;
+    letter-spacing: .02em;
+    font-family: inherit;
+    transition: all 0.2s;
+}
+.calculate-btn {
+    background: rgba(255,255,255,.08);
+    color: var(--text);
+    flex: 1;
+}
+.calculate-btn:hover {
+    background: rgba(255,255,255,.14);
+}
+.reset-btn {
+    background: transparent;
+    color: var(--text2);
+    border: 1px solid var(--border);
+}
+.reset-btn:hover {
+    background: rgba(255,255,255,.05);
+    color: var(--text);
+}
+.transfer-btn {
+    background: rgba(48,127,226,.15);
+    color: var(--blue);
+    border: 1px solid rgba(48,127,226,.3);
+}
+.transfer-btn:hover {
+    background: rgba(48,127,226,.25);
+}
+.forti-btn {
+    background: var(--red);
+    color: white;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    flex: 1.4;
+    box-shadow: 0 4px 20px rgba(218,41,28,.35);
+}
+.forti-btn:hover {
+    filter: brightness(1.1);
+    box-shadow: 0 8px 30px rgba(218,41,28,.5);
+    transform: translateY(-1px);
+}
+.results {
+    margin-top: 30px;
+    padding: 25px;
+    background: rgba(255,255,255,.02);
+    border: 1px solid var(--border-soft);
+    border-radius: 16px;
+}
+.results.hidden {
+    display: none;
+}
+.result-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 25px;
+}
+.result-box {
+    padding: 18px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+}
+.result-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--red);
+}
+.result-box.primary {
+    grid-column: 1 / -1;
+    background: linear-gradient(135deg, rgba(218,41,28,.14), rgba(218,41,28,.02));
+    border-color: rgba(218,41,28,.3);
+}
+.result-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--text2);
+    margin-bottom: 8px;
+}
+.result-box.primary .result-label {
+    color: rgba(245,245,247,.75);
+}
+.result-value {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--text);
+    margin: 8px 0;
+}
+.result-box.primary .result-value {
+    color: white;
+    font-size: 44px;
+}
+.result-subtext {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 6px;
+}
+.result-box.primary .result-subtext {
+    color: rgba(245,245,247,.7);
+}
+.risk-badge {
+    display: inline-block;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-weight: 700;
+    font-size: 12px;
+    margin-top: 8px;
+    color: white;
+    letter-spacing: .02em;
+}
+.badge-critical {
+    background: var(--red);
+}
+.badge-high {
+    background: #f57c00;
+}
+.badge-medium {
+    background: var(--orange);
+    color: #1d1d1f;
+}
+.badge-low {
+    background: var(--green);
+}
+.formula-box {
+    margin-top: 20px;
+    padding: 16px;
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    font-family: 'SF Mono', 'Courier New', monospace;
+    font-size: 12px;
+    color: var(--text2);
+    line-height: 1.8;
+    max-height: 400px;
+    overflow-y: auto;
+}
+.formula-box strong {
+    color: var(--text);
+}
+.info-note {
+    padding: 14px;
+    background: rgba(255,255,255,.03);
+    border-left: 3px solid var(--red);
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--text2);
+    border-radius: 8px;
+}
+.two-column {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+.transfer-note {
+    margin-top: 15px;
+    padding: 14px;
+    background: rgba(48,127,226,.08);
+    border-left: 3px solid var(--blue);
+    border-radius: 8px;
+    font-size: 12px;
+    color: #8fc4ff;
+}
+@media (max-width: 600px) {
+    .two-column {
+        grid-template-columns: 1fr;
+    }
+    input[type="number"], select {
+        width: 100%;
+    }
+    .result-value {
+        font-size: 28px;
+    }
+    .result-box.primary .result-value {
+        font-size: 36px;
+    }
+    .buttons {
+        flex-direction: column;
+    }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+    <svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="65 0 80 55" aria-label="Fortinet"><path fill="#da291c" d="M144.2 20.4v14.2H122V20.4h22.2zM93.9 54.8H116V40.6H93.9v14.2zm50.3-42.9c0-6.6-5.3-11.9-11.9-11.9h-10.2v14.2h22.1v-2.3zM93.9 0v14.2H116V0H93.9zM65.7 20.4v14.2h22.1V20.4H65.7zM122 54.8h10.2c6.6 0 11.9-5.3 11.9-11.9v-2.3H122v14.2zM65.7 42.9c0 6.6 5.3 11.9 11.9 11.9h10.2V40.6H65.7v2.3zm0-31v2.3h22.1V0H77.6C71 0 65.7 5.3 65.7 11.9z"/></svg>
+    <div class="brand-sep"></div>
+    <div class="topbar-title">Powered by FortiCNAPP</div>
+</div>
+<div class="container">
+    <div class="header">
+        <h1>Risk Quantitative Exposure Calculator</h1>
+        <p>Cloud Risk → Financial Risk → FortiCNAPP ROI</p>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-button active" onclick="switchTab(event, 'cloud-risk')">① Cloud Risk</button>
+        <button class="tab-button" onclick="switchTab(event, 'financial-risk')">② Financial Risk</button>
+        <button class="tab-button" onclick="switchTab(event, 'investment-roi')">③ FortiCNAPP ROI</button>
+    </div>
+
+    <!-- ============ TAB 1: CLOUD RISK ============ -->
+    <div id="cloud-risk" class="tab-content active">
+        <div class="info-note">
+            <strong>FAIR Risk Calculation:</strong> Cloud Risk = (TEF × Exposure) × LM / 100
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">TEF</span> Threat Event Frequency</h3>
+            <div class="two-column">
+                <div class="input-group">
+                    <label>High Fidelity Alerts</label>
+                    <input id="cr_hfAlerts" type="number" min="0" value="0">
+                    <div class="help-text">Confirmed detections</div>
+                </div>
+                <div class="input-group">
+                    <label>Threat Level (%)</label>
+                    <input id="cr_threatSlider" type="range" min="0" max="100" value="10">
+                    <span class="range-display"><span id="cr_threatValue">10</span>%</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">EXPOSURE</span> Cloud Exposure</h3>
+            <div class="two-column">
+                <div class="input-group">
+                    <label>Host Exposure</label>
+                    <input id="cr_hostExposure" type="number" min="0" value="0">
+                </div>
+                <div class="input-group">
+                    <label>Identity Risk</label>
+                    <input id="cr_identityRisk" type="number" min="0" value="0">
+                </div>
+            </div>
+            <div class="two-column">
+                <div class="input-group">
+                    <label>Secrets Detected</label>
+                    <input id="cr_secretsDetected" type="number" min="0" value="0">
+                </div>
+                <div class="input-group">
+                    <label>Misconfigurations</label>
+                    <input id="cr_misconfigs" type="number" min="0" value="0">
+                </div>
+            </div>
+            <div class="input-group">
+                <label>Exposure Level (%)</label>
+                <input id="cr_exposureSlider" type="range" min="0" max="100" value="10">
+                <span class="range-display"><span id="cr_exposureValue">10</span>%</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">LM</span> Loss Magnitude</h3>
+            <div class="input-group">
+                <label>Asset Criticality (%)</label>
+                <input id="cr_criticality" type="range" min="0" max="100" value="50">
+                <span class="range-display"><span id="cr_criticalityValue">50</span>%</span>
+            </div>
+            <div class="input-group">
+                <label>Data Sensitivity (%)</label>
+                <input id="cr_dataSensitivity" type="range" min="0" max="100" value="50">
+                <span class="range-display"><span id="cr_dataSensitivityValue">50</span>%</span>
+            </div>
+            <div class="input-group">
+                <label>Business Function (%)</label>
+                <input id="cr_businessFunction" type="range" min="0" max="100" value="50">
+                <span class="range-display"><span id="cr_businessFunctionValue">50</span>%</span>
+            </div>
+            <div class="input-group">
+                <label>Compliance Scope (%)</label>
+                <input id="cr_compliance" type="range" min="0" max="100" value="50">
+                <span class="range-display"><span id="cr_complianceValue">50</span>%</span>
+            </div>
+        </div>
+
+        <div class="buttons">
+            <button class="calculate-btn" onclick="calculateCloudRisk()">Calculate Cloud Risk</button>
+            <button class="reset-btn" onclick="resetCloudRisk()">Reset</button>
+        </div>
+
+        <div class="results hidden" id="cr_results">
+            <div class="result-grid">
+                <div class="result-box primary">
+                    <div class="result-label">Cloud Risk Score</div>
+                    <div class="result-value"><span id="cr_riskScore">0</span>/100</div>
+                    <div class="risk-badge" id="cr_riskBadge">-</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">TEF</div>
+                    <div class="result-value"><span id="cr_tefScore">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Exposure</div>
+                    <div class="result-value"><span id="cr_exposureScore">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">LEF</div>
+                    <div class="result-value"><span id="cr_lefScore">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">LM</div>
+                    <div class="result-value"><span id="cr_lmScore">0</span></div>
+                </div>
+            </div>
+            <div class="transfer-note" style="cursor: pointer; display: flex; align-items: center; gap: 12px;" onclick="switchTab(event, 'financial-risk')">
+                <span>➜ <strong>Next Step:</strong> Click to go to "② Financial Risk" tab</span>
+                <button style="background: #307FE2; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px;">Go to Financial Risk →</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ TAB 2: FINANCIAL RISK ============ -->
+    <div id="financial-risk" class="tab-content">
+        <div class="info-note">
+            <strong>Financial Risk Quantification:</strong> Converts cloud risk into annual dollars (ALE = Annualized Loss Expectancy)<br>
+            <strong>Formula:</strong> ALE = (TEF × Exposure / 10,000) × Loss Magnitude<br>
+            <strong>Workflow:</strong> Cloud Risk (Tab ①) → Financial Risk ($) (Tab ②) → FortiCNAPP ROI (Tab ③)
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">FROM CLOUD RISK</span> TEF & Exposure (Auto-Synced)</h3>
+            <div class="guidance-box">
+                <strong>How it works:</strong><br>
+                1. Go to "① Cloud Risk" tab and calculate<br>
+                2. TEF and Exposure automatically appear below<br>
+                3. Values are pre-filled in input fields<br>
+                4. You can override if needed
+            </div>
+
+            <div class="two-column">
+                <div class="input-group">
+                    <label>TEF from Cloud Risk</label>
+                    <div style="padding: 12px; background: rgba(255,255,255,.05); border-radius: 4px; font-size: 18px; font-weight: bold; color: #f5f5f7; min-height: 44px; display: flex; align-items: center;">
+                        <span id="fr_tefFromCloud">Not calculated yet</span>
+                    </div>
+                    <div class="help-text">Threat Event Frequency (0-100) — shows threats occur regularly</div>
+                </div>
+                <div class="input-group">
+                    <label>Exposure from Cloud Risk</label>
+                    <div style="padding: 12px; background: rgba(255,255,255,.05); border-radius: 4px; font-size: 18px; font-weight: bold; color: #f5f5f7; min-height: 44px; display: flex; align-items: center;">
+                        <span id="fr_exposureFromCloud">Not calculated yet</span>
+                    </div>
+                    <div class="help-text">Vulnerability level (0-100) — probability threat succeeds</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 12px; padding: 12px; background: rgba(48,127,226,.1); border-left: 3px solid #307FE2; border-radius: 4px; font-size: 12px; color: #8fc4ff;">
+                ➜ Or manually enter values:
+            </div>
+
+            <div class="two-column" style="margin-top: 12px;">
+                <div class="input-group">
+                    <label>TEF Score (0-100) - Override</label>
+                    <input id="fr_tef" type="number" min="0" max="100" value="5">
+                    <div class="help-text">Leave blank to use Cloud Risk value</div>
+                </div>
+                <div class="input-group">
+                    <label>Exposure Score (0-100) - Override</label>
+                    <input id="fr_exposure" type="number" min="0" max="100" value="6">
+                    <div class="help-text">Leave blank to use Cloud Risk value</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">LM</span> Loss Magnitude (Annual)</h3>
+            <div class="input-group">
+                <label>Financial Loss per Event ($)</label>
+                <input id="fr_loss" type="number" min="0" value="500000">
+                <div class="help-text">Total cost of one breach event</div>
+            </div>
+            <div class="guidance-box">
+                <strong>Industry Benchmarks (2024):</strong><br>
+                • Small (< 1K records): $100K-$500K<br>
+                • Medium (1K-10K): $500K-$2M<br>
+                • Large (10K-100K): $2M-$5M<br>
+                • Mega (100K+): $5M+
+            </div>
+        </div>
+
+        <div class="buttons">
+            <button class="calculate-btn" onclick="calculateFinancialRisk()">Calculate Financial Risk</button>
+            <button class="transfer-btn" onclick="transferToFinancial()">← Transfer TEF & Exposure from Cloud Risk</button>
+            <button class="reset-btn" onclick="resetFinancialRisk()">Reset</button>
+        </div>
+
+        <div class="results hidden" id="fr_results">
+            <div class="result-grid">
+                <div class="result-box primary">
+                    <div class="result-label">Annual Loss Expectancy (ALE)</div>
+                    <div class="result-value">$<span id="fr_ale">0</span></div>
+                    <div class="result-subtext">Expected annual financial loss</div>
+                    <div class="risk-badge" id="fr_riskBadge">-</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">TEF</div>
+                    <div class="result-value"><span id="fr_tefDisplay">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Exposure</div>
+                    <div class="result-value"><span id="fr_exposureDisplay">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">LEF</div>
+                    <div class="result-value"><span id="fr_lef">0</span></div>
+                    <div class="result-subtext">events/year</div>
+                </div>
+            </div>
+            <div style="margin-top: 15px;">
+                <button onclick="toggleFinancialFormulaDetails()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">📊 Click for Details</button>
+            </div>
+
+            <div id="financialFormulaDetailsBox" class="formula-box" style="display: none; margin-top: 15px;">
+                <strong>Calculation:</strong><br>
+                LEF = (TEF × Exposure) / 10,000 = <span id="fr_formulaLEF">-</span> events/year<br>
+                ALE = <span id="fr_formulaALE">-</span><br>
+                <br>
+                <strong>Annual Risk Exposure = $<span id="fr_finalALE">-</span></strong>
+            </div>
+            <div class="transfer-note" style="cursor: pointer; display: flex; align-items: center; gap: 12px;" onclick="switchTab(event, 'investment-roi')">
+                <span>➜ <strong>Next Step:</strong> Click to go to "③ FortiCNAPP ROI" tab</span>
+                <button style="background: #307FE2; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px;">Go to ROI →</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ TAB 3: FORTICNAPP ROI ============ -->
+    <div id="investment-roi" class="tab-content">
+        <div class="info-note">
+            <strong>FortiCNAPP 3-Year Contract:</strong> Fixed cost vs. growing risk (ALE with inflation)
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">WORKLOADS</span> FortiCNAPP Workload Coverage</h3>
+            <div class="input-group">
+                <label>Workloads to Protect</label>
+                <input id="roi_workloads" type="number" min="0" value="250">
+            </div>
+            <button onclick="togglePricingDetails()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; margin-top: 8px;">💰 Pricing Tiers</button>
+            <div id="pricingDetailsBox" class="guidance-box" style="display: none; margin-top: 10px;">
+                <strong>Pricing Tiers (Annual, Fixed for 3-yr contract):</strong><br>
+                • 250-2,499: $400/workload/yr<br>
+                • 2,500-4,999: $380/workload/yr<br>
+                • 5,000+: $350/workload/yr
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">CODE</span> Code Security (Optional)</h3>
+            <div class="input-group">
+                <label>Developers (MOQ: 20)</label>
+                <input id="roi_developers" type="number" min="0" value="0">
+            </div>
+            <button onclick="toggleCodeSecPricing()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; margin-top: 8px;">💰 Code Security</button>
+            <div id="codeSecPricingBox" class="guidance-box" style="display: none; margin-top: 10px;">
+                <strong>$650/developer/year (Fixed for 3-yr contract)</strong>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">DEPLOYMENT</span> FortiCNAPP Profile</h3>
+            <div class="input-group">
+                <label>Deployment Profile</label>
+                <select id="roi_profile" onchange="updateProfileComponents()" style="width: 100%; max-width: 500px;">
+                    <option value="conservative">Conservative: Basic (CSPM + DSPM)</option>
+                    <option value="moderate">Moderate: Medium (+ Workload Protection)</option>
+                    <option value="aggressive">Aggressive: Full (+ Code + App Security)</option>
+                </select>
+            </div>
+            <div class="guidance-box" id="profileComponents">
+                <strong>Components:</strong><br>
+                • CSPM (Cloud Security Posture Management)<br>
+                • DSPM (Data Security Posture Management)<br>
+                • Agentless CWWP/CIEM (Cloud Workload Protection & Identity)
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">CONTRACT</span> 3-Year Terms</h3>
+            <div class="guidance-box">
+                <strong>3-Year Model:</strong><br>
+                • FortiCNAPP Cost: FIXED (locked in contract)<br>
+                • Your ALE: GROWS with inflation (business expansion)<br>
+                • FortiCNAPP Reduction: Progressive maturity over 3 years
+            </div>
+            <div class="two-column">
+                <div class="input-group">
+                    <label>ALE Growth Rate (%)</label>
+                    <input id="roi_inflation" type="number" min="0" max="20" step="0.1" value="3.5">
+                    <div class="help-text">Annual organizational risk growth (2-5% typical as business scales)</div>
+                </div>
+                <div class="input-group">
+                    <label>Risk Reduction Rate</label>
+                    <div style="padding: 12px; background: rgba(255,255,255,.05); border-radius: 4px; font-size: 14px; font-weight: 600; color: #f5f5f7; min-height: 44px; display: flex; align-items: center;">
+                        <span id="roi_modelDisplay">Y1=20%, Y2=35%, Y3=45% (Conservative)</span>
+                    </div>
+                    <div class="help-text">Automatically set by Deployment Profile</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">ALE</span> Baseline Annual Risk</h3>
+            <div class="input-group">
+                <label>Current ALE ($)</label>
+                <input id="roi_ale" type="number" min="0" value="228750">
+                <div class="help-text">From Financial Risk calculator</div>
+            </div>
+            <div class="guidance-box">
+                <strong>3-Year Model:</strong><br>
+                • FortiCNAPP Cost: FIXED (locked in contract, no inflation)<br>
+                • ALE: GROWS with inflation (reflects business expansion)<br>
+                • Reduction: Progressive FortiCNAPP effectiveness
+            </div>
+        </div>
+
+        <div class="section">
+            <h3><span class="section-label">MTTR</span> Incident Response Efficiency (Optional)</h3>
+            <div class="guidance-box">
+                <strong>Industry Baseline:</strong><br>
+                • Without FortiCNAPP: 24–48 hours MTTR (mean time to remediate)<br>
+                • With FortiCNAPP: 4–6 hours MTTR (80% faster investigation + triage)<br>
+                • Savings per incident: ~18–42 hours<br>
+                <br>
+                These figures are based on Forrester TEI study (2022) and documented customer outcomes (2024–2026).
+            </div>
+            <div class="two-column">
+                <div class="input-group">
+                    <label>Estimated Critical Incidents/Year</label>
+                    <input id="roi_criticalIncidents" type="number" min="0" value="10">
+                    <div class="help-text">Based on historical data or LEF × 12 months</div>
+                </div>
+                <div class="input-group">
+                    <label>Security Team Cost ($/hour)</label>
+                    <input id="roi_analyzeRate" type="number" min="0" value="150">
+                    <div class="help-text">Avg analyst + management overhead</div>
+                </div>
+            </div>
+            <div class="input-group">
+                <label>Additional Incident Cost per Hour ($)</label>
+                <input id="roi_incidentCost" type="number" min="0" value="100">
+                <div class="help-text">External IR, tools, communications, etc. (optional)</div>
+            </div>
+        </div>
+
+        <div class="buttons">
+            <button class="forti-btn" onclick="calculateInvestmentROI()">Calculate FortiCNAPP ROI</button>
+            <button class="calculate-btn" onclick="calculateInvestmentROI1Year()">Calculate 1-Year ROI</button>
+            <button class="calculate-btn" onclick="calculateInvestmentROI2Year()">Calculate 2-Year ROI</button>
+            <button class="calculate-btn" onclick="calculateInvestmentROI()">Calculate 3-Year ROI</button>
+            <button class="transfer-btn" onclick="transferALEfromFinancial()">← Auto-Load ALE</button>
+            <button class="reset-btn" onclick="resetInvestmentROI()">Reset</button>
+        </div>
+
+        <div class="results hidden" id="roi_results">
+            <div class="result-grid">
+                <div class="result-box primary">
+                    <div class="result-label">3-Year Investment</div>
+                    <div class="result-value">$<span id="roi_totalCost">0</span></div>
+                    <div class="result-subtext">Fixed contract cost</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Year 1</div>
+                    <div class="result-value">$<span id="roi_year1">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Year 2</div>
+                    <div class="result-value">$<span id="roi_year2">0</span></div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Year 3</div>
+                    <div class="result-value">$<span id="roi_year3">0</span></div>
+                </div>
+            </div>
+
+            <div class="result-grid">
+                <div class="result-box">
+                    <div class="result-label">Risk Avoided</div>
+                    <div class="result-value" style="color: #388e3c;">$<span id="roi_riskAvoided">0</span></div>
+                    <div class="result-subtext">Cumulative savings</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Net Benefit</div>
+                    <div class="result-value" style="color: #388e3c;">$<span id="roi_netBenefit">0</span></div>
+                    <div class="result-subtext">Avoided - investment</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">ROI %</div>
+                    <div class="result-value"><span id="roi_roiPercent">0</span>%</div>
+                </div>
+                <div class="result-box">
+                    <div class="result-label">Payback</div>
+                    <div class="result-value"><span id="roi_payback">-</span></div>
+                    <div class="result-subtext">Months</div>
+                </div>
+            </div>
+
+            <div style="margin: 30px 0; padding: 20px; background: rgba(255,255,255,.03); border-radius: 8px; border: 1px solid rgba(255,255,255,.08);">
+                <h4 style="margin: 0 0 20px 0; color: #f5f5f7; font-size: 16px; font-weight: 600;">3-Year ROI Progression</h4>
+                <canvas id="roiChart" style="max-height: 300px; min-height: 300px;"></canvas>
+            </div>
+
+            <div style="margin-top: 25px; padding: 20px; background: rgba(60,163,126,.08); border: 1px solid rgba(60,163,126,.3); border-left: 4px solid #3CB17E; border-radius: 6px;">
+                <div style="font-weight: 600; color: #3CB17E; margin-bottom: 12px; font-size: 14px;">MTTR EFFICIENCY GAINS</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; font-size: 14px; color: #f5f5f7;">
+                    <div>
+                        <div style="color: #86868b; font-size: 12px; margin-bottom: 4px;">Baseline MTTR:</div>
+                        <div style="font-weight: 600; font-size: 16px; color: #3CB17E;">24–48h</div>
+                    </div>
+                    <div>
+                        <div style="color: #86868b; font-size: 12px; margin-bottom: 4px;">With FortiCNAPP:</div>
+                        <div style="font-weight: 600; font-size: 16px; color: #3CB17E;">4–6h</div>
+                    </div>
+                    <div>
+                        <div style="color: #86868b; font-size: 12px; margin-bottom: 4px;">Hours Saved/Incident:</div>
+                        <div style="font-weight: 600; font-size: 16px; color: #3CB17E;"><span id="roi_hoursSavedPerIncident">-</span>h</div>
+                    </div>
+                    <div>
+                        <div style="color: #86868b; font-size: 12px; margin-bottom: 4px;">Annual Hours Saved:</div>
+                        <div style="font-weight: 600; font-size: 16px; color: #3CB17E;"><span id="roi_annualHoursSaved">-</span>h</div>
+                    </div>
+                    <div style="grid-column: 1 / -1;">
+                        <div style="color: #86868b; font-size: 12px; margin-bottom: 4px;">3-Year MTTR Benefit:</div>
+                        <div style="font-weight: 600; font-size: 18px; color: #3CB17E;">$<span id="roi_mttrBenefit">-</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <button onclick="toggleFormulaDetails()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 14px;">📊 Click for Details</button>
+            </div>
+
+            <div id="formulaDetailsBox" class="formula-box" style="display: none; margin-top: 15px;">
+                <strong>Investment (Fixed 3-Year):</strong><br>
+                Y1: $<span id="roi_formulaY1">-</span> | Y2: $<span id="roi_formulaY2">-</span> | Y3: $<span id="roi_formulaY3">-</span><br>
+                Total: $<span id="roi_formulaTotalInvest">-</span><br>
+                <br>
+                <strong>Risk Reduction (ALE with inflation):</strong><br>
+                Baseline: $<span id="roi_formulaALE">-</span><br>
+                Y1 ALE: $<span id="roi_formulaY1ALE">-</span> | Avoided: $<span id="roi_formulaY1Save">-</span><br>
+                Y2 ALE: $<span id="roi_formulaY2ALE">-</span> | Avoided: $<span id="roi_formulaY2Save">-</span><br>
+                Y3 ALE: $<span id="roi_formulaY3ALE">-</span> | Avoided: $<span id="roi_formulaY3Save">-</span><br>
+                Total Avoided: $<span id="roi_formulaTotalSave">-</span><br>
+                <br>
+                <strong>MTTR Efficiency (Annual):</strong><br>
+                Hours Saved/Year: <span id="roi_formulaMTTRHours">-</span>h × $<span id="roi_formulaMTTRRate">-</span>/h = $<span id="roi_formulaMTTRBenefit">-</span><br>
+                3-Year MTTR Total: $<span id="roi_formulaMTTR3Year">-</span><br>
+                <br>
+                <strong>Total Benefits = Risk Avoided + MTTR Efficiency</strong><br>
+                <strong>ROI = (Total Benefits - Investment) / Investment × 100</strong>
+            </div>
+
+            <div class="transfer-note" style="cursor: pointer; display: flex; align-items: center; gap: 12px; margin-top: 20px;" onclick="switchTab(event, 'cloud-risk')">
+                <span>↻ <strong>Review & Refine:</strong> Click to go back to "① Cloud Risk" tab</span>
+                <button style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px;">← Back to Cloud Risk</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// UTILITIES
+function switchTab(event, tabName) {
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+    document.getElementById(tabName).classList.add('active');
+    event.target.classList.add('active');
+}
+
+function toggleFormulaDetails() {
+    const box = document.getElementById('formulaDetailsBox');
+    if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleFinancialFormulaDetails() {
+    const box = document.getElementById('financialFormulaDetailsBox');
+    if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+function togglePricingDetails() {
+    const box = document.getElementById('pricingDetailsBox');
+    if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleCodeSecPricing() {
+    const box = document.getElementById('codeSecPricingBox');
+    if (box) box.style.display = box.style.display === 'none' ? 'block' : 'none';
+}
+
+let lastCloudRiskCalculation = { tef: 0, exposure: 0 };
+let lastFinancialRisk = { ale: 0 };
+
+// FortiCNAPP Deployment Profiles — Based on Forrester TEI Study (2022) & Customer Evidence (2024–2026)
+const deploymentProfiles = {
+    conservative: {
+        name: "Conservative",
+        components: ["CSPM", "DSPM", "Agentless CWWP/CIEM"],
+        description: "CSPM + DSPM + Agentless CWWP/CIEM",
+        riskReduction: [0.20, 0.40, 0.55]
+    },
+    moderate: {
+        name: "Moderate",
+        components: ["CSPM", "DSPM", "Agentless CWWP/CIEM", "CWPP Agent"],
+        description: "CSPM + DSPM + Agentless CWWP/CIEM + CWPP Agent (Aggressive)",
+        riskReduction: [0.25, 0.45, 0.60]
+    },
+    aggressive: {
+        name: "Aggressive",
+        components: ["CSPM", "Agentless CWWP/CIEM", "CWPP Agent", "CodeSec", "DAST"],
+        description: "CSPM + Agentless CWWP/CIEM + CWPP Agent (Aggressive) + CodeSec + DAST",
+        riskReduction: [0.30, 0.50, 0.65]
+    }
+};
+
+function updateProfileComponents() {
+    const profileKey = document.getElementById('roi_profile').value;
+    const profile = deploymentProfiles[profileKey];
+
+    const componentsList = profile.components.map((c, i) =>
+        `${String.fromCharCode(9679)} ${c}`
+    ).join('<br>');
+
+    document.getElementById('profileComponents').innerHTML =
+        `<strong>Selected Profile - ${profile.name}</strong><br>${componentsList}`;
+
+    const reductionStr = `Y1=${Math.round(profile.riskReduction[0]*100)}%, Y2=${Math.round(profile.riskReduction[1]*100)}%, Y3=${Math.round(profile.riskReduction[2]*100)}%`;
+    document.getElementById('roi_modelDisplay').textContent = `${reductionStr} (${profile.name})`;
+}
+
+// Initialize profiles on page load
+window.addEventListener('load', function() {
+    updateProfileComponents();
+});
+
+// ===== TAB 1: CLOUD RISK =====
+document.getElementById('cr_threatSlider')?.addEventListener('input', function() { document.getElementById('cr_threatValue').textContent = this.value; });
+document.getElementById('cr_exposureSlider')?.addEventListener('input', function() { document.getElementById('cr_exposureValue').textContent = this.value; });
+document.getElementById('cr_criticality')?.addEventListener('input', function() { document.getElementById('cr_criticalityValue').textContent = this.value; });
+document.getElementById('cr_dataSensitivity')?.addEventListener('input', function() { document.getElementById('cr_dataSensitivityValue').textContent = this.value; });
+document.getElementById('cr_businessFunction')?.addEventListener('input', function() { document.getElementById('cr_businessFunctionValue').textContent = this.value; });
+document.getElementById('cr_compliance')?.addEventListener('input', function() { document.getElementById('cr_complianceValue').textContent = this.value; });
+
+function calculateCloudRisk() {
+    let hfAlerts = Number(document.getElementById('cr_hfAlerts').value);
+    let threatSlider = Number(document.getElementById('cr_threatSlider').value);
+    let tef = Math.min((hfAlerts * 25 + threatSlider) / 2, 100);
+    tef = Math.round(tef);
+
+    let hostExposure = Number(document.getElementById('cr_hostExposure').value);
+    let identityRisk = Number(document.getElementById('cr_identityRisk').value);
+    let secretsDetected = Number(document.getElementById('cr_secretsDetected').value);
+    let misconfigs = Number(document.getElementById('cr_misconfigs').value);
+    let exposureSlider = Number(document.getElementById('cr_exposureSlider').value);
+
+    let exposureWeighted = (hostExposure * 0.25 + identityRisk * 0.35 + secretsDetected * 0.20 + misconfigs * 0.20) / 3;
+    let exposure = Math.min((exposureWeighted * 0.4 + exposureSlider * 0.6), 100);
+    exposure = Math.round(exposure);
+
+    let criticality = Number(document.getElementById('cr_criticality').value);
+    let dataSensitivity = Number(document.getElementById('cr_dataSensitivity').value);
+    let businessFunction = Number(document.getElementById('cr_businessFunction').value);
+    let compliance = Number(document.getElementById('cr_compliance').value);
+    let lm = (criticality * 0.3 + dataSensitivity * 0.25 + businessFunction * 0.25 + compliance * 0.2);
+    lm = Math.round(lm);
+
+    let lef = Math.round((tef * exposure) / 100);
+    let riskScore = Math.round((lef * lm) / 100);
+    riskScore = Math.min(riskScore, 100);
+
+    let rating, badgeClass;
+    if (riskScore < 30) { rating = "Low"; badgeClass = "badge-low"; }
+    else if (riskScore < 60) { rating = "Medium"; badgeClass = "badge-medium"; }
+    else if (riskScore < 80) { rating = "High"; badgeClass = "badge-high"; }
+    else { rating = "Critical"; badgeClass = "badge-critical"; }
+
+    lastCloudRiskCalculation = { tef: tef, exposure: exposure };
+
+    // Auto-update Financial Risk tab with Cloud Risk values
+    document.getElementById('fr_tefFromCloud').textContent = tef;
+    document.getElementById('fr_exposureFromCloud').textContent = exposure;
+    document.getElementById('fr_tef').value = tef;
+    document.getElementById('fr_exposure').value = exposure;
+
+    document.getElementById('cr_riskScore').textContent = riskScore;
+    document.getElementById('cr_tefScore').textContent = tef;
+    document.getElementById('cr_exposureScore').textContent = exposure;
+    document.getElementById('cr_lefScore').textContent = lef;
+    document.getElementById('cr_lmScore').textContent = lm;
+    document.getElementById('cr_riskBadge').textContent = rating;
+    document.getElementById('cr_riskBadge').className = 'risk-badge ' + badgeClass;
+    document.getElementById('cr_results').classList.remove('hidden');
+}
+
+function resetCloudRisk() {
+    ['cr_hfAlerts','cr_threatSlider','cr_hostExposure','cr_identityRisk','cr_secretsDetected','cr_misconfigs','cr_exposureSlider','cr_criticality','cr_dataSensitivity','cr_businessFunction','cr_compliance'].forEach(id => {
+        let el = document.getElementById(id);
+        if (el.type === 'range' || el.type === 'number') el.value = el.id.includes('threat') || el.id.includes('exposure') ? '10' : el.id.includes('criticality') || el.id.includes('data') || el.id.includes('function') || el.id.includes('compliance') ? '50' : '0';
+    });
+    document.getElementById('cr_threatValue').textContent = '10';
+    document.getElementById('cr_exposureValue').textContent = '10';
+    document.getElementById('cr_criticality Value').textContent = '50';
+    document.getElementById('cr_dataSensitivityValue').textContent = '50';
+    document.getElementById('cr_businessFunctionValue').textContent = '50';
+    document.getElementById('cr_complianceValue').textContent = '50';
+    document.getElementById('cr_results').classList.add('hidden');
+}
+
+// ===== TAB 2: FINANCIAL RISK =====
+function calculateFinancialRisk() {
+    // Use Cloud Risk values if available, otherwise use manual input
+    let tef = Number(document.getElementById('fr_tef').value) || lastCloudRiskCalculation.tef;
+    let exposure = Number(document.getElementById('fr_exposure').value) || lastCloudRiskCalculation.exposure;
+    let loss = Number(document.getElementById('fr_loss').value);
+
+    if (tef === 0 || exposure === 0) {
+        alert('Please calculate Cloud Risk first or enter TEF and Exposure values');
+        return;
+    }
+
+    let lef = (tef * exposure) / 10000;
+    let ale = lef * loss;
+
+    let rating, badgeClass;
+    if (ale < 50000) { rating = "Low"; badgeClass = "badge-low"; }
+    else if (ale < 250000) { rating = "Medium"; badgeClass = "badge-medium"; }
+    else if (ale < 1000000) { rating = "High"; badgeClass = "badge-high"; }
+    else { rating = "Critical"; badgeClass = "badge-critical"; }
+
+    lastFinancialRisk = { ale: ale };
+
+    document.getElementById('fr_ale').textContent = Math.round(ale).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    document.getElementById('fr_tefDisplay').textContent = tef;
+    document.getElementById('fr_exposureDisplay').textContent = exposure;
+    document.getElementById('fr_lef').textContent = lef.toFixed(3);
+    document.getElementById('fr_riskBadge').textContent = rating;
+    document.getElementById('fr_riskBadge').className = 'risk-badge ' + badgeClass;
+    document.getElementById('fr_formulaLEF').textContent = `(${tef} × ${exposure}) / 10,000 = ${lef.toFixed(3)}`;
+    document.getElementById('fr_formulaALE').textContent = `${lef.toFixed(3)} × $${loss.toLocaleString()} = $${ale.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+    document.getElementById('fr_finalALE').textContent = Math.round(ale).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    document.getElementById('fr_results').classList.remove('hidden');
+}
+
+function transferToFinancial() {
+    if (lastCloudRiskCalculation.tef === 0 && lastCloudRiskCalculation.exposure === 0) {
+        alert('Calculate Cloud Risk first');
+        return;
+    }
+    document.getElementById('fr_tef').value = lastCloudRiskCalculation.tef;
+    document.getElementById('fr_exposure').value = lastCloudRiskCalculation.exposure;
+    alert(`Transferred TEF=${lastCloudRiskCalculation.tef}, Exposure=${lastCloudRiskCalculation.exposure}`);
+}
+
+function resetFinancialRisk() {
+    document.getElementById('fr_tef').value = 5;
+    document.getElementById('fr_exposure').value = 6;
+    document.getElementById('fr_loss').value = 500000;
+    document.getElementById('fr_results').classList.add('hidden');
+}
+
+// ===== TAB 3: INVESTMENT ROI =====
+let roiChartInstance = null;
+
+function renderROIChartWithMTTR(yearlyInvestment, yearlyAvoided, totalInvestment, mttrBenefit3Year, numYears = 3) {
+    const ctx = document.getElementById('roiChart').getContext('2d');
+
+    // Calculate cumulative values based on numYears with monthly granularity
+    let cumulativeInvestment = [];
+    let cumulativeAvoided = [];
+    let cumulativeMTTR = [];
+    let chartLabels = [];
+
+    // Monthly values
+    let monthlyInvestment = yearlyInvestment / 12;
+    let mttrPerMonth = (mttrBenefit3Year / (numYears * 12)) || 0;
+    let totalMonths = numYears * 12;
+
+    // Get monthly avoided benefits (interpolated)
+    let monthlyAvoided = [];
+    for (let i = 0; i < numYears; i++) {
+        if (yearlyAvoided[i]) {
+            monthlyAvoided.push(yearlyAvoided[i] / 12);
+        }
+    }
+
+    let cumulativeAvoidedSum = 0;
+    let cumulativeAvoidedByYear = [0, 0, 0];
+
+    for (let month = 1; month <= totalMonths; month++) {
+        // Investment accumulates monthly
+        cumulativeInvestment.push(monthlyInvestment * month);
+
+        // Determine which year we're in
+        let yearIndex = Math.floor((month - 1) / 12);
+
+        // Add monthly avoided benefit
+        if (yearIndex < monthlyAvoided.length) {
+            cumulativeAvoidedSum += monthlyAvoided[yearIndex];
+        }
+        cumulativeAvoided.push(cumulativeAvoidedSum);
+
+        // MTTR benefits accumulate monthly
+        cumulativeMTTR.push(mttrPerMonth * month);
+
+        // Label - show every 3 months for 1-year, every month for better granularity
+        if (month === 1) {
+            chartLabels.push(`Month 1`);
+        } else if (month % 3 === 0 || month === totalMonths) {
+            chartLabels.push(`Month ${month}`);
+        } else {
+            chartLabels.push('');
+        }
+    }
+
+    // Total avoided = Risk avoided + MTTR benefit
+    let cumulativeTotalBenefits = cumulativeAvoided.map((val, i) => val + cumulativeMTTR[i]);
+    let cumulativeNetBenefit = cumulativeTotalBenefits.map((v, i) => v - cumulativeInvestment[i]);
+
+    // Destroy existing chart if it exists
+    if (roiChartInstance) {
+        roiChartInstance.destroy();
+    }
+
+    roiChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: chartLabels,
+            datasets: [
+                {
+                    label: 'Cumulative Investment (Fixed)',
+                    data: cumulativeInvestment,
+                    borderColor: '#DA291C',
+                    backgroundColor: 'rgba(218, 41, 28, 0.08)',
+                    borderWidth: 2.5,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#DA291C',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Cumulative Risk Avoided (Risk + MTTR)',
+                    data: cumulativeTotalBenefits,
+                    borderColor: '#3CB17E',
+                    backgroundColor: 'rgba(60, 163, 126, 0.08)',
+                    borderWidth: 2.5,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#3CB17E',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Net Benefit (Total Benefits - Investment)',
+                    data: cumulativeNetBenefit,
+                    borderColor: '#307FE2',
+                    backgroundColor: 'rgba(48, 127, 226, 0.08)',
+                    borderWidth: 2.5,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#307FE2',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2,
+                    yAxisID: 'y'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                title: {
+                    display: true,
+                    text: `${numYears}-Year ROI Progression`,
+                    font: { size: 14, weight: 'bold' },
+                    color: '#f5f5f7',
+                    padding: 15
+                },
+                legend: {
+                    position: 'top',
+                    labels: {
+                        font: { size: 12, weight: '600' },
+                        color: '#f5f5f7',
+                        padding: 15,
+                        usePointStyle: true
+                    }
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                    padding: 12,
+                    titleFont: { size: 13, weight: 'bold' },
+                    bodyFont: { size: 12 },
+                    callbacks: {
+                        label: function(context) {
+                            const value = Math.round(context.parsed.y);
+                            return context.dataset.label + ': $' + value.toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    position: 'left',
+                    ticks: {
+                        callback: function(value) {
+                            return '$' + Math.round(value / 1000).toLocaleString() + 'K';
+                        },
+                        font: { size: 11 },
+                        color: '#86868b'
+                    },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.08)',
+                        drawBorder: false
+                    },
+                    title: {
+                        display: true,
+                        text: 'Dollar Amount',
+                        font: { size: 12, weight: '600' },
+                        color: '#f5f5f7'
+                    }
+                },
+                x: {
+                    ticks: {
+                        font: { size: 12, weight: '600' },
+                        color: '#f5f5f7'
+                    },
+                    grid: {
+                        display: false,
+                        drawBorder: false
+                    }
+                }
+            }
+        }
+    });
+}
+
+function renderROIChart(yearlyInvestment, yearlyAvoided, totalInvestment) {
+    // Legacy function - calls updated version with 0 MTTR for backward compatibility
+    renderROIChartWithMTTR(yearlyInvestment, yearlyAvoided, totalInvestment, 0);
+}
+
+function calculateInvestmentROI() {
+    calculateInvestmentROIForYears(3);
+}
+
+function calculateInvestmentROI1Year() {
+    calculateInvestmentROIForYears(1);
+}
+
+function calculateInvestmentROI2Year() {
+    calculateInvestmentROIForYears(2);
+}
+
+function calculateInvestmentROIForYears(numYears) {
+    let workloads = Number(document.getElementById('roi_workloads').value);
+    let developers = Number(document.getElementById('roi_developers').value);
+    let inflation = Number(document.getElementById('roi_inflation').value) / 100;
+    let ale = Number(document.getElementById('roi_ale').value);
+    let profileKey = document.getElementById('roi_profile').value;
+    let profile = deploymentProfiles[profileKey];
+
+    // MTTR Inputs
+    let criticalIncidents = Number(document.getElementById('roi_criticalIncidents').value) || 0;
+    let analystRate = Number(document.getElementById('roi_analyzeRate').value) || 0;
+    let incidentCost = Number(document.getElementById('roi_incidentCost').value) || 0;
+
+    let tierName, pricePerWorkload;
+    if (workloads >= 5000) { tierName = "5,000+ (Tier 3)"; pricePerWorkload = 350; }
+    else if (workloads >= 2500) { tierName = "2,500-4,999 (Tier 2)"; pricePerWorkload = 380; }
+    else if (workloads >= 250) { tierName = "250-2,499 (Tier 1)"; pricePerWorkload = 400; }
+    else { alert("Min 250 workloads"); return; }
+
+    let codePrice = (developers >= 20) ? 650 * developers : 0;
+    let yearlyFortiCost = (workloads * pricePerWorkload) + codePrice;
+    let totalCost = yearlyFortiCost * numYears;
+
+    let riskReductions = profile.riskReduction;
+    let totalAvoided = 0, yearlyAvoided = [], aleValues = [];
+
+    for (let i = 0; i < numYears; i++) {
+        let inflatedALE = ale * Math.pow(1 + inflation, i);
+        aleValues.push(inflatedALE);
+        let avoided = inflatedALE * riskReductions[i];
+        yearlyAvoided.push(avoided);
+        totalAvoided += avoided;
+    }
+
+    // MTTR Benefit Calculation (proportional to years)
+    let baselineHours = 36;
+    let fortiCNAPPHours = 5;
+    let hoursSavedPerIncident = baselineHours - fortiCNAPPHours;
+    let annualHoursSaved = criticalIncidents * hoursSavedPerIncident;
+    let hourlyTotalRate = analystRate + incidentCost;
+    let annualMTTRBenefit = annualHoursSaved * hourlyTotalRate;
+    let mttrBenefitPeriod = annualMTTRBenefit * numYears;
+
+    // Total benefits
+    let totalBenefits = totalAvoided + mttrBenefitPeriod;
+    let netBenefit = totalBenefits - totalCost;
+    let roiPercent = Math.round((netBenefit / totalCost) * 100);
+    let paybackMonths = totalBenefits > 0 ? Math.round((totalCost / numYears) / (totalBenefits / (numYears * 12))) : 999;
+
+    // Update display elements
+    document.getElementById('roi_year1').textContent = Math.round(yearlyFortiCost).toLocaleString();
+    if (numYears >= 2) document.getElementById('roi_year2').textContent = Math.round(yearlyFortiCost).toLocaleString();
+    else document.getElementById('roi_year2').textContent = "-";
+    if (numYears >= 3) document.getElementById('roi_year3').textContent = Math.round(yearlyFortiCost).toLocaleString();
+    else document.getElementById('roi_year3').textContent = "-";
+
+    document.getElementById('roi_totalCost').textContent = Math.round(totalCost).toLocaleString();
+    document.getElementById('roi_riskAvoided').textContent = Math.round(totalAvoided).toLocaleString();
+    document.getElementById('roi_netBenefit').textContent = Math.round(netBenefit).toLocaleString();
+    document.getElementById('roi_roiPercent').textContent = roiPercent;
+    document.getElementById('roi_payback').textContent = paybackMonths < 999 ? paybackMonths : "N/A";
+
+    // MTTR Display
+    document.getElementById('roi_hoursSavedPerIncident').textContent = hoursSavedPerIncident;
+    document.getElementById('roi_annualHoursSaved').textContent = Math.round(annualHoursSaved).toLocaleString();
+    document.getElementById('roi_mttrBenefit').textContent = Math.round(mttrBenefitPeriod).toLocaleString();
+
+    // Formula box updates
+    document.getElementById('roi_formulaY1').textContent = Math.round(yearlyFortiCost).toLocaleString();
+    document.getElementById('roi_formulaY2').textContent = numYears >= 2 ? Math.round(yearlyFortiCost).toLocaleString() : "-";
+    document.getElementById('roi_formulaY3').textContent = numYears >= 3 ? Math.round(yearlyFortiCost).toLocaleString() : "-";
+    document.getElementById('roi_formulaTotalInvest').textContent = Math.round(totalCost).toLocaleString();
+    document.getElementById('roi_formulaALE').textContent = Math.round(ale).toLocaleString();
+    document.getElementById('roi_formulaY1ALE').textContent = Math.round(aleValues[0]).toLocaleString();
+    document.getElementById('roi_formulaY2ALE').textContent = numYears >= 2 ? Math.round(aleValues[1]).toLocaleString() : "-";
+    document.getElementById('roi_formulaY3ALE').textContent = numYears >= 3 ? Math.round(aleValues[2]).toLocaleString() : "-";
+    document.getElementById('roi_formulaY1Save').textContent = Math.round(yearlyAvoided[0]).toLocaleString();
+    document.getElementById('roi_formulaY2Save').textContent = numYears >= 2 ? Math.round(yearlyAvoided[1]).toLocaleString() : "-";
+    document.getElementById('roi_formulaY3Save').textContent = numYears >= 3 ? Math.round(yearlyAvoided[2]).toLocaleString() : "-";
+    document.getElementById('roi_formulaTotalSave').textContent = Math.round(totalAvoided).toLocaleString();
+
+    // MTTR Formula box updates
+    document.getElementById('roi_formulaMTTRHours').textContent = Math.round(annualHoursSaved).toLocaleString();
+    document.getElementById('roi_formulaMTTRRate').textContent = Math.round(hourlyTotalRate).toLocaleString();
+    document.getElementById('roi_formulaMTTRBenefit').textContent = Math.round(annualMTTRBenefit).toLocaleString();
+    document.getElementById('roi_formulaMTTR3Year').textContent = Math.round(mttrBenefitPeriod).toLocaleString();
+
+    // Render ROI chart with numYears parameter
+    renderROIChartWithMTTR(yearlyFortiCost, yearlyAvoided, totalCost, mttrBenefitPeriod, numYears);
+
+    document.getElementById('roi_results').classList.remove('hidden');
+}
+
+function transferALEfromFinancial() {
+    if (lastFinancialRisk.ale <= 0) {
+        alert('Calculate Financial Risk first');
+        return;
+    }
+    document.getElementById('roi_ale').value = Math.round(lastFinancialRisk.ale);
+    alert(`Loaded ALE: $${Math.round(lastFinancialRisk.ale).toLocaleString()}`);
+}
+
+function resetInvestmentROI() {
+    document.getElementById('roi_workloads').value = 250;
+    document.getElementById('roi_developers').value = 0;
+    document.getElementById('roi_inflation').value = 3.5;
+    document.getElementById('roi_ale').value = 228750;
+    document.getElementById('roi_profile').value = 'conservative';
+    updateProfileComponents();
+    document.getElementById('roi_results').classList.add('hidden');
+}
+</script>
+
+</body>
+</html>

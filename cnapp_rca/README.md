@@ -65,7 +65,7 @@ A few things that make this codebase different from a typical web app, worth kno
 
 | Section | What it shows |
 |---------|--------------|
-| **High Fidelity Alerts** | Anomaly + Composite alerts, Critical & High severity; AI Triage button auto-fires when ready |
+| **High Fidelity Alerts** | Composite-category alerts only, Critical/High/Medium severity; AI Triage button auto-fires when ready |
 
 ### Risk Findings (sidebar)
 
@@ -74,7 +74,7 @@ A few things that make this codebase different from a typical web app, worth kno
 | **Risk Findings Inventory** | Consolidated list of every finding feeding the posture score — Alerts, Host Exposure, Identities, Critical Misconfigurations, Secrets — grouped by category, each collapsed by default (click a header to expand its list, or the "N findings ↗" link to jump to that tab). Risk-score column is a severity-tiered badge (red/orange/amber/green), not uniform bold red |
 | **Attack Paths** | `LW_APA_ATTACK_PATHS` results with click-to-filter severity tiles (Critical / High / Medium / Low) |
 | **Identities** | Admin-privilege identities only, one uniform rule across AWS/Azure/GCP: (User type **and** Full Admin) OR (IAM Role type **and** Full Admin) OR Root/root-equivalent. Service Accounts, Service Principals, Instance Profiles, Groups, and Assumed Roles are excluded regardless of privilege |
-| **Secrets** | Discovered secrets and credentials across hosts |
+| **Secrets** | Discovered secrets and credentials, scoped to internet-exposed hosts only — a secret on a purely internal host isn't part of the external attack surface this tab tracks |
 | **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
 | **Internet Accessible Ressources** | Every asset FortiCNAPP's Attack Path Analysis (`LW_APA_EXPOSURE_PATHS`) has traced a route to from the internet, across all target types **except FortiGate/Fortinet appliances** (those have their own dedicated tab below), with click-to-filter tiles |
 | **Internet Exposed Host** | A second, independently-filtered host view that deliberately reproduces the FortiCNAPP **console's own** "Hosts" query, not this app's usual (stricter) exposure methodology: Host Risk Score ≥ 7 (a per-**machine** composite score, not a per-CVE one) · Machine status Online/Launched · Vulnerability status Active · Internet Exposed = True using Lacework's **raw** exposure tag (not the app's verified SG/NSG/FW-rule signal used everywhere else — the two can disagree). Enriched with Critical CSPM findings, Secrets, and high-permission IAM role/instance profile (AWS). A host qualifying here is automatically excluded from Private Host Most Exposed below, so the same host never shows up as both "Private" and "Internet Exposed" |
@@ -209,8 +209,8 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 
 | Finding Type | Severities Fetched | Look-back Window | Notes |
 |---|---|---|---|
-| High-Fidelity Alerts | Critical, High | **14 days** | Policy + Anomaly + Composite; chunked into 7-day API calls |
-| Compliance | Critical, High | **14 days** | Sequential fetch to avoid rate-limit collisions |
+| High-Fidelity Alerts | Critical, High, Medium | **14 days** (fixed — independent of the Admin Settings window) | Open/In Progress status, `derivedFields.category === 'composite'` only; chunked into two adjacent 7-day API calls, deduped by `alertId` (a still-open alert spanning the chunk boundary would otherwise come back from both calls) |
+| Compliance | Critical, High | **14 days** | Evaluates up to `COMPLIANCE_POLICY_CAP` (150) policies, Critical-first; sequential fetch to avoid rate-limit collisions |
 | Identities | Critical + 75%+ unused + Full Admin | **7 days** | AWS / Azure / GCP roles, users, service accounts; hard-capped at 7d (LQL limit) |
 | Secrets (SSH keys) | All | **7 days** | Hard-capped at 7d (LQL limit) |
 | Secrets All | All | **7 days** | Hard-capped at 7d (LQL limit) |
@@ -218,6 +218,8 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 | Host Exposure (Risk Findings Inventory) | Any severity · cveRiskScore ≥ 9 | **7 days** | Separate, fully-paginated fetch (`fetchHighRiskVulns()`) — not capped at 500 rows like the row above. The Risk Findings Inventory further narrows this to ≥ 9.95 (displayed risk score rounds to 100) and to hosts also confirmed internet-exposed in the CVE fetch above |
 
 The default window is **14 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs, Identities, and Secrets always remain at 7 days due to API/LQL limits.
+
+> **Compliance policy cap and query-schema filtering.** A FortiCNAPP tenant can have 1,000+ enabled Compliance policies — evaluating every one of them each refresh would make the compliance phase impractically slow, so only the top `COMPLIANCE_POLICY_CAP` (150) Critical/High policies are evaluated per cycle, Critical severity sorted first. Separately, a handful of policies are tagged `policyType: 'Compliance'` but are actually defined in FortiCNAPP's newer JSON "Resource Query" schema (`{"version":"2.0.0","query":{"resources":{...}}}`) rather than classic LQL text — `Queries/execute` can only run classic LQL, so feeding it this JSON as `queryText` fails with a parser error ("token recognition error at: '[{'") on every refresh. `isLqlQueryText()` detects and excludes these *before* the cap is applied, so they don't silently burn evaluation slots that a real, runnable policy could have used. If the "Critical Misconfigurations" count still looks low relative to the FortiCNAPP console, `COMPLIANCE_POLICY_CAP` is the lever to raise (at the cost of a longer Phase 2 fetch).
 
 ---
 
