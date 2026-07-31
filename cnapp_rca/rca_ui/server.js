@@ -5727,9 +5727,10 @@ function triggerCacheRefresh(){
 // Add up to 3 entries here when a feature is flagged for announcement; bump
 // NEW_FEATURES_VERSION so users who already dismissed the previous batch see the
 // new one. Leave the array empty and no popup shows at all.
-const NEW_FEATURES_VERSION='1';
+const NEW_FEATURES_VERSION='2';
 const NEW_FEATURES=[
   {title:'Dark &amp; Light Theme',desc:'Switch between dark and light mode anytime using the toggle in the top-right corner — your preference is remembered.'},
+  {title:'FortiCNAPP ROI Calculator',desc:'New in the sidebar under Action &amp; Reporting — estimate the financial return of FortiCNAPP based on your own cloud footprint and risk profile.'},
 ];
 function renderWelcomeFeatures(){
   const el=document.getElementById('welcome-features');
