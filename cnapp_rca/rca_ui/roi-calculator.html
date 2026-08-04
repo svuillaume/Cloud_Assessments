@@ -973,7 +973,30 @@ function updateProfileComponents() {
 // Initialize profiles on page load
 window.addEventListener('load', function() {
     updateProfileComponents();
+    prefillCloudRiskFromQuery();
 });
+
+// Auto-populate the Cloud Risk inputs from query params handed over by the
+// dashboard's "FortiCNAPP ROI" button. Only numeric, non-negative values are applied;
+// any missing/invalid param leaves that field at its default.
+function prefillCloudRiskFromQuery() {
+    var params = new URLSearchParams(window.location.search);
+    var map = {
+        hfAlerts: 'cr_hfAlerts',
+        hostExposure: 'cr_hostExposure',
+        identityRisk: 'cr_identityRisk',
+        misconfigs: 'cr_misconfigs'
+    };
+    var filledAny = false;
+    Object.keys(map).forEach(function(key) {
+        if (!params.has(key)) return;
+        var n = parseInt(params.get(key), 10);
+        if (isNaN(n) || n < 0) return;
+        var el = document.getElementById(map[key]);
+        if (el) { el.value = n; filledAny = true; }
+    });
+    return filledAny;
+}
 
 // ===== TAB 1: CLOUD RISK =====
 document.getElementById('cr_threatSlider')?.addEventListener('input', function() { document.getElementById('cr_threatValue').textContent = this.value; });

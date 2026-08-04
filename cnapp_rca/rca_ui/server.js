@@ -2234,7 +2234,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
     </button>
   </div>
   <div style="padding:0 0 6px">
-    <a href="/roi-calculator" target="_blank" rel="noopener" id="roi-calc-btn-link" class="rpt-btn" style="display:flex;text-decoration:none;box-sizing:border-box">
+    <a href="/roi-calculator" target="_blank" rel="noopener" id="roi-calc-btn-link" class="rpt-btn" style="display:flex;text-decoration:none;box-sizing:border-box" onclick="return openRoiCalculator(this)">
       <svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
       FortiCNAPP ROI
     </a>
@@ -2915,6 +2915,22 @@ function buildPie(d){
 function setBody(id,h){const el=document.getElementById(id);if(el)el.innerHTML=h;}
 function state(id,icon,msg){setBody(id,'<div class="state"><span class="state-icon">'+icon+'</span><span>'+e(msg)+'</span></div>');}
 function setCount(id,n,bad){const el=document.getElementById(id);if(!el)return;el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
+
+// FortiCNAPP ROI button — hand the four live dashboard counts to the standalone
+// /roi-calculator page via query params so its Cloud Risk tab auto-populates:
+//   High Fidelity Alerts <- Alerts (cnt-a) · Host Exposure <- Internet Exposed Host (cnt-iehb)
+//   Identity Risk <- Identities (cnt-i) · Misconfigurations <- Compliance (cnt-c)
+// Reading the rendered badges (not _lastData) guarantees the calculator matches what's on screen.
+function openRoiCalculator(link){
+  try{
+    var num=function(id){var el=document.getElementById(id);var n=el?parseInt((el.textContent||'').replace(/[^0-9]/g,''),10):0;return isNaN(n)?0:n;};
+    var qs='hfAlerts='+num('cnt-a')+'&hostExposure='+num('cnt-iehb')+'&identityRisk='+num('cnt-i')+'&misconfigs='+num('cnt-c');
+    window.open('/roi-calculator?'+qs,'_blank','noopener');
+    return false; // prevent the default href navigation; we've opened the enriched URL
+  }catch(e){
+    return true; // fall back to the plain /roi-calculator href on any error
+  }
+}
 
 function renderAlerts(rows,err){
   if(err){state('body-a','',err);return}
@@ -10376,7 +10392,7 @@ function requestHandler(req, res) {
       return;
     }
     lastManualRefreshAt = Date.now();
-    console.log(`[refresh-cache] manual refresh triggered by ${requesterEmail}`);
+    console.log('[refresh-cache] manual refresh triggered by %s', requesterEmail);
     refreshData().catch(e => console.error('[refresh-cache] failed:', e.message));
     res.writeHead(202, { 'Content-Type': 'application/json', ...CORS });
     res.end(JSON.stringify({ status: 'started', cooldownSec: Math.ceil(MANUAL_REFRESH_COOLDOWN_MS / 1000) }));
@@ -10650,7 +10666,9 @@ function requestHandler(req, res) {
   } else if (req.url === '/desktop') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
     res.end(HTML);
-  } else if (req.url === '/roi-calculator') {
+  } else if (req.url === '/roi-calculator' || req.url.startsWith('/roi-calculator?')) {
+    // Query string (?hfAlerts=..&hostExposure=..&identityRisk=..&misconfigs=..) is read
+    // client-side by the page to auto-populate its Cloud Risk inputs — served the same HTML.
     if (!ROI_CALCULATOR_HTML) {
       res.writeHead(404, { 'Content-Type': 'text/plain', ...CORS });
       res.end('roi-calculator.html not found on server');

@@ -176,6 +176,54 @@ This answers: "Should we buy FortiCNAPP security software?"
 
 ---
 
+## How the Numbers Are Calculated
+
+This calculator is built on the **FAIR** model (Factor Analysis of Information Risk, the Open Group standard). FAIR expresses risk as **how often you lose × how much you lose**:
+
+```
+Annual Risk (ALE) = Loss Event Frequency (LEF) × Loss Magnitude (LM)
+```
+
+### The three factors
+
+| Factor | Plain meaning | In this tool |
+|---|---|---|
+| **TEF** — Threat Event Frequency | How often threats *try* | A 0–100 score |
+| **Exposure** | How likely a try *succeeds* (FAIR calls this "Vulnerability") | A 0–100 score |
+| **LM** — Loss Magnitude | Dollars lost per successful breach | A dollar amount |
+
+### The formula the tool uses
+
+```
+LEF = (TEF × Exposure) / 10,000     →  loss events per year (0 to 1)
+ALE = LEF × Loss Magnitude          →  annual risk in dollars
+```
+
+### Why divide by 10,000?
+
+This is the one part that looks mysterious, so here it is plainly. TEF and Exposure are each entered as **0–100 scores**, not raw FAIR units. To turn two 0–100 scores back into a single probability between 0 and 1, each is divided by 100:
+
+```
+(TEF ÷ 100) × (Exposure ÷ 100)  =  (TEF × Exposure) ÷ 10,000
+```
+
+So **`/10,000` is just a scaling step** that converts the two sliders into a loss-event frequency between 0 and 1 — it is not a FAIR quantity itself.
+
+### Worked example
+
+TEF = 50, Exposure = 60, Loss Magnitude = $500,000:
+
+```
+LEF = (50 × 60) / 10,000 = 0.30 loss events per year
+ALE = 0.30 × $500,000    = $150,000 per year
+```
+
+Read as: *"about 0.3 loss events a year, at $500K each, = $150K of annual risk exposure."*
+
+> **Note on precision:** This is the FAIR *model* driven by heuristic 0–100 scores, not FAIR's fully calibrated frequency (events/year) and probability (0–1) estimates. TEF and Exposure here are dimensionless scores, so treat the dollar output as a decision-support estimate — not an actuarial figure.
+
+---
+
 ## How to Use the Calculator
 
 ### For Each Tab:
