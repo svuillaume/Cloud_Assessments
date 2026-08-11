@@ -642,7 +642,7 @@ async function fetchTrueExposure() {
   });
   console.log(`  [forti-inventory] appliances matched by name/tag heuristic: ${fortiInventory.length}`);
 
-  // AWS instance → attached IAM instance-profile ARN, for the "Internet Exposed Host"
+  // AWS instance → attached IAM instance-profile ARN, for the "Internet Exposed Resource"
   // tab's host→IAM-role linkage. AWS-only for now — Azure/GCP would need managed-identity/
   // service-account data this app doesn't currently fetch. Instance profile name is matched
   // to an IAM role by NAME against `identities` at render time (profile and role share the
@@ -701,10 +701,13 @@ async function fetchExposurePaths() {
 // Full computed attack-path graphs, distinct from LW_APA_EXPOSURE_PATHS above (that table is
 // Internet→Target reachability only; this one is FortiCNAPP's broader attack-path risk
 // scoring). Each record's METRICS carries METRICS.path_score (0-100) + METRICS.path_severity —
-// confirmed against a live tenant. Fetched/cached unfiltered here; renderAttackPaths() applies
-// the path_score >= 80 filter client-side (same pattern as the rest of exposurePaths).
+// confirmed against a live tenant. Filtered server-side to path_score >= 40 (below that isn't
+// a meaningful path — same FILTER-clause syntax as fetchExposurePaths() above). The
+// Internet Exposed Resource panel (hostHasAttackPath()) takes any row that clears this floor as
+// a qualifying attack path, at any severity; the separate Attack Paths tab
+// (renderAttackPaths()) applies its own tighter path_score >= 80 client-side on top.
 async function fetchAttackPaths() {
-  const queryText = `{ source { LW_APA_ATTACK_PATHS } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
+  const queryText = `{ source { LW_APA_ATTACK_PATHS } FILTER { METRICS:"path_score" >= 40 } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
   const rows = await post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
     .catch(e => { console.log('  [attack-paths] ERR:', e.message.slice(0, 150)); return []; });
   console.log(`  [attack-paths] total:${rows.length}${rows[0] ? ' sample METRICS: ' + JSON.stringify(rows[0].METRICS) : ' (no rows)'}`);
@@ -879,8 +882,8 @@ function policyCategoryTags(tags) {
 // Cap on how many compliance policies one refresh cycle evaluates. Lacework's
 // Queries/execute endpoint shares one 480-requests/hour token bucket across every
 // caller — compliance, secrets, secretsAll, and identities. Evaluating all
-// (sometimes 250+) enabled Critical/High policies in a single burst can by itself
-// consume over half that hourly budget, and every restart/redeploy/crash re-runs the
+// enabled Critical-severity policies in a single burst can by itself consume a large
+// share of that hourly budget, and every restart/redeploy/crash re-runs the
 // full burst — stacking multiple runs into the same rolling hour reliably exhausts
 // the bucket and starts failing every other feature that shares it (confirmed live:
 // secrets + secretsAll both started throwing HTTP 429 after a handful of restarts).
@@ -894,7 +897,7 @@ const COMPLIANCE_POLICY_CAP = 150;
 // as queryText makes the LQL parser choke on the embedded array literals ("token
 // recognition error at: '[{'"). These can never succeed via this call, so exclude them
 // before the cap is applied — otherwise they silently burn slots in the capped batch that
-// a real, evaluable Critical/High policy could have used, deflating the violation count.
+// a real, evaluable Critical-severity policy could have used, deflating the violation count.
 function isLqlQueryText(qt) {
   if (typeof qt !== 'string') return false;
   const t = qt.trim();
@@ -907,23 +910,20 @@ function isLqlQueryText(qt) {
 }
 
 async function fetchCompliance() {
-  // Step 1 — get enabled Critical/High compliance policy definitions, capped and
-  // sorted Critical-first (see COMPLIANCE_POLICY_CAP above for why the cap exists).
+  // Step 1 — get enabled Critical-only compliance policy definitions, capped at
+  // COMPLIANCE_POLICY_CAP (see above for why the cap exists). High severity was dropped
+  // from this filter on request — previously included alongside Critical.
   let policies = [];
   try {
     const resp = await get('Policies');
     const all  = Array.isArray(resp?.data) ? resp.data : [];
-    const sevOk = s => ['critical','high'].includes((s||'').toLowerCase());
+    const sevOk = s => (s||'').toLowerCase() === 'critical';
     const compliancePolicies = all.filter(p => p.policyType === 'Compliance' && sevOk(p.severity) && p.enabled !== false && p.queryText);
     const incompatible = compliancePolicies.filter(p => !isLqlQueryText(p.queryText)).length;
     policies = compliancePolicies
       .filter(p => isLqlQueryText(p.queryText))
-    .sort((a, b) => {
-      const rank = s => s?.toLowerCase() === 'critical' ? 0 : 1;
-      return rank(a.severity) - rank(b.severity);
-    })
     .slice(0, COMPLIANCE_POLICY_CAP);
-    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, ${incompatible} skipped (non-LQL query schema), evaluating ${policies.length} critical/high (capped at ${COMPLIANCE_POLICY_CAP})`);
+    console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, ${incompatible} skipped (non-LQL query schema), evaluating ${policies.length} critical (capped at ${COMPLIANCE_POLICY_CAP})`);
   } catch (e) {
     console.log(`  [compliance/Policies] ${e.message.slice(0,120)}`);
     return [];
@@ -979,7 +979,7 @@ async function fetchCompliance() {
       cache = { ...cache, compliance: findings.slice().sort((a, b) => b.violations - a.violations) };
     }
     if (i + BATCH < policies.length) {
-      // Evaluating every enabled Critical/High policy (not a capped top-15) can mean 100+
+      // Evaluating every enabled Critical-severity policy (not a capped top-15) can mean 100+
       // requests against Lacework's shared 480/hour Queries/execute bucket, on top of
       // secretsAll/secrets/identities traffic hitting the same bucket — a larger gap here
       // spreads that load out so a single refresh cycle doesn't threaten the hourly budget.
@@ -1625,7 +1625,7 @@ async function refreshData() {
   const attackPaths   = unwrap(ap, 'attackPaths');
   // fetchHighRiskVulns() itself applies no machine-status filter (unlike fetchVulns()) —
   // exclude stopped/deallocated/terminated hosts here so every consumer of cache.highRiskVulns
-  // (including the Internet Exposed Host panel) sees only Online/Launched machines, matching
+  // (including the Internet Exposed Resource panel) sees only Online/Launched machines, matching
   // the FortiCNAPP console's own "Machine status in (Online, Launched)" filter.
   const highRiskVulnsRaw = unwrap(hrv, 'highRiskVulns').filter(r => !isMachineOffline(r.machineTags));
   // Apply the same verified-exposure correction fetchVulns() applies to cache.vulns — reuses
@@ -1665,7 +1665,7 @@ async function refreshData() {
   // Phase 2: compliance + secretsAll + publicStorage run concurrently, each publishing to
   // cache the moment IT resolves — not gated behind all three settling together. They used
   // to run sequentially (compliance fully finishing before secretsAll started) to avoid
-  // rate-limit contention, but compliance now evaluates every enabled Critical/High policy
+  // rate-limit contention, but compliance now evaluates every enabled Critical-severity policy
   // instead of a capped top-15 and can take several minutes; secretsAll (usually much
   // faster) would otherwise sit unpublished behind it the whole time. Compliance already
   // self-throttles internally (batches of 3, 500ms gaps between batches) and publicStorage
@@ -2094,7 +2094,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 .ai-fb-btn.voted-neg{border-color:var(--cr-bd);background:var(--cr-bg);color:var(--cr)}
 .ai-fb-note{font-size:10px;color:var(--muted);margin-left:2px}
 .fg-arrow{display:inline-block;animation:fg-arrow 0.9s ease-in-out infinite;color:var(--accent);font-style:normal;margin-right:3px;font-size:12px}
-#fg-inline{width:100%;max-width:clamp(340px,52vw,600px);margin-top:14px;margin-right:4.5%;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;pointer-events:none;position:relative}
+#fg-inline{width:100%;max-width:clamp(340px,52vw,600px);margin-top:14px;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;pointer-events:none;position:relative}
 #fg-inline.show{opacity:1;transform:translateY(0);pointer-events:auto}
 .fg-bubble{background:var(--surface);border:1px solid var(--accent);border-top:3px solid var(--accent);border-radius:6px;padding:14px 18px 12px;box-shadow:0 4px 20px rgba(218,41,28,.1);position:relative}
 .fg-bubble-header{display:flex;align-items:center;gap:7px;margin-bottom:8px}
@@ -2161,19 +2161,19 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div class="sb-sect">Critical Findings</div>
   <div class="sb-item" id="nav-iehb" onclick="nav('iehb')">
     <svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M12 8v4"/><circle cx="12" cy="15" r=".5" fill="currentColor"/></svg>
-    Internet Exposed Host
+    Internet Exposed Resource
   </div>
   <div class="sb-item" id="nav-vulns" onclick="nav('vulns')">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
     Private Host Most Exposed
   </div>
-  <div class="sb-item" id="nav-storage" onclick="nav('storage')">
-    <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-    Public Storage Exposure
-  </div>
   <div class="sb-item" id="nav-secrets-all" onclick="nav('secrets-all')">
     <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
     Secrets
+  </div>
+  <div class="sb-item" id="nav-ssh-keys" onclick="nav('ssh-keys')">
+    <svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M21 2l-9.6 9.6"/><path d="M15.5 7.5L18 5l3 3-2.5 2.5"/></svg>
+    Permissive SSH Keys
   </div>
   <div class="sb-item" id="nav-compliance" onclick="nav('compliance')">
     <svg viewBox="0 0 24 24"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -2467,17 +2467,17 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="body-sa"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
-<!-- ═══ View: Public Storage Exposure ═══ -->
-<div class="view" id="view-storage">
-  <div class="view-hdr vha-orange">
+<!-- ═══ View: Permissive SSH Keys ═══ -->
+<div class="view" id="view-ssh-keys">
+  <div class="view-hdr vha-purple">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Public Storage Exposure</div>
-      <div class="vh-sub">S3 / Blob / Cloud Storage with public access, across AWS, Azure &amp; GCP</div>
+      <div class="vh-title">Permissive SSH Keys</div>
+      <div class="vh-sub">Private key files with permissions looser than chmod 400 — readable/writable beyond the owner</div>
     </div>
-    <span class="vh-badge" id="cnt-storage">—</span>
+    <span class="vh-badge" id="cnt-ssh">—</span>
   </div>
-  <div id="body-storage"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
+  <div id="body-ssh-keys"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
 <!-- ═══ View: FortiGate ═══ -->
@@ -2510,17 +2510,16 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div id="body-exposed-assets"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
-<!-- ═══ View: Internet Exposed Host ═══ -->
+<!-- ═══ View: Internet Exposed Resource ═══ -->
 <div class="view" id="view-iehb">
   <div class="view-hdr vha-orange">
     <div class="vh-icon"></div>
     <div class="vh-text">
-      <div class="vh-title">Internet Exposed Host</div>
-      <div class="vh-sub">Matches the FortiCNAPP console's own Hosts query: Host Risk Score &ge; 7 &middot; Internet exposed = True &middot; Machine status Online/Launched &middot; has a Vulnerable-status observation &middot; enriched with Critical misconfigurations, secrets, and high-permission attached IAM roles (AWS only)</div>
+      <div class="vh-title">Internet Exposed Resource</div>
+      <div class="vh-sub">Matches the FortiCNAPP console's own Hosts with Internet exposed = True</div>
     </div>
     <span class="vh-badge" id="cnt-iehb">—</span>
   </div>
-  <div style="padding:10px 20px 0;font-size:10.5px;color:#94a3b8">Filter: Machine status Launched/Online &middot; Vulnerability status Active &middot; Internet Exposed = True (FortiCNAPP's own raw tag — not this app's stricter verified SG/NSG/FW-rule signal used elsewhere) &middot; Host Risk Score &ge; 7. This is a beta comparison view — not wired into the posture score or other panels.</div>
   <div id="body-iehb"><div class="state"><div class="spinner"></div><span>Loading…</span></div></div>
 </div>
 
@@ -2698,7 +2697,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
       <div class="vh-title">Attack Simulation Graph</div>
       <div class="vh-sub">Posture: <b id="lab-score">—</b> &nbsp;·&nbsp; <span id="lab-band-txt">—</span> &nbsp;·&nbsp; Fix findings to advance toward Optimized</div>
     </div>
-    <div id="lab-storage-badge" onclick="nav('storage')" style="display:none;cursor:pointer;align-items:center;gap:7px;font-size:11px;font-weight:700;color:#fff;background:#b91c1c;border-radius:7px;padding:6px 13px" title="Public object storage — click to view">
+    <div id="lab-storage-badge" style="display:none;align-items:center;gap:7px;font-size:11px;font-weight:700;color:#fff;background:#b91c1c;border-radius:7px;padding:6px 13px" title="Public object storage exposure (no dedicated tab — see report or Exploit Simulation Layer for detail)">
       🗄️ <span id="lab-storage-cnt">0</span> Public Storage Resource<span id="lab-storage-plural">s</span> Exposed
     </div>
   </div>
@@ -2918,7 +2917,7 @@ function setCount(id,n,bad){const el=document.getElementById(id);if(!el)return;e
 
 // FortiCNAPP ROI button — hand the four live dashboard counts to the standalone
 // /roi-calculator page via query params so its Cloud Risk tab auto-populates:
-//   High Fidelity Alerts <- Alerts (cnt-a) · Host Exposure <- Internet Exposed Host (cnt-iehb)
+//   High Fidelity Alerts <- Alerts (cnt-a) · Host Exposure <- Internet Exposed Resource (cnt-iehb)
 //   Identity Risk <- Identities (cnt-i) · Misconfigurations <- Compliance (cnt-c)
 // Reading the rendered badges (not _lastData) guarantees the calculator matches what's on screen.
 function openRoiCalculator(link){
@@ -3051,7 +3050,7 @@ function _renderVulns(rows,err){
   var _exposedHostSet={};
   var _iehbSet=iehbQualifyingHostSet(_ld);
   allHosts.forEach(function(h){
-    // Also exclude any host that qualifies for the Internet Exposed Host panel (raw
+    // Also exclude any host that qualifies for the Internet Exposed Resource panel (raw
     // exposure tag, not this panel's verified one — see iehbQualifyingHostSet) so the same
     // host never shows up as both "Private" and "Internet Exposed" across the two tabs.
     if(h.reach==='Internet Exposed'||_iehbSet[h.name.toLowerCase()]){_exposedHostSet[h.name.toLowerCase()]=true;return;}
@@ -3092,15 +3091,17 @@ function _renderVulns(rows,err){
   }
 
   // Internet-Exposed tab/panel removed — internet-exposed hosts are still tracked
-  // elsewhere (Internet Exposed Host tab, Risk Findings' Host Exposure category via
+  // elsewhere (Internet Exposed Resource tab, Risk Findings' Host Exposure category via
   // riskFindingHostExposure()); this panel now shows only Private Hosts, no tab switcher.
   var html='';
 
   // ── Private Hosts panel ────────────────────────────────────────────────────
-  // Card format matches the Internet Exposed Host tab's asset-card design
-  // (newHostInterExposure.png reference) — two-column card: Asset Details + Cloud Context
-  // on the left, Security Findings + Actions on the right, "View all findings" expansion
-  // below with correlated risk strip, non-compliance violations, and the full CVE table.
+  // Card format (newHostInterExposure.png reference) — two-column card: Asset Details +
+  // Cloud Context on the left, Security Findings + Actions on the right, "View all findings"
+  // expansion below with correlated risk strip, non-compliance violations, and the full CVE
+  // table. The Internet Exposed Resource tab's cards deliberately mirror this same
+  // two-column layout, though its right column shows Attack Path Details instead — it has
+  // no vuln/host findings data to show (see _renderInternetHostExposedBeta).
   html+='<div id="vpanel-priv">';
   if(!privHosts.length){
     html+='<div class="state">No private hosts with CVE risk ≥ 9 or exposed Secrets found</div>';
@@ -3640,353 +3641,139 @@ function renderAttackPaths(d){
   renderAttackPathsUI();
 }
 
-// ── Internet Exposed Host ────────────────────────────────────────────────────
+// ── Internet Exposed Resource ────────────────────────────────────────────────────
 // Test methodology for comparison against the existing panels — NOT wired into posture
-// score, alerts, or any other panel. Filter: verified internet-exposed hosts only, CVE risk
-// score >= 9 (hard cutoff, no partial credit below), enriched with Critical misconfigs,
-// secrets, and high-permission attached IAM role (AWS instance-profile name matched to a
-// role identity by name — a heuristic, not a guaranteed 1:1; Azure/GCP not implemented,
-// no managed-identity/service-account linkage data is fetched for those clouds yet).
-// Shared with _renderVulns() (Private Host Most Exposed) so the same host never appears in
-// both panels at once. Pure/stateless — recomputes the "Internet Exposed Host" qualifying
-// set (Host Risk Score >= 7 + Lacework's raw, unverified Internet Exposed tag — see the
-// methodology note in _renderInternetHostExposedBeta below) fresh each call, independent of
-// render order. Returns a lowercased-hostname lookup map, not an array.
+// score, alerts, or any other panel. Sources exclusively from cache.attackPaths
+// (LW_APA_ATTACK_PATHS, FILTER path_score >= 40 server-side — see fetchAttackPaths()), NOT
+// cache.highRiskVulns. Query: Host > Attack Path is True, full stop — every resource
+// (TARGET) across every attack-path record is listed, at ANY path_score/path_severity, no
+// further threshold. This replaced an earlier version that first built a host list from
+// cache.highRiskVulns and then filtered it down to hosts whose hostname also matched an
+// attack-path TARGET — that intersection was too narrow (2 of ~13 candidate hosts) because
+// this tenant's LW_APA_ATTACK_PATHS coverage has zero EC2 targets. Listing attackPaths
+// resources directly removes that bottleneck. Resource types are NOT restricted to compute
+// hosts — S3 buckets and other non-host TARGETS are included too, despite the panel's name.
+//
+// hostHasAttackPath() (hostname/display-name match only — instance ID/ARN matching was
+// dropped) is kept separately for iehbQualifyingHostSet(), used by _renderVulns() (Private
+// Host Most Exposed) to exclude any host with a computed attack path from that panel, so the
+// same host doesn't appear as both "no attack path" and "has an attack path" across tabs.
+var PATH_SEV_RANK={CRITICAL:4,HIGH:3,MEDIUM:2,LOW:1,NONE:0};
+function hostHasAttackPath(name,attackPaths){
+  if(!attackPaths||!attackPaths.length||!name)return false;
+  var nameLower=name.toLowerCase();
+  return attackPaths.some(function(p){
+    return((p&&p.TARGETS)||[]).some(function(t){
+      var tname=(t.tags&&t.tags.Name)||t.displayName||'';
+      return tname&&tname.toLowerCase()===nameLower;
+    });
+  });
+}
 function iehbQualifyingHostSet(d){
-  var scores={};
+  var attackPaths=(d&&d.attackPaths)||[];
+  var set={};
   ((d&&d.highRiskVulns)||[]).forEach(function(r){
     var mt=r.machineTags;
     var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
     if(!mtObj)return;
-    var exposedRaw=mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure;
-    if(exposedRaw!=='Yes')return;
     var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
     if(!h)return;
-    var hl=h.toLowerCase();
-    var hrs=parseFloat(r.hostRiskScore??0);
-    if(!(hl in scores)||hrs>scores[hl])scores[hl]=hrs;
+    if(hostHasAttackPath(h,attackPaths))set[h.toLowerCase()]=true;
   });
-  var set={};
-  Object.keys(scores).forEach(function(hl){if(scores[hl]>=7)set[hl]=true;});
   return set;
 }
 function renderInternetHostExposedBeta(d){
-  try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet Exposed Host render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
+  try{_renderInternetHostExposedBeta(d);}catch(ex){state('body-iehb','','Internet Exposed Resource render error: '+ex.message);console.error('[renderInternetHostExposedBeta]',ex);}
 }
+// Card design deliberately matches the Private Host Most Exposed panel (_renderVulns) —
+// two-column card: identity + details on the left, detail section on the right. That panel's
+// cards are built around per-host vuln findings (CVEs, IAM role, correlated risk); this one
+// has no vuln/host data at all (see _renderInternetHostExposedBeta's own header comment), so
+// the right column shows Attack Path Details (hop chain, score, first seen) instead of
+// Security Findings — the closest per-resource equivalent this data actually supports.
 function _renderInternetHostExposedBeta(d){
   d=d||{};
-  // highRiskVulns (cveRiskScore>=9, ANY severity — see fetchHighRiskVulns) is used instead
-  // of the narrower d.vulns (Critical/High severity + cveRiskScore>=8 only — see
-  // fetchVulns), because a host can carry a cveRiskScore>=9 finding that Lacework itself
-  // doesn't label Critical/High, which d.vulns would silently drop before it ever reaches
-  // this panel.
-  var vulns=d.highRiskVulns||[];
-  var instanceIamProfile=d.instanceIamProfile||{};
-
-  // ── Matches the FortiCNAPP console's own "Hosts" query exactly:
-  //   Hosts > Risk score >= 7             — host.hostRiskScore (Lacework's composite
-  //                                          per-machine score), NOT the per-CVE score
-  //   Vulnerability observation > status is Vulnerable — guaranteed by fetchVulns()/
-  //                                          fetchHighRiskVulns() (status:'Active' filter
-  //                                          server-side)
-  //   Hosts > Machine status in (Online, Launched)      — guaranteed by fetchVulns()'s
-  //                                          own OFFLINE_RE exclusion
-  //   Hosts > Internet exposed is True    — mtObj.lw_InternetExposureRaw, Lacework's own
-  //                                          raw/topological tag, deliberately NOT the
-  //                                          app's stricter verified (SG/NSG/FW-rule)
-  //                                          signal used everywhere else — this panel
-  //                                          exists specifically to compare against the
-  //                                          console's own methodology, and the two can
-  //                                          disagree (a host can be raw-tagged exposed
-  //                                          without an open wildcard rule we can verify).
-  // Same per-host grouping shape as the Private Host Most Exposed panel (_renderVulns).
-  var hostMap={};
-  vulns.forEach(function(r){
-    var mt=r.machineTags;
-    var mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
-    var exposedRaw=mtObj?(mtObj.lw_InternetExposureRaw!=null?mtObj.lw_InternetExposureRaw:mtObj.lw_InternetExposure):null;
-    if(!mtObj||exposedRaw!=='Yes')return;
-    var h=mtObj.Hostname||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'?';
-    if(!hostMap[h]){
-      var cloudRaw=mtObj.VmProvider||'';
-      var cloud=cloudRaw?cloudRaw.toLowerCase():'';
-      if(cloud==='google')cloud='gcp';
-      hostMap[h]={name:h,pubIp:mtObj.ExternalIp||mtObj.PublicIp||mtObj.publicIp||'',cloud:cloud,
-        instanceId:mtObj.InstanceId||'',resourceName:mtObj.Name||'',
-        vulns:[],maxRisk:0,hostRiskScore:0,crit:0,exposureEvidence:r._exposureEvidence||null};
-    }
-    var host=hostMap[h];
-    var rs=parseFloat(r.cveRiskScore??r.riskScore??0);
-    if(rs>host.maxRisk)host.maxRisk=rs;
-    var hrs=parseFloat(r.hostRiskScore??0);
-    if(hrs>host.hostRiskScore)host.hostRiskScore=hrs;
-    if((r.severity||'').toLowerCase()==='critical')host.crit++;
-    host.vulns.push(r);
-  });
-  var hosts=Object.values(hostMap).filter(function(h){return h.hostRiskScore>=7;}).sort(function(a,b){return b.hostRiskScore-a.hostRiskScore;});
-
-  if(!hosts.length){setCount('cnt-iehb',0,false);state('body-iehb','','No internet-exposed hosts with a Host Risk Score ≥ 7 were found');return}
-  setCount('cnt-iehb',hosts.length,true);
-
-  // ── Same correlated-risk map + Verified Path lookup the Host Internet Exposure panel
-  // uses, reused as-is so the two panels agree on secrets/misconfig/CIEM numbers ──
-  var _arm=buildAssetRiskMap(d);
-  var _arMap=_arm.map, _arCritMisc=_arm.critMisc;
-  function arTierOf(score,exposed){
-    if(score>=75)return exposed?{l:'CRITICAL',c:'#b91c1c',bd:'#fca5a5'}:{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
-    if(score>=50)return exposed?{l:'HIGH',c:'#c2410c',bd:'#fdba74'}:{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
-    if(score>=30)return{l:'MEDIUM',c:'#92400e',bd:'#fcd34d'};
-    return{l:'LOW',c:'#4b5563',bd:'#d1d5db'};
-  }
-  var _epRaw=d.exposurePaths||{};
-  var _epByInstance={};
-  (_epRaw.ec2||[]).forEach(function(r){var id=r.TARGET&&r.TARGET.key&&r.TARGET.key.id;if(!id)return;(_epByInstance[id]=_epByInstance[id]||[]).push(r);});
-  var _epByAzureVm={};
-  (_epRaw.azureVm||[]).forEach(function(r){var nm=r.TARGET&&r.TARGET.displayName;if(!nm)return;var k=nm.toLowerCase();(_epByAzureVm[k]=_epByAzureVm[k]||[]).push(r);});
-  function exposurePathChips(epRecs){
-    if(!epRecs||!epRecs.length)return'';
-    var shown=epRecs.slice(0,2).map(function(rec){
-      var hopN=rec.METRICS&&rec.METRICS.path_length;
-      return'<span style="font-size:9px;font-family:monospace;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="Verified via FortiCNAPP Attack Path Analysis">'
-        +'<b>Verified Path</b> &nbsp;'+exposurePathHopsStr(rec)+(hopN?' &nbsp;('+hopN+' hops)':'')+'</span>';
-    }).join('');
-    var more=epRecs.length>2?'<span style="font-size:9px;color:var(--muted)">+'+(epRecs.length-2)+' more</span>':'';
-    return shown+more;
-  }
-
-  // ── Non-Compliance violations matched to host, same JSON-substring approach as the
-  // Host Internet Exposure panel ──
-  var _compMatch={};
-  hosts.forEach(function(h){_compMatch[h.name.toLowerCase()]=[];});
-  (d.compliance||[]).forEach(function(c){
-    if(!Array.isArray(c.resources)||!c.resources.length)return;
-    var resJson=JSON.stringify(c.resources).toLowerCase();
-    Object.keys(_compMatch).forEach(function(hn){if(resJson.indexOf(hn)>=0)_compMatch[hn].push(c);});
-  });
-
-  // ── High-permission attached IAM role (AWS only — new, not part of the existing panel).
-  // Instance-profile name matched to a role identity by name; heuristic, not guaranteed 1:1. ──
-  function isHighPermissive(r){
-    var risks=(r.METRICS&&r.METRICS.risks)||[];
-    var sev=((r.METRICS&&r.METRICS.risk_severity)||'').toLowerCase();
-    return risks.indexOf('ALLOWS_FULL_ADMIN')!==-1||risks.indexOf('EXCESSIVE_PERMISSIONS')!==-1||sev==='critical'||sev==='high';
-  }
-  var identities=d.identities||[];
-  hosts.forEach(function(h){
-    h.iamRole=null;
-    var profile=h.instanceId&&instanceIamProfile[h.instanceId];
-    if(!profile)return;
-    var match=identities.find(function(r){
-      var pid=(r.PRINCIPAL_ID||'').toLowerCase(),nm=(r.NAME||'').toLowerCase(),pn=profile.profileName.toLowerCase();
-      return nm===pn||pid.split('/').pop()===pn;
+  // Flatten every TARGET across every cache.attackPaths record into one row per distinct
+  // resource (deduped by type+name — a resource can appear in more than one attack-path
+  // record; keep the highest path_score seen). No host/vuln cross-referencing at all.
+  var byKey={};
+  (d.attackPaths||[]).forEach(function(p){
+    var rs=attackPathRiskScore(p)||0;
+    var sev=((p.METRICS&&p.METRICS.path_severity)||'').toUpperCase()||'NONE';
+    ((p.TARGETS)||[]).forEach(function(t){
+      var name=(t.tags&&t.tags.Name)||t.displayName||(t.key&&(t.key.id||t.key.arn))||'—';
+      var type=t.type||'—';
+      var key=type+'|'+name.toLowerCase();
+      if(!byKey[key]||rs>byKey[key].pathScore){
+        byKey[key]={name:name,type:type,cloud:(p.PROVIDER_TYPE||'').toLowerCase(),domainId:p.DOMAIN_ID,
+          resourceId:(t.key&&(t.key.id||t.key.arn))||'',
+          pathScore:rs,pathSeverity:sev,pathLength:p.METRICS&&p.METRICS.path_length,
+          firstSeen:p.RECORD_CREATED_TIME,record:p};
+      }
     });
-    h.iamRole=match?{name:match.NAME||profile.profileName,highPermissive:isHighPermissive(match)}:{name:profile.profileName,highPermissive:null};
+  });
+  var resources=Object.values(byKey).sort(function(a,b){
+    return(PATH_SEV_RANK[b.pathSeverity]-PATH_SEV_RANK[a.pathSeverity])||(b.pathScore-a.pathScore);
   });
 
-  var html=summaryStripBeta(hosts);
+  if(!resources.length){setCount('cnt-iehb',0,false);state('body-iehb','','No resources with a computed Attack Path were found');return}
+  setCount('cnt-iehb',resources.length,true);
 
-  hosts.forEach(function(host,idx){
-    var bodyId='iehb-cve-body-'+idx;
-    var n=host.vulns.length;
-    var arEntry=_arMap[host.name];
-    var arScore=arEntry?arEntry.normalizedScore:0;
-    var arTier=arTierOf(arScore,true);
-    function arChip(label,col,bd){return'<span style="font-size:9px;font-weight:600;color:'+col+';border:1px solid '+bd+';border-radius:3px;padding:1px 6px;white-space:nowrap">'+label+'</span>';}
-    var hasCiemInet=!!(arEntry&&arEntry.ciemSecrets&&arEntry.ciemSecrets.length);
+  var sevColor={CRITICAL:'#b91c1c',HIGH:'#c2410c',MEDIUM:'#92400e',LOW:'#4b5563',NONE:'#94a3b8'};
+  var sevBg={CRITICAL:'#fef2f2',HIGH:'#fff7ed',MEDIUM:'#fffbeb',LOW:'#f3f4f6',NONE:'#f8fafc'};
+  var sevBd={CRITICAL:'#fecaca',HIGH:'#fdba74',MEDIUM:'#fcd34d',LOW:'#e5e7eb',NONE:'#e2e8f0'};
 
-    var ev=host.exposureEvidence;
-    var expBadges='';
-    if(host.pubIp)expBadges+='<span style="font-size:9px;font-family:monospace;font-weight:700;color:#0369a1;background:#f0f9ff;border:1px solid #bae6fd;border-radius:3px;padding:1px 6px">Public IP '+e(host.pubIp)+'</span>';
-    if(ev&&ev.reasons&&ev.reasons.length){
-      var seenCtrl={};
-      expBadges+=ev.reasons.filter(function(r){var k=r.control+'|'+r.name;if(seenCtrl[k])return false;seenCtrl[k]=1;return true;}).map(function(r){
-        var ctrlLabel=r.control==='security group'?'SG':r.control==='NSG rule'?'NSG':'FW';
-        return'<span title="'+e(r.protocol+' '+r.port+' from '+r.source)+'" style="font-size:9px;font-weight:600;color:#7c2d12;background:#fff7ed;border:1px solid #fdba74;border-radius:3px;padding:1px 6px;font-family:monospace">'+e(ctrlLabel+': '+r.name)+'</span>';
-      }).join('');
-    }
-    var cloudTagInet=host.cloud?'<span style="font-size:8px;font-weight:800;letter-spacing:.04em;color:#fff;background:'+cspBadgeColor(host.cloud)+';border-radius:3px;padding:1px 6px;vertical-align:middle;margin-left:6px">'+e(host.cloud.toUpperCase())+'</span>':'';
-    var epMatch=(host.instanceId&&_epByInstance[host.instanceId])||_epByAzureVm[host.name.toLowerCase()]||null;
-    var epChips=exposurePathChips(epMatch);
-    // Resource Name (e.g. "my-blogs") leads as the primary identifier when available — much
-    // easier to identify at a glance than the raw hostname; hostname moves to the subtitle line.
-    var primaryLabel=host.resourceName||host.name;
-    var idNameLine=(host.resourceName?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Hostname <b style="color:var(--text)">'+e(host.name)+'</b></span>':'')
-      +(host.instanceId?'<span style="font-size:9px;font-family:monospace;color:var(--muted)">Resource ID <b style="color:var(--text)">'+e(host.instanceId)+'</b></span>':'');
-    var iamBadge=host.iamRole
-      ?(host.iamRole.highPermissive===true
-        ?'<span style="font-size:9px;font-weight:700;color:#fff;background:#DA291C;border-radius:3px;padding:1px 6px" title="'+e(host.iamRole.name)+'">High-Perm IAM Role</span>'
-        :host.iamRole.highPermissive===false
-          ?'<span style="font-size:9px;font-weight:600;color:#15803d;background:#f0fdf4;border:1px solid #86efac;border-radius:3px;padding:1px 6px" title="'+e(host.iamRole.name)+'">IAM Role (not high-perm)</span>'
-          :'<span style="font-size:9px;color:var(--muted)" title="Instance profile: '+e(host.iamRole.name)+'">IAM role unresolved</span>')
-      :'';
+  function detailRow(label,val){
+    if(!val||val==='—')return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px"><span style="color:#94a3b8">'+e(label)+'</span><span style="color:#cbd5e1">—</span></div>';
+    return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px">'
+      +'<span style="color:#94a3b8">'+e(label)+'</span>'
+      +'<span style="display:flex;align-items:center;gap:4px;font-family:monospace;font-weight:600;color:#1e293b;text-align:right;word-break:break-all">'+e(val)+'<button class="cp-btn" data-cp="'+e(val)+'" style="flex-shrink:0">'+cpIcon+'</button></span>'
+    +'</div>';
+  }
 
-    // ── Asset-detail card layout (per newHostInterExposure.png reference) — left panel:
-    // asset identity + details + cloud context; right panel: security-findings summary +
-    // actions. The full CVE table stays as the "View all findings" expansion below,
-    // reusing the existing toggle-host-cve/bodyId collapsible rather than rebuilding it.
-    var cloudFullName={aws:'Amazon Web Services',azure:'Microsoft Azure',gcp:'Google Cloud Platform'}[host.cloud]||'Cloud Provider';
-    var cloudIconColor=cspBadgeColor(host.cloud);
-    // Confirmed live field names per cloud — Azure carries no SubnetId/ResourceGroup in
-    // machineTags at all (only AWS does), and VpcId is actually populated for Azure too
-    // (the VNet name, e.g. "DMZ-VNET") — so label/value must be paired per-cloud, not
-    // via a generic fallback chain that would show an Azure VNet under an "AWS Subnet" label.
-    var rawTags=(host.vulns[0]&&host.vulns[0].machineTags)||{};
-    var zone=rawTags.Zone||'—';
-    var netLabel=host.cloud==='azure'?'VNet':'VPC';
-    var netVal=rawTags.VpcId||'—';
-    var acctLabel=host.cloud==='azure'?'Subscription':(host.cloud==='gcp'?'Project':'Subnet');
-    var acctVal=host.cloud==='azure'?(rawTags.SubscriptionName||rawTags.SubscriptionId||'—'):(rawTags.SubnetId||rawTags.ProjectId||'—');
+  var html='<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
+    +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+resources.length+' Resources</span>'
+    +'<span style="font-size:11px;color:var(--muted)">&middot; Computed Attack Path</span>'
+    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Sourced from FortiCNAPP Attack Path Analysis</span>'
+  +'</div>';
 
-    function detailRow(label,val){
-      if(!val||val==='—')return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px"><span style="color:#94a3b8">'+e(label)+'</span><span style="color:#cbd5e1">—</span></div>';
-      return'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:11px">'
-        +'<span style="color:#94a3b8">'+e(label)+'</span>'
-        +'<span style="display:flex;align-items:center;gap:4px;font-family:monospace;font-weight:600;color:#1e293b;text-align:right;word-break:break-all">'+e(val)+'<button class="cp-btn" data-cp="'+e(val)+'" style="flex-shrink:0">'+cpIcon+'</button></span>'
-      +'</div>';
-    }
-    function contextChip(label,val){
-      return'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;font-size:10px;min-width:0">'
-        +'<div style="color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-size:8.5px;margin-bottom:2px">'+e(label)+'</div>'
-        +'<div style="color:#1e293b;font-weight:600;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+e(val)+'">'+e(val)+'</div>'
-      +'</div>';
-    }
+  html+=resources.map(function(r){
+    var cloudFullName={aws:'Amazon Web Services',azure:'Microsoft Azure',gcp:'Google Cloud Platform'}[r.cloud]||'Cloud Provider';
+    var cloudIconColor=cspBadgeColor(r.cloud);
+    var col=sevColor[r.pathSeverity]||'#64748b',bg=sevBg[r.pathSeverity]||'#f8fafc',bd=sevBd[r.pathSeverity]||'#e2e8f0';
 
-    // Findings list — same signals as the badge row before, reframed as finding cards.
-    var findings=[];
-    if(ev&&ev.reasons&&ev.reasons.length){
-      var seenCtrl2={};
-      ev.reasons.filter(function(r){var k=r.control+'|'+r.name;if(seenCtrl2[k])return false;seenCtrl2[k]=1;return true;}).forEach(function(r){
-        findings.push({title:'Security group allows '+(r.protocol||'traffic')+' '+(r.port||'')+' from '+(r.source||'public internet'),sev:'CRITICAL',cat:'Network Exposure'});
-      });
-    }
-    if(host.pubIp)findings.push({title:'Instance has a public IP address ('+host.pubIp+')',sev:'CRITICAL',cat:'Network Exposure'});
-    if(hasCiemInet)findings.push({title:arEntry.ciemSecrets.length+' exposed CIEM credential'+(arEntry.ciemSecrets.length!==1?'s':'')+' on this host',sev:'CRITICAL',cat:'Credential Exposure'});
-    if(arEntry&&arEntry.genericSecrets&&arEntry.genericSecrets.length)findings.push({title:arEntry.genericSecrets.length+' exposed secret'+(arEntry.genericSecrets.length!==1?'s':'')+' on this host',sev:'HIGH',cat:'Credential Exposure'});
-    if(host.iamRole&&host.iamRole.highPermissive===true)findings.push({title:'Attached IAM role ('+host.iamRole.name+') grants high-permission access',sev:'HIGH',cat:'Identity & Access'});
-    host.vulns.slice().sort(function(a,b){return(parseFloat(b.cveRiskScore||b.riskScore||0))-(parseFloat(a.cveRiskScore||a.riskScore||0));}).slice(0,3).forEach(function(r){
-      var rs=parseFloat(r.cveRiskScore||r.riskScore||0);
-      findings.push({title:(r.vulnId||r.cveId||'CVE')+' — '+((r.featureKey&&r.featureKey.name)||'package')+' (risk '+rs.toFixed(1)+')',sev:rs>=9.5?'CRITICAL':'HIGH',cat:'Vulnerability Management'});
-    });
-    var findingsShown=findings.slice(0,4);
-    var sevStyle={CRITICAL:{c:'#b91c1c',bg:'#fef2f2',bd:'#fecaca'},HIGH:{c:'#c2410c',bg:'#fff7ed',bd:'#fdba74'}};
-    function findingCard(f){
-      var s=sevStyle[f.sev]||sevStyle.HIGH;
-      return'<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid '+s.bd+';border-left:3px solid '+s.c+';background:'+s.bg+';border-radius:6px;margin-bottom:6px">'
-        +'<span style="color:'+s.c+';font-size:13px;line-height:1.3">&#9888;</span>'
-        +'<div style="min-width:0;flex:1">'
-          +'<div style="font-size:11px;font-weight:700;color:#1e293b;word-break:break-word">'+e(f.title)+'</div>'
-          +'<div style="margin-top:2px"><span style="font-size:8.5px;font-weight:800;color:'+s.c+';background:#fff;border:1px solid '+s.bd+';border-radius:3px;padding:0 5px">'+f.sev+'</span> <span style="font-size:9.5px;color:#94a3b8">&middot; '+e(f.cat)+'</span></div>'
-        +'</div>'
-      +'</div>';
-    }
-
-    html+='<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:16px;background:#fff">'
+    return'<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:16px;background:#fff">'
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0">'
-        // ── LEFT: asset panel ──
+        // ── LEFT: resource identity + details ──
         +'<div style="padding:18px;border-right:1px solid #e2e8f0">'
           +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
-            +'<div style="width:42px;height:42px;border-radius:9px;background:'+cloudIconColor+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="color:#fff;font-weight:900;font-size:11px;letter-spacing:.02em">'+e((host.cloud||'').toUpperCase()||'?')+'</span></div>'
+            +'<div style="width:42px;height:42px;border-radius:9px;background:'+cloudIconColor+';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="color:#fff;font-weight:900;font-size:11px;letter-spacing:.02em">'+e((r.cloud||'').toUpperCase()||'?')+'</span></div>'
             +'<div style="min-width:0">'
-              +'<div style="font-size:15px;font-weight:800;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(primaryLabel)+'</div>'
+              +'<div style="font-size:15px;font-weight:800;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e(r.name)+'</div>'
               +'<div style="font-size:10.5px;color:#94a3b8">'+e(cloudFullName)+'</div>'
             +'</div>'
           +'</div>'
-          +'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:20px;padding:3px 10px">&#9888; INTERNET EXPOSED</span>'
-          +' <span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:20px;padding:3px 10px">Host Risk Score '+host.hostRiskScore.toFixed(1)+'</span>'
-          +(epChips?'<div style="margin-top:8px">'+epChips+'</div>':'')
-          +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Asset Details</div>'
-          +detailRow('Hostname',host.name)
-          +detailRow('Resource ID',host.instanceId)
-          +detailRow('Public IP',host.pubIp)
-          +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:6px">Cloud Context</div>'
-          +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
-            +contextChip('Zone',zone)+contextChip(netLabel,netVal)
-            +contextChip(acctLabel,acctVal)
-            +contextChip('IAM Role',host.iamRole?host.iamRole.name:'None attached')
-          +'</div>'
+          +'<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:'+col+';background:'+bg+';border:1px solid '+bd+';border-radius:20px;padding:3px 10px">&#9888; ATTACK PATH: '+e(r.pathSeverity)+'</span>'
+          +' <span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:.05em;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:20px;padding:3px 10px">Path Score '+e(String(r.pathScore))+'</span>'
+          +'<div style="margin-top:16px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:2px">Resource Details</div>'
+          +detailRow('Resource Name',r.name)
+          +detailRow('Resource ID',r.resourceId)
+          +detailRow('Type',r.type)
+          +detailRow('Domain / Account',r.domainId)
         +'</div>'
-        // ── RIGHT: findings + actions panel ──
+        // ── RIGHT: attack path details ──
         +'<div style="padding:18px">'
           +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-            +'<div style="display:flex;align-items:center;gap:8px">'
-              +'<span style="font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#374151">Security Findings</span>'
-              +'<span style="font-size:10px;font-weight:800;color:#fff;background:#DA291C;border-radius:10px;padding:1px 8px;min-width:16px;text-align:center">'+findings.length+'</span>'
-            +'</div>'
-            +'<button class="toggle-host-cve" data-body="'+bodyId+'" data-n="'+n+'" style="font-size:10px;font-weight:700;color:#DA291C;background:none;border:none;cursor:pointer;padding:0">View all findings &rsaquo;</button>'
+            +'<span style="font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#374151">Attack Path Details</span>'
           +'</div>'
-          +(findingsShown.length?findingsShown.map(findingCard).join(''):'<div style="font-size:11px;color:#94a3b8">No specific findings enriched — see full CVE list below.</div>')
-          +(findings.length>findingsShown.length?'<div style="font-size:10px;color:#94a3b8;margin-top:2px">+'+(findings.length-findingsShown.length)+' more in full list</div>':'')
-          +'<div style="margin-top:14px;font-size:9.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;margin-bottom:8px">Actions</div>'
-          +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
-            +'<button class="goto-host-card-btn" data-hostname="'+e(host.name)+'" data-resourcename="'+e(host.resourceName||'')+'" style="font-size:11px;font-weight:700;color:#fff;background:#DA291C;border:none;border-radius:6px;padding:7px 14px;cursor:pointer">&#9651; Investigate</button>'
-            +'<button class="mach-inv-btn" data-hostname="'+e(host.name)+'" style="font-size:11px;font-weight:700;color:#374151;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:7px 14px;cursor:pointer">Machine Details</button>'
-          +'</div>'
+          +'<div style="font-size:9px;color:var(--muted);margin-bottom:10px">'+(r.pathLength?r.pathLength+' hops &middot; ':'')+'first seen '+fmtDate(r.firstSeen)+'</div>'
+          +'<div style="margin-bottom:6px"><span style="font-size:9px;font-family:monospace;font-weight:600;color:'+col+';background:'+bg+';border:1px solid '+bd+';border-radius:3px;padding:2px 8px;display:inline-block" title="FortiCNAPP Attack Path Analysis">'+exposurePathHopsStr(r.record)+'</span></div>'
         +'</div>'
       +'</div>'
-      +'<div id="'+bodyId+'" style="display:none;padding:16px 18px;border-top:1px solid #e2e8f0;background:#fafafa">'
-      +'<div style="font-size:9px;color:var(--muted);margin-bottom:6px">'+n+' CVE'+(n!==1?'s':'')+' &middot; internet-exposed &middot; Host Risk Score '+host.hostRiskScore.toFixed(1)+'</div>'
-      +(arScore
-        ?'<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border);margin-bottom:8px">'
-          +'<span style="font-size:9px;color:var(--muted)">Correlated risk</span>'
-          +'<span style="font-size:15px;font-weight:800;color:'+arTier.c+';font-variant-numeric:tabular-nums;line-height:1">'+arScore+'</span>'
-          +'<span style="font-size:8px;font-weight:700;color:'+arTier.c+';border:1px solid '+arTier.bd+';border-radius:3px;padding:1px 5px">'+arTier.l+'</span>'
-          +'<div style="flex:0 0 70px;height:3px;background:#e5e7eb;border-radius:2px"><div style="height:3px;border-radius:2px;background:'+arTier.c+';width:'+arScore+'%"></div></div>'
-          +(arEntry&&arEntry.ciemSecrets.length?arChip('CIEM \xb7 '+arEntry.ciemSecrets.length,'#b91c1c','#fca5a5'):'')
-          +(arEntry&&arEntry.genericSecrets.length?arChip('SEC \xb7 '+arEntry.genericSecrets.length,'#92400e','#fcd34d'):'')
-          +(_arCritMisc?arChip('MISCONF \xb7 '+_arCritMisc,'#4b5563','#d1d5db'):'')
-        +'</div>':'')
-      +(function(){
-        var matched=_compMatch[host.name.toLowerCase()]||[];
-        if(!matched.length)return'';
-        return'<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">'
-          +'<div style="font-size:9px;font-weight:800;letter-spacing:.07em;color:#b45309;margin-bottom:6px">NON-COMPLIANCE VIOLATIONS ON THIS HOST <span style="font-weight:400;color:var(--muted)">('+matched.length+')</span></div>'
-          +matched.map(function(c){
-            var cl=e(c.cloud||''),sev=(c.severity||'').toLowerCase();
-            return'<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
-              +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">'
-                +'<span style="font-size:10.5px;font-weight:600;color:var(--text)">'+e(c.title||c.alertId||'')+'</span>'
-                +'<span style="display:flex;gap:4px;flex-shrink:0">'+(cl?'<span class="b b-nt" style="font-size:8px">'+cl.toUpperCase()+'</span>':'')+'<span class="b '+(sev==='critical'?'b-cr':'b-hi')+'" style="font-size:8px">'+(c.severity||'')+'</span></span>'
-              +'</div>'
-            +'</div>';
-          }).join('')
-        +'</div>';
-      })()
-      +'<div class="tbl-wrap"><table style="font-size:11px">'
-        +'<thead><tr><th style="width:160px">CVE / Vuln ID</th><th style="width:52px">CVE Risk</th><th>Package · Installed version</th><th>OS / Namespace</th><th>Fix version</th><th></th></tr></thead><tbody>'
-        +host.vulns.map(function(r){
-          var fix=r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');
-          var fixVer=(r.fixInfo&&r.fixInfo.fixed_version)||'';
-          var cveId=e(r.vulnId||r.cveId||'');
-          var svcol=(r.severity||'').toLowerCase()==='critical'?'#b91c1c':'#c2410c';
-          return'<tr>'
-            +'<td style="white-space:nowrap"><span style="font-family:monospace;font-size:10.5px;font-weight:700;color:'+svcol+'">'+e(r.vulnId||r.cveId||'—')+'</span><button class="cp-btn" data-cp="'+cveId+'" style="margin-left:3px">'+cpIcon+'</button></td>'
-            +'<td class="r"><span class="risk-score">'+parseFloat(r.cveRiskScore||r.hostRiskScore||r.riskScore||0).toFixed(1)+'</span></td>'
-            +'<td style="font-size:10.5px">'+e(r.featureKey&&r.featureKey.name||'—')+(r.featureKey&&r.featureKey.version_installed?'<br><span style="font-size:9px;color:var(--muted)">'+e(r.featureKey.version_installed)+'</span>':'')+'</td>'
-            +'<td style="font-size:10px;color:var(--muted)">'+e(r.featureKey&&r.featureKey.namespace||'—')+'</td>'
-            +'<td>'+(fix?'<span class="b b-ok" title="'+e(fixVer)+'">'+e(tr(fixVer,16)||'Fix ✓')+'</span>':'<span class="b b-nt">No fix</span>')+'</td>'
-            +'<td style="white-space:nowrap"><button class="cve-det-btn" data-cve="'+cveId+'" style="font-size:9px;padding:1px 6px;border-radius:3px;border:none;cursor:pointer;background:#f97316;color:#fff;font-weight:700;margin-right:3px">Details</button><button class="cp-btn" data-cp="'+cveId+'" title="Copy CVE ID">'+cpIcon+'</button></td>'
-          +'</tr>';
-        }).join('')
-        +'</tbody></table></div>'
-      +'</div>'
     +'</div>';
-  });
+  }).join('');
 
   setBody('body-iehb',html);
-}
-function summaryStripBeta(hosts){
-  var rowsArr=[];hosts.forEach(function(h){rowsArr=rowsArr.concat(h.vulns);});
-  var tc=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='critical';}).length;
-  var th=rowsArr.filter(function(r){return(r.severity||'').toLowerCase()==='high';}).length;
-  var tf=rowsArr.filter(function(r){return r.fixInfo&&(r.fixInfo.fix_available===true||String(r.fixInfo.fix_available)==='1');}).length;
-  return'<div style="display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center">'
-    +'<span style="font-size:11px;font-weight:700;color:var(--text)">'+hosts.length+' Hosts</span>'
-    +'<span style="font-size:11px;color:var(--muted)">&middot; '+rowsArr.length+' CVEs</span>'
-    +(tc?'<span class="b b-cr">'+tc+' Critical</span>':'')
-    +(th?'<span class="b b-hi">'+th+' High</span>':'')
-    +(tf?'<span class="b b-ok">'+tf+' fixable</span>':'')
-    +'<span style="margin-left:auto;font-size:9px;color:var(--muted)">Internet-exposed &middot; Host Risk Score ≥ 7 &middot; enriched with IAM role (AWS)</span>'
-  +'</div>';
 }
 
 // ── Identity classification — global so both the Identity tab (renderIdentities) and the
@@ -4369,6 +4156,26 @@ function renderSecretsAll(rows,err){
   setBody('body-sa','<div>'+sortedGroups.map(renderGroup).join('')+'</div>');
 }
 
+// ── Permissive SSH Keys — cache.secrets, from fetchSecrets() (LW_HE_SECRETS_SSH_PRIVATE_KEYS,
+// filter FILE_PERMISSIONS > 33024 i.e. looser than chmod 400 on a regular file). Same rows
+// buildReportHtml2's "Permissive SSH Keys Access" section renders (sshKeyRows there) — this
+// is the live dashboard equivalent, previously only surfaced in reports, never in the UI.
+function renderSSHKeys(rows,err){
+  if(err){setCount('cnt-ssh',0,true);state('body-ssh-keys','',err);return}
+  rows=rows||[];
+  setCount('cnt-ssh',rows.length,true);
+  if(!rows.length){state('body-ssh-keys','','No overly-permissive SSH keys found');return}
+  var rowsHtml=rows.map(function(r){
+    var mode=r.FILE_PERMISSIONS!=null?'0'+(Number(r.FILE_PERMISSIONS)&0o777).toString(8).padStart(3,'0'):'—';
+    return'<tr>'
+      +'<td class="p">'+e(r.HOSTNAME||'—')+'<button class="cp-btn" data-cp="'+e(r.HOSTNAME||'')+'">'+cpIcon+'</button></td>'
+      +'<td class="p"><code style="font-size:11px">'+e(r.FILE_PATH||'—')+'</code><button class="cp-btn" data-cp="'+e(r.FILE_PATH||'')+'">'+cpIcon+'</button></td>'
+      +'<td>'+e(r.SSH_KEY_TYPE||'—')+'</td>'
+      +'<td style="text-align:center"><span class="b b-cr">'+e(mode)+'</span></td>'
+    +'</tr>';
+  }).join('');
+  setBody('body-ssh-keys','<div class="tbl-wrap"><table><thead><tr><th>Hostname</th><th>File Path</th><th>Key Type</th><th style="text-align:center">Permissions</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>');
+}
 
 const cpIcon='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 function copyText(el){
@@ -5392,7 +5199,7 @@ async function load(){
     renderCompliance(d.compliance,d.errors?.compliance);
     renderIdentities(d.identities,d.errors?.identities);
     renderSecretsAll(d.secretsAll,d.errors?.secretsAll);
-    renderPublicStorage(d);
+    renderSSHKeys(d.secrets,d.errors?.secrets);
     renderFortiGate(d);
     renderExposedAssets(d);
     renderAttackPaths(d);
@@ -8123,6 +7930,37 @@ function computeEffectivePublicStorage(data) {
   return { findings, epByBucket };
 }
 
+// Server-side port of the dashboard's client-only _renderInternetHostExposedBeta() dedupe
+// logic (inside buildHtml's template literal, not reachable from Node) — flattens every
+// TARGET across cache.attackPaths (LW_APA_ATTACK_PATHS, path_score >= 40 server-side floor,
+// see fetchAttackPaths()) into one row per distinct resource (deduped by type+name, keeping
+// the highest path_score seen). At ANY path_severity, no further threshold; resource types
+// are NOT restricted to compute hosts — S3 buckets and other non-host TARGETS are included
+// too, same as the dashboard's Internet Exposed Resource tab (cnt-iehb). Any report surfacing
+// an "Internet-Exposed Hosts/Resources" count should call this so the number matches that tab
+// exactly — keep in sync with the client-side copy in buildHtml()'s _renderInternetHostExposedBeta().
+function computeAttackPathResources(data) {
+  const byKey = {};
+  ((data && data.attackPaths) || []).forEach(function(p) {
+    const rs = (p.METRICS && typeof p.METRICS.path_score === 'number') ? p.METRICS.path_score : 0;
+    const sev = ((p.METRICS && p.METRICS.path_severity) || '').toUpperCase() || 'NONE';
+    ((p.TARGETS) || []).forEach(function(t) {
+      const name = (t.tags && t.tags.Name) || t.displayName || (t.key && (t.key.id || t.key.arn)) || '—';
+      const type = t.type || '—';
+      const key = type + '|' + name.toLowerCase();
+      if (!byKey[key] || rs > byKey[key].pathScore) {
+        byKey[key] = {
+          name, type, cloud: (p.PROVIDER_TYPE || '').toLowerCase(), domainId: p.DOMAIN_ID,
+          resourceId: (t.key && (t.key.id || t.key.arn)) || '',
+          pathScore: rs, pathSeverity: sev, pathLength: p.METRICS && p.METRICS.path_length,
+          firstSeen: p.RECORD_CREATED_TIME,
+        };
+      }
+    });
+  });
+  return Object.values(byKey);
+}
+
 // Cloud Security Score maturity model — mirrors the client scoreColor/scoreTier exactly.
 // Primary label is the tier name only (no negative wording); scoreTierDetail() is the
 // executive interpretation, surfaced as a tooltip/caption rather than printed on the gauge.
@@ -9038,8 +8876,35 @@ function buildReportHtml2(data, meta) {
     return isServiceAccount(r) && isHighPermissive(r) && up != null && up >= 80;
   });
 
+  // Section 5 ("Internet-Exposed Resources at Risk") and the top-line KPI tile both read from
+  // this same set now, so the two numbers agree with each other and with the dashboard's
+  // Internet Exposed Resource tab (cnt-iehb) — previously the tile read exposedVulnHosts.length
+  // (a Critical-CVE host count, unrelated data) and could disagree by a wide margin.
+  const attackPathResources = computeAttackPathResources(data);
+  const attackPathResourceCount = attackPathResources.length;
+  // Compute-host target types only (VM/EC2/GCE) — used to scope the risk-diagram sub-section
+  // and CVE correlation to actual hosts; storage-type targets (s3:bucket, Azure Blob, ...)
+  // render as lighter resource cards instead since they have no CVE/risk-score data.
+  function isComputeHostTargetType(t) {
+    const s = (t || '').toLowerCase();
+    return s === 'ec2:instance' || s === 'microsoft.compute/virtualmachines' || s.includes('compute.googleapis.com');
+  }
+  function nameMatches(a, b) {
+    const al = (a || '').toLowerCase(), bl = (b || '').toLowerCase();
+    if (!al || !bl) return false;
+    return al === bl || al.indexOf(bl) === 0 || bl.indexOf(al.split('.')[0]) === 0;
+  }
+
   // ── 10/11. Vuln hosts grouped by internet exposure (shared with Report 1) ─
-  const { hosts: vulnHostsAll, exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(vulns);
+  // Filtered to cveRiskScore >= 9 up front, same threshold + fallback chain as the
+  // dashboard's own Vulnerabilities panel (_renderVulns, client-side) — that panel is
+  // intentionally tighter than the ≥8 severity the API fetch/cache.vulns/posture score/
+  // computeAssetRiskMap use, so without re-applying it here this section's host/CVE counts
+  // would never match what the dashboard actually displays. computeAssetRiskMap() below
+  // deliberately keeps using the unfiltered `vulns`, not this — its CVE-factor scoring is a
+  // separate, unrelated code path (see CLAUDE.md).
+  const hostExposureVulns = vulns.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? r.hostRiskScore ?? 0) >= 9);
+  const { hosts: vulnHostsAll } = groupVulnsByHost(hostExposureVulns);
   // A host can be raw-tagged not-exposed (lw_InternetExposure, topological) while
   // FortiCNAPP's own traced Internet→host path engine (exposurePaths) confirms a live
   // route — the two signals can disagree (confirmed live: RJ-RSYSLOG had 29 Critical CVEs
@@ -9047,15 +8912,19 @@ function buildReportHtml2(data, meta) {
   // path). Treat a verified path as authoritative for exposed/private classification here,
   // not just a decorative "Verified Path" badge on hosts already classified exposed.
   const effectivelyExposed = h => h.exposed || verifiedExposurePath(h);
-  const exposedVulnHosts = vulnHostsAll
-    .filter(effectivelyExposed)
-    .map(h => ({ ...h, rows: h.rows.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? 0) >= 9) }))
-    .filter(h => h.rows.length > 0);
+  const exposedVulnHosts = vulnHostsAll.filter(effectivelyExposed).filter(h => h.rows.length > 0);
   const privateVulnHosts = vulnHostsAll.filter(h => !effectivelyExposed(h));
   // Dashboard tile — total Critical CVE count across exposed hosts, distinct from the
   // host-count tile (a dashboard KPI, not used by the host-exposure section itself).
   const criticalCveExposedHostCount = exposedVulnHosts.reduce((sum, h) => sum + h.rows.length, 0);
 
+  // Real severity, derived from score — this table used to hardcode "Critical" on every row
+  // because its only caller pre-filtered to cveRiskScore >= 9 by construction. Section 5's
+  // attack-path-driven resource cards (below) now feed it rows of any severity, so the badge
+  // has to reflect that instead of silently mislabeling a Medium/Low CVE as Critical.
+  function vulnScoreSeverity(rs) {
+    return rs >= 9 ? 'critical' : rs >= 7 ? 'high' : rs >= 4 ? 'medium' : 'low';
+  }
   function vulnRowCells(r, i) {
     const rs = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
     const pkg = (r.featureKey && r.featureKey.name) || '—';
@@ -9065,7 +8934,7 @@ function buildReportHtml2(data, meta) {
                     (r.fixInfo && r.fixInfo.fix_available) ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
     return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
-      '<td><span class="badge badge-critical">Critical</span></td>'+
+      '<td>'+sevBadge(vulnScoreSeverity(rs))+'</td>'+
       '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong></td>'+
       '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
       '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
@@ -9128,16 +8997,15 @@ function buildReportHtml2(data, meta) {
   Object.values(assetMap).forEach(a => {
     if (!a.internetExposed && verifiedExposurePath({ name: a.name, rows: [] })) a.internetExposed = true;
   });
-  // computeAssetRiskMap and groupVulnsByHost (exposedVulnHosts, above) are two independent
-  // host-aggregation implementations — even with matching exposure logic, nothing
-  // guaranteed they'd agree on the same host set, so the diagram could show a host that
-  // never appears in the "High-Vulnerability Internet-Exposed Hosts" table below it.
-  // Constrain the diagram's candidate pool to exactly the hosts already listed in that
-  // table, so the two sections are always consistent by construction, not by coincidence.
-  // Show every one of them (not a fixed top-N) — the host count must match the table below.
-  const exposedVulnHostNames = new Set(exposedVulnHosts.map(h => h.name.toLowerCase()));
+  // computeAssetRiskMap and the attack-path resource list (attackPathResources, above) are
+  // two independent host-aggregation implementations — even with matching exposure logic,
+  // nothing guaranteed they'd agree on the same host set, so the diagram could show a host
+  // that never appears in the resource list below it. Constrain the diagram's candidate pool
+  // to exactly the compute-host names already confirmed by a computed Attack Path, so this
+  // sub-section and the resource list below it are always consistent by construction.
+  const attackPathHostNames = attackPathResources.filter(r => isComputeHostTargetType(r.type)).map(r => r.name);
   const topAssets = Object.values(assetMap)
-    .filter(a => a.internetExposed && exposedVulnHostNames.has(a.name.toLowerCase()))
+    .filter(a => attackPathHostNames.some(n => nameMatches(a.name, n)))
     .sort((a,b) => b.normalizedScore - a.normalizedScore);
   const hostDiagramsHtml = topAssets.length ? topAssets.map(a =>
     '<div style="margin-bottom:2rem;padding:1.5rem;border:1px solid var(--color-border);border-radius:8px;background:#fff">' + hostRiskDiagramSvg(a, esc) + '</div>'
@@ -9310,8 +9178,54 @@ function buildReportHtml2(data, meta) {
       sshKeys.length, 'SSH keys'
     ) : '<p style="text-align:center;color:#999;padding:1.5rem">No overly-permissive SSH keys found</p>') + '\n</section>';
 
+  // Host lookup (any CVE severity, not just >=9) used to enrich attack-path-confirmed
+  // compute-host resources below — membership in the list is "has a confirmed Attack Path",
+  // CVE data is descriptive, not a filter.
+  const { hosts: allVulnHosts } = groupVulnsByHost(vulns);
+  function vulnRowsForResourceName(name) {
+    const h = allVulnHosts.find(x => nameMatches(x.name, name));
+    return h ? h.rows : [];
+  }
+  function resourcePubIp(name) {
+    const h = allVulnHosts.find(x => nameMatches(x.name, name));
+    return (h && h.pubIp) || '';
+  }
+  const PATH_SEV_BADGE_CLASS = { critical: 'badge-critical', high: 'badge-high', medium: 'badge-medium', low: 'badge-low' };
+  const attackPathResourceCardsHtml = attackPathResources.length ?
+    '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+attackPathResources.length+'</strong> Resource'+(attackPathResources.length===1?'':'s')+'</span></div>\n' +
+    attackPathResources.map(res => {
+      const sevKey = (res.pathSeverity || 'none').toLowerCase();
+      const pathBadge = '<span class="badge '+(PATH_SEV_BADGE_CLASS[sevKey] || 'badge-info')+'">Attack Path: '+esc(res.pathSeverity || '—')+' ('+Math.round(res.pathScore || 0)+')</span>';
+      const cloudLabel = ({ aws: 'AWS', azure: 'Azure', gcp: 'GCP' })[res.cloud] || (res.cloud || '—').toUpperCase();
+      if (isComputeHostTargetType(res.type)) {
+        const rows = vulnRowsForResourceName(res.name);
+        const pubIp = resourcePubIp(res.name);
+        const body = rows.length ?
+          collapsibleFindings('<table class="exec-table"><thead><tr>' +
+            '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
+            '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
+            '</tr></thead><tbody>'+rows.map(vulnRowCells).join('')+'</tbody></table>', rows.length, 'CVEs') :
+          '<p style="text-align:center;color:#999;font-size:11px;padding:10px 0">No CVE findings correlated to this host</p>';
+        return '<div class="host-group exposed">' +
+          '<div class="host-group-header">' +
+            '<span class="host-name">'+esc(res.name)+'</span>' + pathBadge +
+            (pubIp ? '<span class="host-ip">'+esc(pubIp)+'</span>' : '') +
+            '<span class="host-cve-count">'+rows.length+' CVE'+(rows.length===1?'':'s')+'</span>' +
+          '</div>' + body +
+        '</div>';
+      }
+      return '<div class="host-group exposed">' +
+        '<div class="host-group-header">' +
+          '<span class="host-name">'+esc(res.name)+'</span>' + pathBadge +
+          '<span class="host-cve-count">'+esc(res.type)+'</span>' +
+        '</div>' +
+        '<div style="padding:10px 18px;font-size:12px;color:#5A5A5A">Cloud: '+esc(cloudLabel)+' &middot; Account/Domain: '+esc(res.domainId || '—')+' &middot; Hop count: '+(res.pathLength != null ? res.pathLength : '—')+'. Non-host resource — see Section 6 (Internet-Accessible Storage) for exposure detail.</div>' +
+      '</div>';
+    }).join('')
+    : '<p style="text-align:center;color:#999;padding:1.5rem">No resources with a computed Attack Path were found</p>';
+
   const hostExposureSection =
-    '<section id="host-exposure" class="pagebreak">\n<h2>5. Internet-Exposed Host Risk</h2>\n' +
+    '<section id="host-exposure" class="pagebreak">\n<h2>5. Internet-Exposed Resources at Risk</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>59%</strong> of organizations cite Workload &amp; Runtime Security as a top cloud-native concern, and <strong>42%</strong> report an actual workload/runtime security incident in the past 12 months — attackers use automation to find exposed, vulnerable hosts faster than manual review can keep up with.') +
     statCalloutHtml('FortiGuard Labs Global Threat Landscape Report', 'Internet-facing systems are continuously targeted: FortiGuard Labs recorded <strong>122 billion</strong> exploitation attempts in 2025 — every internet-exposed host in this assessment is a live target in that volume.') +
     fcSolutionHtml('Agentless CWPP + CSPM + Risk Score',
@@ -9321,10 +9235,10 @@ function buildReportHtml2(data, meta) {
       ['Verified, hop-by-hop traced exposure paths — not just topological exposure tags', 'Correlates vulnerability severity with actual internet reachability'],
       ['Shrinks the external attack surface attackers scan first', 'Prioritizes limited remediation resources on real exposure, not noise']
     ) +
-    '<h3 style="margin-top:2rem">Risk Diagram — All Internet-Exposed Hosts Found (' + topAssets.length + ')</h3>\n' +
+    '<h3 style="margin-top:2rem">Risk Diagram — Internet-Exposed Compute Hosts (' + topAssets.length + ')</h3>\n' +
     hostDiagramsHtml +
-    '<h3>High-Vulnerability Internet-Exposed Hosts</h3>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Showing CVEs with a Risk Score &ge; 9.0 on internet-exposed hosts. A green "Verified Path" badge means FortiCNAPP traced an actual hop-by-hop Internet&rarr;host network path — not just a topological exposure tag.</p>' +
+    '<h3>Internet-Exposed Resources — Attack Path Detail</h3>\n' +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Every resource FortiCNAPP\'s Attack Path engine confirmed as internet-reachable in this assessment window — matches the dashboard\'s Internet Exposed Resource count exactly. Compute hosts show correlated CVE detail; other resource types (e.g. storage) are cross-referenced in Section 6.</p>' +
     fcSolutionHtml('Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)',
       'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify the highest-risk hosts.',
       'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls.',
@@ -9332,25 +9246,7 @@ function buildReportHtml2(data, meta) {
       ['Multi-factor Risk Score (Impact, Package, Container) ranks hosts by true exploitability, not raw CVE count', 'Continuous re-scoring validates that remediation actually reduced risk'],
       ['Focuses engineering effort on the handful of hosts that matter most', 'Demonstrable, measurable risk reduction over time for leadership reporting']
     ) +
-    (exposedVulnHosts.length ?
-      '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+exposedVulnHosts.length+'</strong> Host'+(exposedVulnHosts.length===1?'':'s')+'</span></div>\n' +
-      exposedVulnHosts.map(h => {
-        const verified = verifiedExposurePath(h);
-        const badge = '<span class="badge badge-critical">&#9889; Internet Exposed</span>' + (verified ? ' <span class="badge badge-success">&#10003; Verified Path</span>' : '');
-        const table = '<table class="exec-table"><thead><tr>' +
-          '<th class="narrow">#</th><th style="width:55px">Severity</th><th style="width:140px">Vulnerability (CVE)</th>' +
-          '<th style="width:60px">Risk Score</th><th style="width:130px">Package / Version</th><th style="width:180px">Recommended Fix</th>' +
-          '</tr></thead><tbody>'+h.rows.map(vulnRowCells).join('')+'</tbody></table>';
-        return '<div class="host-group exposed">' +
-          '<div class="host-group-header">' +
-            '<span class="host-name">'+esc(h.name)+'</span>' + badge +
-            (h.pubIp ? '<span class="host-ip">'+esc(h.pubIp)+'</span>' : '') +
-            '<span class="host-cve-count">'+h.rows.length+' CVE'+(h.rows.length===1?'':'s')+'</span>' +
-          '</div>' +
-          collapsibleFindings(table, h.rows.length, 'CVEs') +
-        '</div>';
-      }).join('')
-    : '<p style="text-align:center;color:#999;padding:1.5rem">No internet-exposed hosts with high-risk CVEs found</p>') +
+    attackPathResourceCardsHtml +
     '\n</section>';
 
   const storageSection =
@@ -9436,7 +9332,7 @@ function buildReportHtml2(data, meta) {
   const capabilityMappingRows = [
     ['Secrets &amp; SSH Key Exposure', 'Exposed secrets, SSH keys, API tokens, certificates, and sensitive credentials discovered in cloud workloads', 'Agentless CWPP', 'Agentless workload discovery and security analysis to identify exposed secrets and sensitive artifacts across cloud workloads', 'Remove exposed secrets, rotate credentials, eliminate hardcoded keys', 'Continuously scan workloads, monitor credential exposure, integrate remediation workflows with DevSecOps'],
     ['CIEM &amp; Identity Risk', 'Excessive permissions, unused privileges, dormant identities, risky IAM/RBAC relationships', 'CIEM', 'Analyzes cloud identities, permissions, entitlements, and privilege relationships across AWS, Azure, and GCP', 'Remove excessive permissions, enforce least privilege, disable unused identities', 'Continuously monitor identity risk, perform entitlement reviews, track privilege changes'],
-    ['Internet-Exposed Host Risk', 'Publicly accessible cloud workloads with vulnerabilities or weak security posture', 'Agentless CWPP + CSPM + Risk Score', 'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths', 'Reduce unnecessary exposure, harden configurations, patch vulnerabilities', 'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation'],
+    ['Internet-Exposed Resources at Risk', 'Publicly accessible cloud workloads with vulnerabilities or weak security posture', 'Agentless CWPP + CSPM + Risk Score', 'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths', 'Reduce unnecessary exposure, harden configurations, patch vulnerabilities', 'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation'],
     ['Prioritized High-Vulnerability Internet-Exposed Hosts', 'Internet-facing hosts with critical vulnerabilities prioritized using exposure, vulnerability severity, exploitability, package risk, container risk, and business impact', 'Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)', 'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify highest-risk hosts', 'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls', 'Continuously track vulnerability posture, monitor Risk Score changes, enforce remediation SLAs, validate risk reduction after fixes'],
     ['Public Access Storage', 'Cloud storage resources exposed publicly due to incorrect permissions or configuration', 'CSPM + DSPM', 'Detects cloud misconfigurations, public exposure, and sensitive data risks', 'Remove public access, correct permissions, enable encryption and access controls', 'Continuously monitor storage posture, enforce policies, detect configuration drift'],
     ['Private Host Critical Vulnerability', 'Internal workloads containing critical vulnerabilities without direct internet exposure', 'Agentless CWPP Vulnerability Management', 'Identifies vulnerable workloads and software weaknesses without requiring agents', 'Patch vulnerabilities, harden workloads, segment critical systems', 'Continuously assess vulnerabilities, prioritize based on exploitability and business impact'],
@@ -9491,7 +9387,7 @@ function buildReportHtml2(data, meta) {
     dashboardTileHtml('#ciem-keys', oldAccessKeyRows.length, '#f59e0b', 'Cloud User Keys Not Rotated<br>&ge; 180 Days'),
     dashboardTileHtml('#secrets-list', secretsAllExposed.length, '#3b82f6', 'Permissive Secrets<br>Access'),
     dashboardTileHtml('#ssh-keys', sshKeys.length, '#92400e', 'Permissive SSH<br>Key Access'),
-    dashboardTileHtml('#host-exposure', exposedVulnHosts.length, '#f97316', 'Internet-Exposed<br>Hosts'),
+    dashboardTileHtml('#host-exposure', attackPathResourceCount, '#f97316', 'Internet-Exposed<br>Resources'),
     dashboardTileHtml('#host-exposure', criticalCveExposedHostCount, '#dc2626', 'Critical CVE<br>Internet Host Exposed'),
     dashboardTileHtml('#storage', publicStorageRows.length, '#7c3aed', 'Storage<br>Internet Accessible'),
     dashboardTileHtml('#vuln-private', privateVulnHosts.length, '#9a3412', 'Private Hosts<br>Highly Vulnerable'),

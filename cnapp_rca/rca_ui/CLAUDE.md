@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`rca_ui/` is the FortiCNAPP Rapid Cloud Assessment tool — a live security dashboard and two customer-ready HTML/PDF report generators, powered by FortiCNAPP (Lacework) API data. The entire app is one Node.js file, `server.js` (~8,020 lines), with **no npm dependencies** (no `package.json`, no `node_modules`).
+`rca_ui/` is the FortiCNAPP Rapid Cloud Assessment tool — a live security dashboard and four customer-ready HTML/PDF report generators, powered by FortiCNAPP (Lacework) API data. The entire app is one Node.js file, `server.js` (~10,900 lines), with **no npm dependencies** (no `package.json`, no `node_modules`).
 
-> Ancestor `CLAUDE.md` files (`../CLAUDE.md`, `../../CLAUDE.md`, etc.) describe an older ~3,150-line version of `server.js` and are stale on route lists, the posture-score formula, and several features added since (true internet-exposure verification, public storage exposure, governance reports, role-trust correlation, per-CSP scores, in-dashboard AI assistant, report sanitization, a second report format). Treat *this* file as authoritative for `rca_ui/`.
+> Ancestor `CLAUDE.md` files (`../CLAUDE.md`, `../../CLAUDE.md`, etc.) describe an older ~3,150-line version of `server.js` and are stale on route lists, the posture-score formula, and several features added since (true internet-exposure verification, public storage exposure, governance reports, role-trust correlation, per-CSP scores, in-dashboard AI assistant, report sanitization, a second report format, and — more recently — the standalone ROI/FAIR calculator and manual cache refresh). Treat *this* file as authoritative for `rca_ui/`.
 
 ## Run locally
 
@@ -71,6 +71,7 @@ Everything lives in one file. Rough layout, in order:
 | Section | ~Lines | What it does |
 |---|---|---|
 | Config | 1–70 | Env vars: `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, `LW_SUBACCOUNT`, `LW_KEY_FILE`, `PORT`, `PORT_TLS`, `TLS_CERT`, `TLS_KEY`, `MOCK_FILE` |
+| `ROI_CALCULATOR_HTML` | ~115 | Reads `roi-calculator.html` from disk once at startup (see "Standalone ROI/FAIR calculator" below); a missing file only 404s `/roi-calculator`, it doesn't crash the server |
 | HTTP + DNS helpers | 71–270 | `tcpReachable`, `resolveReachableIP`, `request`, `fetchCveDetails`, `ensureToken`, `withRetry`, `get`/`post`/`postRaw`/`putRaw` |
 | API fetchers | 271–1247 | `fetchAlerts`, `fetchTrueExposure`, `fetchExposurePaths`, `fetchVulns`, `fetchCompliance`, `fetchIdentities`, `fetchGovernanceTargets`, `fetchSecretsAll`/`fetchSecrets`, `fetchPublicStorage` |
 | `refreshData()` | 1248 | Orchestrates the fetchers into the in-memory `cache` object |
@@ -86,13 +87,13 @@ Everything lives in one file. Rough layout, in order:
 ### Client-side (inline in `buildHtml`, starting ~line 2510)
 
 - `load()` (4176) — fetches `/api/data`, calls all `render*()` functions
-- `renderAlerts/Vulns/Compliance/PublicStorage/Identities/SecretsAll/AssetRisk/Lab()` — populate their panels
+- `renderAlerts/Vulns/Compliance/Identities/SecretsAll/SSHKeys/AssetRisk/Lab()` — populate their panels. `renderPublicStorage()` still exists but is no longer called from `load()` — its dashboard tab was removed (see "Public Storage Exposure" below); `renderSSHKeys()` is new — a live-dashboard tab for `cache.secrets` (permissive SSH keys) that previously only surfaced in reports
 - `calcPostureScore(d)` (3799) — mirrors the posture-score formula below
-- `computeEffectivePublicStorage(d)` (2859) — merges `publicStorage` policy/ACL findings with `exposurePaths` (s3/azureBlob) traced-path findings, minus a hardcoded known-stale-CSPM-snapshot exclusion list; shared by `renderPublicStorage()` and the Exploit Simulation Layer's storage-exposed badge so both always agree on the same count
-- `exposurePathHopsStr(rec)` (2343) / `exposurePathChips(epRecs)` (2604) — render a traced `LW_APA_EXPOSURE_PATHS` hop chain (e.g. `internet → sg-xxx → i-xxx`) as a "Verified Path" chip, used by both the Host Internet Exposure panel and Public Storage Exposure panel
+- `computeEffectivePublicStorage(d)` (2859) — merges `publicStorage` policy/ACL findings with `exposurePaths` (s3/azureBlob) traced-path findings, minus a hardcoded known-stale-CSPM-snapshot exclusion list; still called by the Exploit Simulation Layer's storage-exposed badge and all four report builders even though the dashboard's own `renderPublicStorage()` tab was removed
+- `exposurePathHopsStr(rec)` (2343) / `exposurePathChips(epRecs)` (2604) — render a traced `LW_APA_EXPOSURE_PATHS` hop chain (e.g. `internet → sg-xxx → i-xxx`) as a "Verified Path" chip, used by the Host Internet Exposure panel (and, before its removal, the Public Storage Exposure panel)
 - `calcGlobalScoreFromCsp(d)` / `calcCspScore(d,csp)` / `renderCspLab` — per-cloud (AWS/Azure/GCP) score gauges
 - `buildAssetRiskMap(d)` / `renderAssetRisk(d)` / `openHostGraph()` — Correlated Risk Findings per Asset + interactive exploit graph
-- `nav(name)` — switches dashboard sections (alerts, vulns, compliance, identities, secrets-all, asset-risk, lab)
+- `nav(name)` — switches dashboard sections (alerts, vulns, compliance, identities, secrets-all, ssh-keys, asset-risk, lab)
 - `openAiChat`/`sendAiMessage`/`pickAiPrompt` — in-dashboard AI assistant chat backed by `/api/ai/*`
 - `loadTrustPrincipals`/`renderIdentityGraph`/`updateGraphEdges` — identity role-trust correlation graph
 - `openGeoPanel`/`openCveDetails`/`openComplianceDetails`/`openIdentityDetails`/`openMachineDetails` — detail-drawer modals, each backed by its own `/api/*` route
@@ -108,6 +109,7 @@ Everything lives in one file. Rough layout, in order:
 | `GET /health` | Liveness check |
 | `GET /api/data` | JSON cache snapshot |
 | `GET/POST /api/settings` | Read/write refresh interval and `daysBack` assessment window |
+| `POST /api/refresh-cache` | Manual "Refresh Cache" button (Management sidebar) — kicks off `refreshData()` immediately; `@fortinet.com`-only, 4h cooldown (`MANUAL_REFRESH_COOLDOWN_MS`), no-ops under `MOCK_FILE` |
 | `POST /api/register` | Save visitor to `contacts.csv` |
 | `POST /api/login` | Visitor login (cookie-based) |
 | `POST /api/ai/start` | Opens a FortiCNAPP AI Assistant thread for an alert (`AiAssistants/start`, Bedrock Claude provider) |
@@ -125,6 +127,7 @@ Everything lives in one file. Rough layout, in order:
 | `GET /report2[?customer=X&author=Y&sanitize=1]` | Beta wider-scope report → `rca2.html`/`rca2.pdf` |
 | `GET /report3[?customer=X&author=Y&sanitize=1]` | Condensed, chart-first Cloud Overview report → `rca3.html`/`rca3.pdf` |
 | `GET /report4[?customer=X&author=Y&sanitize=1]` | **Generate Report_BETA** — narrative assessment-style report (Scope/Methodology/Risk Findings Categories/Evidence/Internet Exposed Resources/Actions) → `rca4.html`/`rca4.pdf` |
+| `GET /roi-calculator[?...]` | Standalone FAIR/ROI calculator (`roi-calculator.html`, served as a static file — see below); the dashboard's report-download button links here with query params to auto-populate its Cloud Risk tab from live counts |
 
 ## Key behaviours and constraints
 
@@ -141,6 +144,19 @@ Everything lives in one file. Rough layout, in order:
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache — the fastest way to iterate on dashboard/report UI without live credentials
 
+**Critical Misconfigurations — Critical-severity only, High dropped**
+- `fetchCompliance()`'s Step 1 policy filter (`sevOk`) was narrowed from `['critical','high'].includes(severity)` to `severity === 'critical'` only, on request. `cache.compliance` (and the "Critical Misconfigurations" dashboard tab that renders it directly, `renderCompliance()`) now only ever contains Critical-severity findings — no High-severity ones reach it anymore.
+- This didn't change the posture score, `computeAssetRiskMap`'s Critical Misconfiguration factor, or the Private Host panel's "Critical Misconfigs" badge — all of those already independently filtered `compliance` down to `severity === 'critical'` themselves (see `_critCompl` in `_renderVulns`, and the equivalent inside `computeAssetRiskMap`), so this change actually just makes the raw fetch match what those consumers were already narrowing to. It reduces what appears in the Critical Misconfigurations *tab* itself (fewer, Critical-only rows) and reduces `Queries/execute` call volume (fewer policies evaluated per refresh), but doesn't change any score.
+- The now-pointless Critical-first `.sort()` in Step 1 (a no-op once every policy is already Critical) was removed alongside this change — don't reintroduce it without also reintroducing High severity.
+
+**Standalone ROI/FAIR calculator (`roi-calculator.html`)**
+- Lives as its own static HTML file rather than an embedded template literal like `MOBILE_HTML`, because its client-side script is full of backtick template literals and `${...}` interpolation that would collide with `buildHtml()`'s own outer template-literal syntax if inlined. Read once at startup into `ROI_CALCULATOR_HTML`; edits to it need a container restart (or hot-`docker cp` of the file itself) to take effect, not just `server.js`
+- `calculator.md` (repo root of `rca_ui/`) is the user-facing guide explaining the FAIR ALE (Annualized Loss Expectancy) methodology behind the calculator's numbers
+- The dashboard's report-download button opens `/roi-calculator` with query-string params so its Cloud Risk tab auto-populates from the live dashboard's current finding counts, rather than requiring manual entry
+
+**Shared `@fortinet.com` courtesy access gate**
+- Admin Settings, the manual `POST /api/refresh-cache` button, and similar sidebar "Management" actions are all gated the same way: read the `rca_email` cookie (set client-side, user-supplied at the `/api/login` email gate) and require it to end in `@fortinet.com`, both client-side (hide the control) and server-side (reject the request). This is **not** real access control — the cookie isn't cryptographically signed or verified against any identity provider — it's a courtesy lock against accidental clicks by non-Fortinet visitors, not a security boundary. Don't treat passing this check as authorization for anything sensitive
+
 **Verified Exposure Paths (`fetchExposurePaths`, `cache.exposurePaths = {s3, ec2, azureVm, azureBlob}`)**
 - Queries `LW_APA_EXPOSURE_PATHS` (Lacework's own graph-traced Internet→Target attack-path engine) for four target types: `s3:bucket`, `ec2:instance`, `microsoft.compute/virtualmachines`, `microsoft.storage/storageaccounts/blobservices`. Each record's `TARGET` field (capitalized in the API response despite being aliased `target` in the query) carries a `PATH` (hop-by-hop Internet→Gateway→SG/NSG→resource chain) and `METRICS.path_length` (hop count)
 - Purely additive: does **not** feed `fetchTrueExposure`'s SG/NSG/FW-rule detection, dashboard counts, posture score, or reports — it's a second, independently-computed signal
@@ -155,11 +171,25 @@ Everything lives in one file. Rough layout, in order:
 **Known-stale CSPM findings**
 - `STALE_STORAGE_FINDINGS` (inside `computeEffectivePublicStorage`, client-side) hardcodes an exclusion list for public-storage findings confirmed to reference resources no longer existing in the live cloud account (verify via a live anonymous HTTP request to the resource — Azure returns `ResourceNotFound`, not a public-access-denied error, when the container itself is gone). This is a workaround for FortiCNAPP CSPM scan staleness, not a detection-logic bug — the real fix is a fresh CSPM re-scan in FortiCNAPP itself. Don't add entries here without confirming via a live check first (a resource can also legitimately still be public)
 
-**"Internet Exposed Host" panel — deliberately uses Lacework's raw exposure tag, not the app's verified one**
-- Every other panel in this app overrides Lacework's topological `machineTags.lw_InternetExposure` tag with a stricter, app-computed "verified" signal (real open SG/NSG/FW wildcard rule + a public IP — see `fetchTrueExposure()`/`getExposureEvidence`). The **Internet Exposed Host** tab (`_renderInternetHostExposedBeta`) is the one deliberate exception: it exists specifically to reproduce the FortiCNAPP console's own "Hosts" query (`Hosts > Risk score ≥ 7` · `Vulnerability observation > status = Vulnerable` · `Hosts > Machine status in (Online, Launched)` · `Hosts > Internet exposed = True`), so it reads `machineTags.lw_InternetExposureRaw` — Lacework's original tag, captured *before* `fetchVulns()`/`refreshData()` overwrite `lw_InternetExposure` in place — instead of the verified one. The two signals can and do disagree (a host can be raw-tagged exposed via a *restricted* allowlisted-IP rule, `lw_RestrictedExternalAccess='Yes'`, without the wide-open rule the verified signal requires).
-- The qualifying threshold is `hostRiskScore >= 7` (Lacework's per-machine composite score), **not** any per-CVE score — don't confuse this with the `cveRiskScore` thresholds in the table below. The panel sources from `cache.highRiskVulns` (`fetchHighRiskVulns()` — any severity, `cveRiskScore >= 9`), not `cache.vulns` (Critical/High + `cveRiskScore >= 8` only), because a host can qualify via a finding Lacework itself doesn't label Critical/High.
-- `fetchHighRiskVulns()` applies no machine-status filter of its own (unlike `fetchVulns()`) — `refreshData()` now filters `highRiskVulnsRaw` through the shared `isMachineOffline()` helper before caching it, otherwise stopped/deallocated hosts leak into this panel (confirmed live: 9 of 12 candidate hosts in one refresh were `PowerState/deallocated`/`stopped`).
-- **Cross-panel consistency:** `iehbQualifyingHostSet(d)` (client-side, pure/stateless) recomputes the same qualifying-hostname set and is also called from `_renderVulns()` (Private Host Most Exposed) to exclude any host that qualifies for Internet Exposed Host — otherwise the same physical host could appear as both "Private · Not Internet Exposed" and "Internet Exposed" across the two tabs (confirmed live with `RJ-RSYSLOG`: verified-exposure says No, raw tag says Yes). If you add a third panel with its own exposure definition, extend this exclusion rather than letting a host appear in two places under contradictory labels.
+**Public Storage Exposure — dashboard tab removed, underlying data/computation still live**
+- The dedicated `view-storage`/`nav-storage` dashboard tab and its `renderPublicStorage()` client function were removed from `buildHtml()` per an explicit request to drop the tab from the UI — `renderPublicStorage()` itself is still defined but is dead code now (no longer called from `load()`), left in place rather than deleted since it wasn't part of what was asked.
+- `computeEffectivePublicStorage()` (both the client-side copy and its server-side port) was **not** removed and is still very much alive — it's independently called by the Exploit Simulation Layer's `lab-storage-badge` count (Lab tab), and by all four report builders (`/report`, `/report2`, `/report3`, `/report4`). None of those consumers depended on the dashboard tab's DOM elements, so removing the tab didn't affect them.
+- `lab-storage-badge`'s `onclick="nav('storage')"` was removed (it would otherwise silently no-op on a dead hash — `nav()` guards missing elements rather than erroring) — it's now a static, non-clickable info badge showing the same count.
+
+**"Internet Exposed Resource" panel (formerly "Internet Exposed Host", `id="view-iehb"`/`cnt-iehb`/`body-iehb` — internal `iehb`-prefixed IDs and function names were NOT renamed, only the user-visible label) — a direct listing of cache.attackPaths resources, decoupled from cache.highRiskVulns**
+- This panel went through several iterations (raw exposure tag + hostRiskScore≥7 → Attack Path + riskScore≥4 → Attack Path + PathSev → Attack Path only, hostname-matched against `highRiskVulns` hosts) before landing here. The `highRiskVulns`-intersection approach was dropped entirely because it was structurally too narrow: it required a host to appear in *both* `cache.highRiskVulns` (CVE-driven) *and* `cache.attackPaths` (graph-driven), and this tenant's `LW_APA_ATTACK_PATHS` coverage has **zero EC2 targets**, so the intersection topped out at 2 hosts no matter how the match/threshold logic was tuned.
+- Current implementation (`_renderInternetHostExposedBeta`) sources **exclusively from `cache.attackPaths`** (`LW_APA_ATTACK_PATHS`, `FILTER { METRICS:"path_score" >= 40 }` server-side — see `fetchAttackPaths()`) — no `cache.highRiskVulns`, no `cache.vulns`, no cross-referencing at all. It flattens every `TARGET` across every attack-path record into one row per distinct resource (deduped by `type+name`, keeping the highest `path_score` seen), at *any* `path_severity` — no additional threshold.
+- Resource types are **not** restricted to compute hosts, despite the panel's name — S3 bucket `TARGET`s (`s3:bucket`) are listed alongside VM targets (`microsoft.compute/virtualmachines`, `ec2:instance`, etc.). This was a deliberate scope decision, not an oversight.
+- Rendered as two-column cards deliberately styled to match the **Private Host Most Exposed** panel (`_renderVulns`) — cloud-icon + name header, severity/score badge pills, a left "Resource Details" column (`detailRow()` pairs: Resource Name, Resource ID, Type, Domain/Account). Since this panel has no vuln/host findings data at all (no `cache.highRiskVulns` dependency), the right column shows "Attack Path Details" (hop chain via `exposurePathHopsStr()`, hop count, first-seen date) instead of Private Host's "Security Findings" — everything else Private Host's cards have (CVE table, correlated asset-risk score, matched compliance violations, attached IAM role, "View all findings" expand/collapse) has no equivalent here and was not carried over.
+- `hostHasAttackPath()` (hostname/display-name match only against `TARGETS`' `tags.Name`/`displayName` — instance ID/ARN matching was tried and dropped) is still kept, but now used **only** by `iehbQualifyingHostSet()`, which `_renderVulns()` (Private Host Most Exposed) calls to exclude any host with a computed attack path from that panel — this cross-panel exclusion is independent of how this panel itself renders.
+- `fetchAttackPaths()`'s `path_score >= 40` server-side floor is shared with the **Attack Paths** tab, which applies its own tighter `path_score >= 80` client-side on top — raising the shared floor above 80 would silently start dropping rows that tab needs.
+- The panel's static header subtitle (`buildHtml()`, the `.vh-sub` div) still reads "Matches the FortiCNAPP console's own Hosts with Internet exposed = True" — stale/inaccurate against the actual `hostHasAttackPath()` logic above, left as-is per an earlier explicit user instruction not to "fix" it, and not updated as part of the rename either. Don't "fix" it without checking first.
+
+**"Permissive SSH Keys" tab (`nav-ssh-keys`/`view-ssh-keys`/`cnt-ssh`/`body-ssh-keys`) — new, live-dashboard exposure of data that previously only appeared in reports**
+- `renderSSHKeys(rows, err)` reads `cache.secrets` (`d.secrets` from `/api/data`) — the same `fetchSecrets()` data (`LW_HE_SECRETS_SSH_PRIVATE_KEYS`, `FILTER FILE_PERMISSIONS > 33024` i.e. looser than chmod 400 on a regular file) that `buildReportHtml2`'s "Permissive SSH Keys Access" section (`sshKeyRows`) already rendered — this tab is the first time that data has been surfaced in the live dashboard itself rather than only in a generated report.
+- No new server-side fetching was needed — `cache.secrets`/`cache.errors.secrets` were already populated by `refreshData()`'s existing Phase 1 `fetchSecrets()` call; this was purely a client-side (`buildHtml()`) addition: a sidebar nav item, a `view` section, and `renderSSHKeys()` wired into `load()`.
+- Table columns (Hostname, File Path, Key Type, Permissions as an octal `0NNN` badge) mirror the report's `sshKeyRows` formatting for consistency between the two surfaces.
+- **Cross-panel consistency:** `iehbQualifyingHostSet(d)` (client-side, pure/stateless) recomputes the same qualifying-hostname set and is also called from `_renderVulns()` (Private Host Most Exposed) to exclude any host that qualifies for Internet Exposed Host — otherwise the same physical host could appear in both tabs at once. If you add a third panel with its own exposure definition, extend this exclusion rather than letting a host appear in two places under contradictory labels.
 
 **Report sanitization**
 - `?sanitize=1` on `/report`, `/report2`, `/report3`, or `/report4` runs `sanitizeCacheData()` first, deterministically replacing real hostnames, ARNs, account IDs, IPs, emails, and secret IDs with stable fake values (same real value → same fake value within one render) — for sharing screenshots/demos without leaking customer data
@@ -221,5 +251,11 @@ docker cp rca:/app/rca.html ./rca.html     # original report
 docker cp rca:/app/rca.pdf  ./rca.pdf
 docker cp rca:/app/rca2.html ./rca2.html   # beta wider-scope report
 docker cp rca:/app/rca2.pdf  ./rca2.pdf
+docker cp rca:/app/rca3.html ./rca3.html   # condensed chart-first overview
+docker cp rca:/app/rca3.pdf  ./rca3.pdf
+docker cp rca:/app/rca4.html ./rca4.html   # narrative assessment-style report (BETA)
+docker cp rca:/app/rca4.pdf  ./rca4.pdf
 docker cp rca:/app/contacts.csv ./contacts.csv
 ```
+
+`collect_report.sh` in this directory only grabs `contacts.csv` today — it predates `/report3`/`/report4` and hasn't been extended to pull every report variant.
