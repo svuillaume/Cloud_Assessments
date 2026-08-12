@@ -249,12 +249,6 @@ Alerts/compliance/identities are bucketed into a cloud by keyword matching on al
 ```bash
 docker cp rca:/app/rca.html ./rca.html     # original report
 docker cp rca:/app/rca.pdf  ./rca.pdf
-docker cp rca:/app/rca2.html ./rca2.html   # beta wider-scope report
-docker cp rca:/app/rca2.pdf  ./rca2.pdf
-docker cp rca:/app/rca3.html ./rca3.html   # condensed chart-first overview
-docker cp rca:/app/rca3.pdf  ./rca3.pdf
-docker cp rca:/app/rca4.html ./rca4.html   # narrative assessment-style report (BETA)
-docker cp rca:/app/rca4.pdf  ./rca4.pdf
 docker cp rca:/app/contacts.csv ./contacts.csv
 ```
 
