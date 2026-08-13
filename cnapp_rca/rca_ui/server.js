@@ -2915,15 +2915,20 @@ function setBody(id,h){const el=document.getElementById(id);if(el)el.innerHTML=h
 function state(id,icon,msg){setBody(id,'<div class="state"><span class="state-icon">'+icon+'</span><span>'+e(msg)+'</span></div>');}
 function setCount(id,n,bad){const el=document.getElementById(id);if(!el)return;el.textContent=n;el.className='sec-count '+(n>0&&bad?'bad':'ok');}
 
-// FortiCNAPP ROI button — hand the four live dashboard counts to the standalone
-// /roi-calculator page via query params so its Cloud Risk tab auto-populates:
-//   High Fidelity Alerts <- Alerts (cnt-a) · Host Exposure <- Internet Exposed Resource (cnt-iehb)
-//   Identity Risk <- Identities (cnt-i) · Misconfigurations <- Compliance (cnt-c)
+// FortiCNAPP ROI button — hand the five live Risk Findings Inventory counts to the
+// standalone /roi-calculator page via query params so its Cloud Risk tab auto-populates.
+// All five read from the Risk Findings Inventory badges (rf-k-*, set by renderRiskFindings())
+// rather than each finding type's own tab badge — those tabs can define a broader/narrower
+// scope (e.g. the Identities tab counts every high-permissive identity, not just the
+// Admin+Critical subset the Risk Findings Inventory surfaces) and would silently disagree
+// with the number a reader sees on the Overview page:
+//   High Fidelity Alerts <- rf-k-a · Host Exposure <- rf-k-v · Identity Risk <- rf-k-i
+//   Misconfigurations <- rf-k-c · Secrets Detected <- rf-k-s
 // Reading the rendered badges (not _lastData) guarantees the calculator matches what's on screen.
 function openRoiCalculator(link){
   try{
     var num=function(id){var el=document.getElementById(id);var n=el?parseInt((el.textContent||'').replace(/[^0-9]/g,''),10):0;return isNaN(n)?0:n;};
-    var qs='hfAlerts='+num('cnt-a')+'&hostExposure='+num('cnt-iehb')+'&identityRisk='+num('cnt-i')+'&misconfigs='+num('cnt-c');
+    var qs='hfAlerts='+num('rf-k-a')+'&hostExposure='+num('rf-k-v')+'&identityRisk='+num('rf-k-i')+'&misconfigs='+num('rf-k-c')+'&secretsDetected='+num('rf-k-s');
     window.open('/roi-calculator?'+qs,'_blank','noopener');
     return false; // prevent the default href navigation; we've opened the enriched URL
   }catch(e){
@@ -7141,6 +7146,9 @@ const REPORT_CSS = `
         .fc-solution-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem 2rem; margin-bottom: 1.25rem; }
         .fc-label { display: block; font-size: 0.65rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-primary); margin-bottom: 0.3rem; }
         .fc-solution-grid p { font-size: 0.82rem; color: var(--color-text); line-height: 1.55; margin: 0; }
+        .fc-provides-list { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+        .fc-provides-list li { font-size: 0.8rem; color: var(--color-text); line-height: 1.5; padding-left: 0.9rem; position: relative; }
+        .fc-provides-list li::before { content: ''; position: absolute; left: 0; top: 0.5em; width: 5px; height: 5px; border-radius: 50%; background: var(--color-primary); }
         .fc-outcomes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem 2rem; padding-top: 1.1rem; border-top: 1px solid var(--color-border); }
         .fc-outcomes ul { margin: 0.3rem 0 0 1.1rem; padding: 0; }
         .fc-outcomes li { font-size: 0.8rem; color: var(--color-text); line-height: 1.6; margin-bottom: 0.2rem; }
@@ -8853,7 +8861,7 @@ function buildReportHtml2(data, meta) {
     });
   }
 
-  // ── 8. IAM / RBAC roles (AWS, Azure, GCP) — High Permissive + Unused Privilege ≥ 80% ─
+  // ── CIEM: IAM / RBAC roles (AWS, Azure, GCP) — High Permissive + Unused Privilege ≥ 80% ─
   const iamRoleRows = identities.filter(r => {
     const up = unusedPctOf(r);
     return isRoleType(r) && isHighPermissive(r) && up != null && up >= 80;
@@ -8870,7 +8878,7 @@ function buildReportHtml2(data, meta) {
     }).join(' ');
   }
 
-  // ── 9. Cloud Service Accounts — High Permissive + Unused Privilege ≥ 80% ──
+  // ── CIEM: Cloud Service Accounts — High Permissive + Unused Privilege ≥ 80% ──
   const serviceAccountRows = identities.filter(r => {
     const up = unusedPctOf(r);
     return isServiceAccount(r) && isHighPermissive(r) && up != null && up >= 80;
@@ -9007,9 +9015,9 @@ function buildReportHtml2(data, meta) {
   const topAssets = Object.values(assetMap)
     .filter(a => attackPathHostNames.some(n => nameMatches(a.name, n)))
     .sort((a,b) => b.normalizedScore - a.normalizedScore);
-  const hostDiagramsHtml = topAssets.length ? topAssets.map(a =>
+  const hostDiagramsHtml = topAssets.map(a =>
     '<div style="margin-bottom:2rem;padding:1.5rem;border:1px solid var(--color-border);border-radius:8px;background:#fff">' + hostRiskDiagramSvg(a, esc) + '</div>'
-  ).join('') : '<div class="section-summary"><p>No internet-exposed hosts with correlated risk data were found in this assessment window.</p></div>';
+  ).join('');
 
   // ── 13. List of Secrets — scoped to internet-exposed hosts only (assetMap.internetExposed
   // already includes the verified-path reclassification above, so this is the strongest
@@ -9067,26 +9075,6 @@ function buildReportHtml2(data, meta) {
     }).join('') : '<tr><td colspan="4" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
   }
 
-  // ── Internet-Accessible Storage ─────────────────────────────────────────────
-  // Raw data.publicStorage only has policy/ACL-confirmed findings AND can still contain
-  // known-stale CSPM snapshot entries (a resource the last scan saw as public but that no
-  // longer exists live). computeEffectivePublicStorage() (server.js~7568) is the same merge
-  // the dashboard's Public Storage Exposure panel uses: it drops those stale entries and
-  // adds buckets found only via a verified traced Internet path (cache.exposurePaths.s3/
-  // azureBlob) that never had a policy/ACL finding of their own — without it this section
-  // silently showed 1 stale Azure entry while missing every traced-path-only S3 bucket.
-  const publicStorageRows = computeEffectivePublicStorage(data).findings;
-  function publicStorageRowsHtml(rows) {
-    return rows.length ? rows.map((r,i) => '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
-      '<td>'+cspBadge(r.cloud)+'</td>'+
-      '<td><strong>'+esc(r.name||'—')+'</strong></td>'+
-      '<td>'+esc(r.resourceType||'—')+'</td>'+
-      '<td>'+sevBadge(r.severity)+'</td>'+
-      '<td><small class="text-muted">'+esc(r.account||'—')+'</small></td>'+
-      '<td class="wide"><code style="font-size:0.78rem;word-break:break-all">'+esc(r.urn||'—')+'</code></td>'+
-      '</tr>').join('') : '<tr><td colspan="6" style="text-align:center;color:#999;padding:1.5rem">None found</td></tr>';
-  }
-
   // Stat callout — cites the 2026 Fortinet Cloud Security Report (survey of 1,163
   // cybersecurity leaders/practitioners) to ground each risk category in the wider
   // industry picture, not just this tenant's own numbers. Reuses .section-summary, the
@@ -9095,22 +9083,27 @@ function buildReportHtml2(data, meta) {
     return '<div class="section-summary"><div class="ss-title">'+esc(label)+'</div><p>'+text+'</p></div>';
   }
 
-  // "Why this matters + how FortiCNAPP helps" — one per risk-finding section, sourced from
-  // the FortiCNAPP capability mapping matrix. capability/provides/doIt/manage are the
-  // matrix's own columns; technical/business are arrays of bullet strings synthesized from
-  // that same row to close each section with a concrete outcome, not just a description.
-  function fcSolutionHtml(capability, provides, doIt, manage, technical, business) {
+  // "Notes" — one per risk-finding section, sourced from the FortiCNAPP capability mapping
+  // matrix. `provides` is deliberately vendor-neutral — industry best practice / risk framing,
+  // not a FortiCNAPP pitch — rendered under the "Why This Matters" label; doIt/manage are the
+  // matrix's FortiCNAPP-specific columns; business is an array of bullet strings synthesized
+  // from that same row. Capability and Technical Outcomes were dropped from this block on
+  // request — callers still pass technical/capability-shaped data elsewhere (e.g. section 10's
+  // capability mapping table), just not into this per-section card.
+  // providesPoints is optional — pass it when "provides" is otherwise a dense multi-sentence
+  // paragraph, to split the reasoning into a scannable bullet list under a short lead sentence.
+  function fcSolutionHtml(provides, doIt, manage, business, providesPoints) {
     return '<div class="fc-solution">'+
-      '<div class="fc-solution-head">Why This Matters &amp; How FortiCNAPP Helps</div>'+
+      '<div class="fc-solution-head">Notes</div>'+
       '<div class="fc-solution-grid">'+
-        '<div><span class="fc-label">FortiCNAPP Capability</span><p>'+capability+'</p></div>'+
-        '<div><span class="fc-label">What FortiCNAPP Provides</span><p>'+provides+'</p></div>'+
+        '<div style="grid-column:1/-1"><span class="fc-label">Why This Matters</span><p>'+provides+'</p>'+
+          (providesPoints && providesPoints.length ? '<ul class="fc-provides-list">'+providesPoints.map(t=>'<li>'+t+'</li>').join('')+'</ul>' : '')+
+        '</div>'+
         '<div><span class="fc-label">What to Do</span><p>'+doIt+'</p></div>'+
         '<div><span class="fc-label">How to Manage</span><p>'+manage+'</p></div>'+
       '</div>'+
       '<div class="fc-outcomes">'+
-        '<div><span class="fc-label">Technical Outcomes</span><ul>'+technical.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>'+
-        '<div><span class="fc-label">Business Outcomes</span><ul>'+business.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>'+
+        '<div style="grid-column:1/-1"><span class="fc-label">Business Outcomes</span><ul>'+business.map(t=>'<li>'+t+'</li>').join('')+'</ul></div>'+
       '</div>'+
     '</div>';
   }
@@ -9134,12 +9127,12 @@ function buildReportHtml2(data, meta) {
   const ciemSection =
     '<section id="ciem" class="pagebreak">\n<h2>3. CIEM &amp; Identity Risk</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', 'Identity &amp; Access Security ranks as the top cloud-native concern for <strong>77%</strong> of organizations, and <strong>69%</strong> report having actually experienced an identity/access security incident in the past 12 months — the single most commonly reported category of cloud incident.') +
-    fcSolutionHtml('CIEM',
-      'Analyzes cloud identities, permissions, entitlements, and privilege relationships across AWS, Azure, and GCP. Cloud identities are often over-permissioned, creating risks from excessive entitlements, dormant accounts, and toxic access combinations. Without continuous least-privilege management, organizations face increased exposure to cloud breaches, account takeover, and data exfiltration.',
+    fcSolutionHtml(
+      'Least-privilege identity governance is a foundational cloud security control &mdash; entitlements should be reviewed continuously, not audited once a year.',
       'Remove excessive permissions, enforce least privilege, disable unused identities.',
       'Continuously monitor identity risk, perform entitlement reviews, track privilege changes.',
-      ['Full visibility into over-privileged identities and stale access keys across all clouds', 'Automated least-privilege recommendations based on actual entitlement usage', 'Continuous entitlement drift detection'],
-      ['Reduces the #1 cited cloud breach vector (identity compromise)', 'Lowers audit findings tied to excessive access', 'Strengthens regulatory compliance posture (SOC 2, ISO 27001)']
+      ['Reduces the #1 cited cloud breach vector (identity compromise)', 'Lowers audit findings tied to excessive access', 'Strengthens regulatory compliance posture (SOC 2, ISO 27001)'],
+      ['Cloud identities are often over-permissioned &mdash; excessive entitlements, dormant accounts, and toxic access combinations all raise risk', 'Without continuous least-privilege management, organizations face greater exposure to breaches, account takeover, and data exfiltration']
     ) +
     '<h3 id="ciem-mfa" style="margin-top:2rem">Admin &amp; User — High Permissive, No MFA</h3>\n' +
     collapsibleFindings(
@@ -9152,16 +9145,43 @@ function buildReportHtml2(data, meta) {
       '<table class="exec-table"><thead><tr><th style="width:180px">Identity</th><th style="width:70px">Cloud</th><th style="width:100px">Key Age</th><th style="width:130px">Last Used</th></tr></thead><tbody>' +
       oldAccessKeyRowsHtml(oldAccessKeyRows) + '</tbody></table>',
       oldAccessKeyRows.length, 'identities'
-    ) + '\n</section>';
+    ) +
+    '<h3 id="iam-roles" style="margin-top:2rem">IAM / RBAC Roles &mdash; High Permissive, Unused Privilege &ge; 80%</h3>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>81%</strong> of organizations using a cloud security platform prioritize security outcomes such as fewer misconfigurations and <strong>reduced excessive permissions</strong> as the measure of program success.') +
+    fcSolutionHtml(
+      'Unused, standing privilege is the raw material of privilege-escalation attacks &mdash; access should be sized to actual usage, not maximum plausible need.',
+      'Reduce permissions, implement least privilege, enforce MFA.',
+      'Perform continuous entitlement analysis, access reviews, and privilege optimization.',
+      ['Closes privilege-escalation paths before they’re exploited', 'Supports least-privilege compliance requirements']
+    ) +
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">"Linked Identities — Inbound" lists every principal (AWS account/user/role, Azure service principal, GCP service account, or federated identity) whose trust policy allows it to assume this role.</p>' +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:150px">Role</th><th style="width:60px">Cloud</th><th style="width:70px">Privilege</th><th style="width:55px">MFA</th><th style="width:100px">Last Used</th><th style="width:75px">Unused Entitlements</th><th>Linked Identities — Inbound</th></tr></thead><tbody>' +
+      identityRowsHtml(iamRoleRows, true, true) + '</tbody></table>',
+      iamRoleRows.length, 'roles'
+    ) +
+    '<h3 id="service-accounts" style="margin-top:2rem">Cloud Service Accounts &mdash; High Permissive, Unused Privilege &ge; 80%</h3>\n' +
+    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>61%</strong> of organizations cite Data &amp; Identity Complexity — including the sprawl of non-human identities like service accounts — as a top operational challenge to effective cloud security.') +
+    fcSolutionHtml(
+      'Non-human identities now outnumber human ones in most cloud environments and are frequently over-privileged and unmonitored &mdash; they warrant the same governance rigor as user accounts.',
+      'Right-size permissions, remove unused access, replace static credentials.',
+      'Continuously monitor workload identities, enforce least privilege, review service account activity.',
+      ['Reduces the sprawling, often-invisible service-account attack surface', 'Prevents a top identity-complexity challenge from becoming a breach vector']
+    ) +
+    collapsibleFindings(
+      '<table class="exec-table"><thead><tr><th style="width:180px">Service Account</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Used</th><th style="width:90px">Unused Entitlements</th></tr></thead><tbody>' +
+      identityRowsHtml(serviceAccountRows, true) + '</tbody></table>',
+      serviceAccountRows.length, 'service accounts'
+    ) +
+    '\n</section>';
 
   const secretsSshSection =
     '<section id="secrets-ssh" class="pagebreak">\n<h2>4. Secrets &amp; SSH Key Exposure</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', 'A single exposed credential or private key is often the pivot point in a breach: an overprivileged identity paired with an exposed secret turns an isolated finding into a direct path to compromise. Identity-related incidents were reported by <strong>69%</strong> of organizations in the past 12 months.') +
-    fcSolutionHtml('Agentless CWPP',
-      'Agentless workload discovery and security analysis to identify exposed secrets and sensitive artifacts across cloud workloads.',
+    fcSolutionHtml(
+      'Hardcoded secrets and permissive private keys are consistently one of the fastest paths from initial access to full compromise &mdash; best practice is continuous, workload-wide discovery of exposed credentials, not one-off scans.',
       'Remove exposed secrets, rotate credentials, eliminate hardcoded keys.',
       'Continuously scan workloads, monitor credential exposure, integrate remediation workflows with DevSecOps.',
-      ['Agentless scanning finds hardcoded secrets and permissive SSH keys with zero deployment overhead', 'Direct integration with DevSecOps remediation workflows'],
       ['Prevents credential-based lateral movement and data breach', 'Reduces incident response cost and time-to-remediate']
     ) +
     '<h3 id="secrets-list" style="margin-top:2rem">Secrets Found on Internet-Exposed Hosts</h3>\n' +
@@ -9191,11 +9211,24 @@ function buildReportHtml2(data, meta) {
     return (h && h.pubIp) || '';
   }
   const PATH_SEV_BADGE_CLASS = { critical: 'badge-critical', high: 'badge-high', medium: 'badge-medium', low: 'badge-low' };
-  const attackPathResourceCardsHtml = attackPathResources.length ?
-    '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+attackPathResources.length+'</strong> Resource'+(attackPathResources.length===1?'':'s')+'</span></div>\n' +
-    attackPathResources.map(res => {
+  // Friendly label for a raw LW_APA_ATTACK_PATHS TARGET.type string (e.g. "ec2:instance",
+  // "s3:bucket", "microsoft.storage/storageaccounts/blobservices") — shown as its own badge
+  // on every resource card so the type is visible at a glance, not just inferable from the
+  // card layout (host cards vs. lighter non-host cards).
+  function attackPathResourceTypeLabel(t) {
+    const s = (t || '').toLowerCase();
+    if (s === 'ec2:instance' || s === 'microsoft.compute/virtualmachines' || s.includes('compute.googleapis.com')) return 'Host';
+    if (s.includes('container') || s.includes('kubernetes') || s.includes('k8s') || s.includes('gke') || s.includes('eks') || s.includes('aks')) return 'Container';
+    if (s === 's3:bucket') return 'S3 Bucket Storage';
+    if (s.includes('blobservices') || s.includes('blob')) return 'Blob Storage';
+    if (s.includes('storage')) return 'Storage';
+    const seg = s.split(/[:/]/).pop() || s;
+    return seg ? seg.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Resource';
+  }
+  const attackPathResourceCardsInner = attackPathResources.map(res => {
       const sevKey = (res.pathSeverity || 'none').toLowerCase();
       const pathBadge = '<span class="badge '+(PATH_SEV_BADGE_CLASS[sevKey] || 'badge-info')+'">Attack Path: '+esc(res.pathSeverity || '—')+' ('+Math.round(res.pathScore || 0)+')</span>';
+      const typeBadge = '<span class="badge badge-info">'+esc(attackPathResourceTypeLabel(res.type))+'</span>';
       const cloudLabel = ({ aws: 'AWS', azure: 'Azure', gcp: 'GCP' })[res.cloud] || (res.cloud || '—').toUpperCase();
       if (isComputeHostTargetType(res.type)) {
         const rows = vulnRowsForResourceName(res.name);
@@ -9208,7 +9241,7 @@ function buildReportHtml2(data, meta) {
           '<p style="text-align:center;color:#999;font-size:11px;padding:10px 0">No CVE findings correlated to this host</p>';
         return '<div class="host-group exposed">' +
           '<div class="host-group-header">' +
-            '<span class="host-name">'+esc(res.name)+'</span>' + pathBadge +
+            '<span class="host-name">'+esc(res.name)+'</span>' + typeBadge + pathBadge +
             (pubIp ? '<span class="host-ip">'+esc(pubIp)+'</span>' : '') +
             '<span class="host-cve-count">'+rows.length+' CVE'+(rows.length===1?'':'s')+'</span>' +
           '</div>' + body +
@@ -9216,117 +9249,66 @@ function buildReportHtml2(data, meta) {
       }
       return '<div class="host-group exposed">' +
         '<div class="host-group-header">' +
-          '<span class="host-name">'+esc(res.name)+'</span>' + pathBadge +
-          '<span class="host-cve-count">'+esc(res.type)+'</span>' +
+          '<span class="host-name">'+esc(res.name)+'</span>' + typeBadge + pathBadge +
         '</div>' +
-        '<div style="padding:10px 18px;font-size:12px;color:#5A5A5A">Cloud: '+esc(cloudLabel)+' &middot; Account/Domain: '+esc(res.domainId || '—')+' &middot; Hop count: '+(res.pathLength != null ? res.pathLength : '—')+'. Non-host resource — see Section 6 (Internet-Accessible Storage) for exposure detail.</div>' +
+        '<div style="padding:10px 18px;font-size:12px;color:#5A5A5A">Cloud: '+esc(cloudLabel)+' &middot; Account/Domain: '+esc(res.domainId || '—')+' &middot; Hop count: '+(res.pathLength != null ? res.pathLength : '—')+'. Non-host resource.</div>' +
       '</div>';
-    }).join('')
+    }).join('');
+  const attackPathResourceCardsHtml = attackPathResources.length ?
+    '<div class="host-exposure-summary"><span class="hes-item exposed"><strong>'+attackPathResources.length+'</strong> Resource'+(attackPathResources.length===1?'':'s')+'</span></div>\n' +
+    collapsibleFindings(attackPathResourceCardsInner, attackPathResources.length, 'resources')
     : '<p style="text-align:center;color:#999;padding:1.5rem">No resources with a computed Attack Path were found</p>';
 
   const hostExposureSection =
     '<section id="host-exposure" class="pagebreak">\n<h2>5. Internet-Exposed Resources at Risk</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>59%</strong> of organizations cite Workload &amp; Runtime Security as a top cloud-native concern, and <strong>42%</strong> report an actual workload/runtime security incident in the past 12 months — attackers use automation to find exposed, vulnerable hosts faster than manual review can keep up with.') +
     statCalloutHtml('FortiGuard Labs Global Threat Landscape Report', 'Internet-facing systems are continuously targeted: FortiGuard Labs recorded <strong>122 billion</strong> exploitation attempts in 2025 — every internet-exposed host in this assessment is a live target in that volume.') +
-    fcSolutionHtml('Agentless CWPP + CSPM + Risk Score',
-      'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths.',
+    fcSolutionHtml(
+      'Internet-facing assets are the first thing attackers enumerate &mdash; best practice is continuous discovery of exposure paths, not periodic external scans.',
       'Reduce unnecessary exposure, harden configurations, patch vulnerabilities.',
       'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation.',
-      ['Verified, hop-by-hop traced exposure paths — not just topological exposure tags', 'Correlates vulnerability severity with actual internet reachability'],
       ['Shrinks the external attack surface attackers scan first', 'Prioritizes limited remediation resources on real exposure, not noise']
     ) +
-    '<h3 style="margin-top:2rem">Risk Diagram — Internet-Exposed Compute Hosts (' + topAssets.length + ')</h3>\n' +
-    hostDiagramsHtml +
+    (topAssets.length ? '<h3 style="margin-top:2rem">Risk Diagram — Internet-Exposed Compute Hosts (' + topAssets.length + ')</h3>\n' + hostDiagramsHtml : '') +
     '<h3>Internet-Exposed Resources — Attack Path Detail</h3>\n' +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Every resource FortiCNAPP\'s Attack Path engine confirmed as internet-reachable in this assessment window — matches the dashboard\'s Internet Exposed Resource count exactly. Compute hosts show correlated CVE detail; other resource types (e.g. storage) are cross-referenced in Section 6.</p>' +
-    fcSolutionHtml('Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)',
-      'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify the highest-risk hosts.',
+    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Every resource FortiCNAPP\'s Attack Path engine confirmed as internet-reachable in this assessment window — matches the dashboard\'s Internet Exposed Resource count exactly. Compute hosts show correlated CVE detail; other resource types (e.g. storage) show hop-count/account detail only.</p>' +
+    fcSolutionHtml(
+      'Vulnerability management works best when CVE severity is weighed against real-world reachability and asset criticality &mdash; raw CVSS counts alone routinely mis-prioritize remediation effort.',
       'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls.',
       'Continuously track vulnerability posture, monitor Risk Score changes, enforce remediation SLAs, validate risk reduction after fixes.',
-      ['Multi-factor Risk Score (Impact, Package, Container) ranks hosts by true exploitability, not raw CVE count', 'Continuous re-scoring validates that remediation actually reduced risk'],
       ['Focuses engineering effort on the handful of hosts that matter most', 'Demonstrable, measurable risk reduction over time for leadership reporting']
     ) +
     attackPathResourceCardsHtml +
     '\n</section>';
 
-  const storageSection =
-    '<section id="storage" class="pagebreak">\n<h2>6. Internet-Accessible Storage</h2>\n' +
-    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>66%</strong> of organizations cite Data Exposure &amp; Privacy Security as a top concern, and <strong>54%</strong> report an actual data exposure incident in the past 12 months. A single misconfigured storage bucket can turn into a direct path to a breach when combined with an overprivileged identity.') +
-    fcSolutionHtml('CSPM + DSPM',
-      'Detects cloud misconfigurations, public exposure, and sensitive data risks.',
-      'Remove public access, correct permissions, enable encryption and access controls.',
-      'Continuously monitor storage posture, enforce policies, detect configuration drift.',
-      ['Combines policy/ACL checks with verified traced internet paths to catch storage exposure that pure CSPM scans miss', 'Configuration-drift detection flags changes as they happen'],
-      ['Prevents the most common cause of cloud data breaches (public storage)', 'Protects customer trust and avoids regulatory data-exposure penalties']
-    ) +
-    (publicStorageRows.length ? collapsibleFindings(
-      '<table class="exec-table" style="margin-top:16px"><thead><tr><th style="width:70px">Cloud</th><th style="width:180px">Resource</th><th style="width:180px">Type</th><th style="width:70px">Severity</th><th style="width:160px">Account</th><th>Resource URN</th></tr></thead><tbody>' +
-      publicStorageRowsHtml(publicStorageRows) + '</tbody></table>',
-      publicStorageRows.length, 'storage resources'
-    ) : '<p style="text-align:center;color:#999;padding:1.5rem;margin-top:16px">No internet-accessible storage found</p>') + '\n</section>';
-
   const privateVulnSection = privateVulnHosts.length ? (
-    '<section id="vuln-private" class="pagebreak">\n<h2>7. Private Host Vulnerability</h2>\n' +
+    '<section id="vuln-private" class="pagebreak">\n<h2>6. Private Host Vulnerability</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>66%</strong> of organizations lack strong confidence in their ability to detect and respond to cloud threats in real time, up from 64% the prior year — internal, non-internet-facing hosts are often the biggest blind spot in that gap.') +
-    fcSolutionHtml('Agentless CWPP Vulnerability Management',
-      'Identifies vulnerable workloads and software weaknesses without requiring agents.',
+    fcSolutionHtml(
+      'Internal hosts are not a safe assumption &mdash; once an attacker gains a foothold, unpatched internal systems are what let a single compromise turn into lateral movement across the environment.',
       'Patch vulnerabilities, harden workloads, segment critical systems.',
       'Continuously assess vulnerabilities, prioritize based on exploitability and business impact.',
-      ['Agentless coverage of internal hosts with zero deployment friction', 'Exploitability-based prioritization, not just CVSS severity'],
       ['Reduces lateral-movement risk after an initial breach', 'Lowers the blast radius of any single compromised host']
     ) +
     '<div class="host-exposure-summary"><span class="hes-item"><strong>'+privateVulnHosts.length+'</strong> Host'+(privateVulnHosts.length===1?'':'s')+'</span></div>\n' +
-    hostGroupsHtml(privateVulnHosts) + '\n</section>'
+    collapsibleFindings(hostGroupsHtml(privateVulnHosts), privateVulnHosts.length, 'hosts') + '\n</section>'
   ) : '';
 
   const nonComplianceSection = compliance.length ? (
-    '<section id="non-compliance" class="pagebreak">\n<h2>8. Cloud Critical Non-Compliance Findings</h2>\n' +
+    '<section id="non-compliance" class="pagebreak">\n<h2>7. Cloud Critical Non-Compliance Findings</h2>\n' +
     statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>70%</strong> of organizations cite Configuration &amp; Posture Security as a top cloud-native concern, and <strong>65%</strong> report an actual configuration/posture-related incident in the past 12 months — the second most common category of cloud incident after identity.') +
-    fcSolutionHtml('CSPM',
-      'Continuous cloud posture assessment, compliance monitoring, and misconfiguration detection.',
+    fcSolutionHtml(
+      'Misconfigurations remain one of the most common root causes of cloud breaches &mdash; point-in-time audits miss the drift that happens between assessments, so posture needs to be monitored continuously.',
       'Remediate critical findings and assign ownership.',
       'Maintain compliance dashboards, monitor posture drift, automate policy enforcement.',
-      ['Continuous, automated posture checks across every connected cloud account', 'Policy-level findings with resource-level violation detail'],
       ['Reduces audit prep time and compliance risk (CIS/NIST/PCI)', 'Demonstrates due diligence to auditors, regulators, and customers']
     ) +
     '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">Grouped by cloud provider. Findings are not currently mapped to a named compliance framework (CIS/NIST/PCI) in this integration — severity and policy title are shown as-is from FortiCNAPP.</p>' +
     compCloudGroups + '\n</section>'
   ) : '';
 
-  const iamRolesSection =
-    '<section id="iam-roles" class="pagebreak">\n<h2>9. IAM / RBAC Roles — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
-    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>81%</strong> of organizations using a cloud security platform prioritize security outcomes such as fewer misconfigurations and <strong>reduced excessive permissions</strong> as the measure of program success.') +
-    fcSolutionHtml('CIEM',
-      'Identifies overprivileged users, unused permissions, and risky access paths.',
-      'Reduce permissions, implement least privilege, enforce MFA.',
-      'Perform continuous entitlement analysis, access reviews, and privilege optimization.',
-      ['Inbound trust-policy analysis shows exactly who can assume each over-privileged role', 'Usage-based entitlement scoring, not just granted permissions'],
-      ['Closes privilege-escalation paths before they’re exploited', 'Supports least-privilege compliance requirements']
-    ) +
-    '<p style="color:#5A5A5A;margin-bottom:16px;font-size:12px">"Linked Identities — Inbound" lists every principal (AWS account/user/role, Azure service principal, GCP service account, or federated identity) whose trust policy allows it to assume this role.</p>' +
-    collapsibleFindings(
-      '<table class="exec-table"><thead><tr><th style="width:150px">Role</th><th style="width:60px">Cloud</th><th style="width:70px">Privilege</th><th style="width:55px">MFA</th><th style="width:100px">Last Used</th><th style="width:75px">Unused Entitlements</th><th>Linked Identities — Inbound</th></tr></thead><tbody>' +
-      identityRowsHtml(iamRoleRows, true, true) + '</tbody></table>',
-      iamRoleRows.length, 'roles'
-    ) + '\n</section>';
 
-  const serviceAccountsSection =
-    '<section id="service-accounts" class="pagebreak">\n<h2>10. Cloud Service Accounts — High Permissive, Unused Privilege &ge; 80%</h2>\n' +
-    statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>61%</strong> of organizations cite Data &amp; Identity Complexity — including the sprawl of non-human identities like service accounts — as a top operational challenge to effective cloud security.') +
-    fcSolutionHtml('CIEM',
-      'Analyzes machine identities, service accounts, permissions, and entitlement risks.',
-      'Right-size permissions, remove unused access, replace static credentials.',
-      'Continuously monitor workload identities, enforce least privilege, review service account activity.',
-      ['Extends identity risk analysis to non-human identities, the fastest-growing identity category', 'Flags static, long-lived credentials for rotation'],
-      ['Reduces the sprawling, often-invisible service-account attack surface', 'Prevents a top identity-complexity challenge from becoming a breach vector']
-    ) +
-    collapsibleFindings(
-      '<table class="exec-table"><thead><tr><th style="width:180px">Service Account</th><th style="width:70px">Cloud</th><th style="width:80px">Privilege</th><th style="width:70px">MFA</th><th style="width:130px">Last Used</th><th style="width:90px">Unused Entitlements</th></tr></thead><tbody>' +
-      identityRowsHtml(serviceAccountRows, true) + '</tbody></table>',
-      serviceAccountRows.length, 'service accounts'
-    ) + '\n</section>';
-
-  // ── 11. FortiCNAPP Capability Mapping — rolls up every section's "why it matters /
+  // ── 8. FortiCNAPP Capability Mapping — rolls up every section's "why it matters /
   // how FortiCNAPP helps" card into one reference table, plus the capability→outcome
   // summary and an executive one-liner for leadership audiences skimming to the end. ──
   const capabilityMappingRows = [
@@ -9334,7 +9316,6 @@ function buildReportHtml2(data, meta) {
     ['CIEM &amp; Identity Risk', 'Excessive permissions, unused privileges, dormant identities, risky IAM/RBAC relationships', 'CIEM', 'Analyzes cloud identities, permissions, entitlements, and privilege relationships across AWS, Azure, and GCP', 'Remove excessive permissions, enforce least privilege, disable unused identities', 'Continuously monitor identity risk, perform entitlement reviews, track privilege changes'],
     ['Internet-Exposed Resources at Risk', 'Publicly accessible cloud workloads with vulnerabilities or weak security posture', 'Agentless CWPP + CSPM + Risk Score', 'Identifies internet-facing workloads, vulnerabilities, cloud misconfigurations, and exposure paths', 'Reduce unnecessary exposure, harden configurations, patch vulnerabilities', 'Continuously monitor attack surface, correlate exposure with workload risk, prioritize remediation'],
     ['Prioritized High-Vulnerability Internet-Exposed Hosts', 'Internet-facing hosts with critical vulnerabilities prioritized using exposure, vulnerability severity, exploitability, package risk, container risk, and business impact', 'Agentless CWPP Vulnerability Management + Risk Scores (Impact Score, Package Score, Container Score)', 'Correlates workload vulnerabilities with internet exposure, vulnerable packages, container image risks, asset criticality, and impact scoring to identify highest-risk hosts', 'Patch critical vulnerabilities, update vulnerable packages, rebuild vulnerable container images, apply compensating controls', 'Continuously track vulnerability posture, monitor Risk Score changes, enforce remediation SLAs, validate risk reduction after fixes'],
-    ['Public Access Storage', 'Cloud storage resources exposed publicly due to incorrect permissions or configuration', 'CSPM + DSPM', 'Detects cloud misconfigurations, public exposure, and sensitive data risks', 'Remove public access, correct permissions, enable encryption and access controls', 'Continuously monitor storage posture, enforce policies, detect configuration drift'],
     ['Private Host Critical Vulnerability', 'Internal workloads containing critical vulnerabilities without direct internet exposure', 'Agentless CWPP Vulnerability Management', 'Identifies vulnerable workloads and software weaknesses without requiring agents', 'Patch vulnerabilities, harden workloads, segment critical systems', 'Continuously assess vulnerabilities, prioritize based on exploitability and business impact'],
     ['Cloud Critical Non-Compliance Findings', 'Critical cloud security misconfigurations violating CIS, NIST, PCI-DSS, ISO, or organizational policies', 'CSPM', 'Continuous cloud posture assessment, compliance monitoring, and misconfiguration detection', 'Remediate critical findings and assign ownership', 'Maintain compliance dashboards, monitor posture drift, automate policy enforcement'],
     ['IAM / RBAC Roles &mdash; High Permissive, Unused Privilege &ge;80%', 'Human identities with excessive permissions where most assigned privileges are unused', 'CIEM', 'Identifies overprivileged users, unused permissions, and risky access paths', 'Reduce permissions, implement least privilege, enforce MFA', 'Perform continuous entitlement analysis, access reviews, and privilege optimization'],
@@ -9350,16 +9331,16 @@ function buildReportHtml2(data, meta) {
   ];
   const capabilityMappingSection =
     '<section id="capability-mapping" class="pagebreak">\n' +
-    '<div class="fc-lock-gate" id="fc-lock-11">' +
+    '<div class="fc-lock-gate" id="fc-lock-8">' +
       '<div class="fc-lock-icon">&#128274;</div>' +
       '<div class="fc-lock-title">Fortinet-Only Content</div>' +
       '<div class="fc-lock-desc">This section is restricted to Fortinet personnel. Enter your Fortinet email address to view.</div>' +
-      '<div class="fc-lock-row"><input type="email" id="fc-lock-email-11" placeholder="you@fortinet.com" onkeydown="if(event.key===\'Enter\')fcUnlockSection(\'11\')">' +
-      '<button type="button" onclick="fcUnlockSection(\'11\')">Unlock</button></div>' +
-      '<div class="fc-lock-error" id="fc-lock-error-11">Please enter a valid @fortinet.com email address.</div>' +
+      '<div class="fc-lock-row"><input type="email" id="fc-lock-email-8" placeholder="you@fortinet.com" onkeydown="if(event.key===\'Enter\')fcUnlockSection(\'8\')">' +
+      '<button type="button" onclick="fcUnlockSection(\'8\')">Unlock</button></div>' +
+      '<div class="fc-lock-error" id="fc-lock-error-8">Please enter a valid @fortinet.com email address.</div>' +
     '</div>' +
-    '<div class="fc-locked-content" id="fc-locked-content-11" style="display:none">' +
-    '<h2>11. FortiCNAPP Capability Mapping</h2>\n' +
+    '<div class="fc-locked-content" id="fc-locked-content-8" style="display:none">' +
+    '<h2>8. FortiCNAPP Capability Mapping</h2>\n' +
     '<div style="overflow-x:auto"><table class="exec-table" style="min-width:900px"><thead><tr>' +
     '<th style="width:150px">Security Challenge</th><th style="width:220px">Outcome / Finding</th><th style="width:150px">FortiCNAPP Capability</th><th style="width:220px">What FortiCNAPP Provides</th><th style="width:180px">What to Do?</th><th style="width:220px">How to Manage?</th>' +
     '</tr></thead><tbody>' +
@@ -9373,11 +9354,11 @@ function buildReportHtml2(data, meta) {
     statCalloutHtml('Executive Outcome Statement', 'FortiCNAPP reduces cloud attack risk by correlating workload vulnerabilities, internet exposure, identity privilege, misconfigurations, and data risks into prioritized remediation actions based on business impact &mdash; further reducing Mean Time to Respond (MTTR) to minutes, cutting alert noise, and strengthening compliance posture against frameworks such as CIS, HIPAA, NIST, and PCI-DSS.') +
     '</div>\n</section>';
 
-  // ── 12. Fortinet Conclusion — free-text custom closing remarks, pasted by whoever
+  // ── 9. Fortinet Conclusion — free-text custom closing remarks, pasted by whoever
   // generates the report (via the Generate Report modal) rather than templated content.
   // Omitted entirely when nothing was provided, rather than printing an empty section.
   const conclusionSection = conclusion ? (
-    '<section id="conclusion" class="pagebreak">\n<h2>12. Fortinet Conclusion</h2>\n' +
+    '<section id="conclusion" class="pagebreak">\n<h2>9. Fortinet Conclusion</h2>\n' +
     conclusion.split(/\n\s*\n/).map(p => '<p style="margin-bottom:1rem;line-height:1.8">'+esc(p).replace(/\n/g,'<br>')+'</p>').join('') +
     '\n</section>'
   ) : '';
@@ -9389,7 +9370,6 @@ function buildReportHtml2(data, meta) {
     dashboardTileHtml('#ssh-keys', sshKeys.length, '#92400e', 'Permissive SSH<br>Key Access'),
     dashboardTileHtml('#host-exposure', attackPathResourceCount, '#f97316', 'Internet-Exposed<br>Resources'),
     dashboardTileHtml('#host-exposure', criticalCveExposedHostCount, '#dc2626', 'Critical CVE<br>Internet Host Exposed'),
-    dashboardTileHtml('#storage', publicStorageRows.length, '#7c3aed', 'Storage<br>Internet Accessible'),
     dashboardTileHtml('#vuln-private', privateVulnHosts.length, '#9a3412', 'Private Hosts<br>Highly Vulnerable'),
   ].join('\n      ');
 
@@ -9490,12 +9470,12 @@ function buildReportHtml2(data, meta) {
     return '<section style="padding:1.5rem 2rem 2.5rem;display:flex;flex-direction:column">\n'+
       '<h2>2. Cloud Service Providers Security Risk Score</h2>\n'+
       statCalloutHtml('2026 Fortinet Cloud Security Report', '<strong>88%</strong> of organizations now operate across hybrid or multi-cloud environments, and <strong>81%</strong> rely on two or more cloud providers to run critical workloads — every additional provider adds its own configurations, permissions, and blind spots to track.') +
-      fcSolutionHtml('CSPM + CIEM + CWPP &mdash; Unified Multi-Cloud Risk Correlation',
-        'Multi-cloud environments amplify complexity. With organizations managing multiple cloud providers, visibility is fragmented across separate control planes, identity systems, and telemetry sources. Security teams must manually correlate risk signals across environments, creating operational friction and slowing detection and response. As cloud complexity grows, fragmentation becomes a measurable security and business risk. FortiCNAPP correlates posture, identity, workload, and secrets findings from every connected cloud into one normalized Risk Score per provider, so fragmentation never becomes a blind spot.',
+      fcSolutionHtml(
+        'Multi-cloud environments amplify complexity &mdash; every additional provider adds its own control plane, identity system, and telemetry source to correlate manually.',
         'Review each cloud&rsquo;s score and Critical findings first, starting with the lowest-scoring provider.',
         'Track score trends over time per cloud, and re-baseline as new accounts, services, and regions are added.',
-        ['One normalized 0-100 score per cloud, computed the same way across AWS, Azure, and GCP so scores are directly comparable', 'Aggregates Alerts, Misconfigurations, and Identity risk into a single per-cloud rollup'],
-        ['Gives leadership a single, comparable risk metric across every cloud provider in use', 'Surfaces which cloud environment needs investment first, without manual cross-tool correlation']
+        ['Gives leadership a single, comparable risk metric across every cloud provider in use', 'Surfaces which cloud environment needs investment first, without manual cross-tool correlation'],
+        ['Manually correlating risk signals across environments creates operational friction and slows detection and response', 'As cloud footprint grows, that fragmentation becomes a measurable security and business risk &mdash; best practice is a single, comparable risk score across providers, not siloed per-cloud dashboards']
       ) +
       '<div class="csp-panel">\n'+
       '<div class="csp-panel-title">Cloud Service Providers Security Risk Score</div>\n'+
@@ -9514,9 +9494,9 @@ function buildReportHtml2(data, meta) {
       '</div>\n' : '')+
       '</div>\n</section>\n';
   })() +
-  ciemSection + '\n' + secretsSshSection + '\n' + hostExposureSection + '\n' + storageSection + '\n' +
+  ciemSection + '\n' + secretsSshSection + '\n' + hostExposureSection + '\n' +
   privateVulnSection + '\n' + nonComplianceSection + '\n' +
-  iamRolesSection + '\n' + serviceAccountsSection + '\n' + capabilityMappingSection + '\n' + conclusionSection + '\n' +
+  capabilityMappingSection + '\n' + conclusionSection + '\n' +
   '<div class="report-ending" style="page-break-before:always;background:#000;color:#fff;padding:48px 64px;display:flex;flex-direction:column;gap:32px">' +
   '<div style="text-align:center">' +
   '<div style="font-size:15px;font-weight:700;letter-spacing:.06em;margin-bottom:14px">Rapid Cloud Assessment Report - Powered by FortiCNAPP</div>' +
@@ -10720,6 +10700,46 @@ function requestHandler(req, res) {
       });
     });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+    res.end(reportHtml);
+    })();
+  } else if (req.url.startsWith('/sanitized-report')) {
+    const qs = new URL(req.url, 'http://localhost').searchParams;
+    const customer   = (qs.get('customer')   || 'Customer').trim();
+    const author     = (qs.get('author')     || 'Security Assessment Team').trim();
+    const requester  = (qs.get('requester')  || '').trim();
+    const conclusion = (qs.get('conclusion') || '').trim();
+    if (!cache.fetchedAt) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
+      res.end('<body style="font-family:sans-serif;padding:2rem"><h2>⏳ Dashboard data not yet loaded</h2><p>Please wait a moment and try again.</p></body>');
+      return;
+    }
+    (async () => {
+    await ensureFreshCache();
+    // Always sanitize (this route IS the sanitized entry point) — scrubs hostnames,
+    // ARNs, account IDs, IPs, emails, secret IDs from the underlying finding data.
+    const reportData = sanitizeCacheData(cache);
+    let reportHtml = buildReportHtml2(reportData, { customer, author, requester, conclusion });
+    // sanitizeCacheData() only scrubs finding data, not Fortinet branding baked into
+    // the template itself — strip that separately so this is safe to hand externally.
+    reportHtml = reportHtml
+      .replace(/<section id="capability-mapping"[\s\S]*?<\/section>\n?/, '')
+      .replace(/<script>function fcUnlockSection[\s\S]*?<\/script>\n?/, '')
+      .replace(/2026 Fortinet Cloud Security Report/g, '2026 Cloud Security Report')
+      .replace(/Fortinet Rapid Cloud Assessment/g, 'Rapid Cloud Assessment')
+      .replace(/Fortinet Conclusion/g, 'Conclusion')
+      .replace(/\bFortinet\b/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\s+([,.;:])/g, '$1');
+    const reportPath = path.join(__dirname, 'sanitized-report.html');
+    fs.writeFile(reportPath, reportHtml, err => {
+      if (err) console.error('[sanitized-report] html save failed:', err.message);
+      else console.log('[sanitized-report] saved html to', reportPath);
+    });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="sanitized-report.html"',
+      ...CORS, ...NO_CACHE
+    });
     res.end(reportHtml);
     })();
   } else if (req.method === 'POST' && req.url === '/api/login') {
