@@ -325,8 +325,8 @@ sudo docker run --rm -d \
 Or use the convenience scripts:
 
 ```bash
-./deploy.sh              # Public EC2 — also updates DuckDNS A record
-./deploy_PrivateCloud.sh # Private cloud — skips DuckDNS
+./deploy.sh   # Public EC2 — also updates DuckDNS A record
+./install.sh  # Private cloud — skips DuckDNS
 ```
 
 ### Verify
@@ -362,7 +362,7 @@ The dashboard's fetched-data cache (alerts, CVEs, identities, compliance, secret
 ### How it's persisted
 
 - **`docker restart rca`** (hot-deploy) already preserves it with no extra setup — the container's writable filesystem layer survives a restart on its own.
-- **A full `docker rm` + recreate** (e.g. via `deploy.sh`/`deploy_PrivateCloud.sh`) needs the cache directory mounted to a Docker volume, which both scripts do automatically:
+- **A full `docker rm` + recreate** (e.g. via `deploy.sh`/`install.sh`) needs the cache directory mounted to a Docker volume, which both scripts do automatically:
   ```
   -v rca-cache:/app/data
   ```
