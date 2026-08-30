@@ -13,16 +13,17 @@ A live security dashboard and customer-ready Cloud Rapid Assessment Report power
 5. [Correlated Risk Findings per Asset](#correlated-risk-findings-per-asset)
 6. [Identity & Access Risk](#identity--access-risk)
 7. [Assessment Windows](#assessment-windows)
-8. [Prerequisites](#prerequisites)
-9. [Quick Start](#quick-start)
-10. [Step-by-Step Setup](#step-by-step-setup)
-11. [Production Deployment with HTTPS](#production-deployment-with-https)
-12. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
-13. [Persistent Cache](#persistent-cache)
-14. [Updating the Dashboard](#updating-the-dashboard)
-15. [Collecting Visitor Contacts](#collecting-visitor-contacts)
-16. [Troubleshooting](#troubleshooting)
-17. [Additional Resources](#additional-resources)
+8. [Known API Limitations](#known-api-limitations)
+9. [Prerequisites](#prerequisites)
+10. [Quick Start](#quick-start)
+11. [Step-by-Step Setup](#step-by-step-setup)
+12. [Production Deployment with HTTPS](#production-deployment-with-https)
+13. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+14. [Persistent Cache](#persistent-cache)
+15. [Updating the Dashboard](#updating-the-dashboard)
+16. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+17. [Troubleshooting](#troubleshooting)
+18. [Additional Resources](#additional-resources)
 
 ---
 
@@ -220,6 +221,19 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 The default window is **14 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs, Identities, and Secrets always remain at 7 days due to API/LQL limits.
 
 > **Compliance policy cap and query-schema filtering.** A FortiCNAPP tenant can have 1,000+ enabled Compliance policies — evaluating every one of them each refresh would make the compliance phase impractically slow, so only the top `COMPLIANCE_POLICY_CAP` (150) Critical/High policies are evaluated per cycle, Critical severity sorted first. Separately, a handful of policies are tagged `policyType: 'Compliance'` but are actually defined in FortiCNAPP's newer JSON "Resource Query" schema (`{"version":"2.0.0","query":{"resources":{...}}}`) rather than classic LQL text — `Queries/execute` can only run classic LQL, so feeding it this JSON as `queryText` fails with a parser error ("token recognition error at: '[{'") on every refresh. `isLqlQueryText()` detects and excludes these *before* the cap is applied, so they don't silently burn evaluation slots that a real, runnable policy could have used. If the "Critical Misconfigurations" count still looks low relative to the FortiCNAPP console, `COMPLIANCE_POLICY_CAP` is the lever to raise (at the cost of a longer Phase 2 fetch).
+
+---
+
+## Known API Limitations
+
+A few hard caps and coverage gaps in the underlying FortiCNAPP API that shape what this dashboard can show, independent of any bug:
+
+- **Alerts API**: hard-capped at 7 days per request. `alertTimeWindows()` splits the request into 7-day chunks whenever `dynamicDaysBack > 7`.
+- **Vulns API**: always capped at 7 days, regardless of the `daysBack` setting — there's no chunking workaround for this one.
+- **Attack Paths** (`LW_APA_ATTACK_PATHS`): server-side floor `path_score >= 40` (shared with the Attack Paths tab, which further filters to `>= 80` client-side). Raising the shared floor above 80 would silently drop rows the Attack Paths tab needs.
+- **Exposure Paths** (`LW_APA_EXPOSURE_PATHS`): coverage can be very sparse — e.g. the `ec2:instance` target type can return as few as 1 row tenant-wide. Not every asset has a traced path even if it's genuinely exposed.
+
+> On large tenants, the underlying `Vulnerabilities/Hosts/search` query behind `fetchHighRiskVulns()` (Risk Findings' "Host Exposure" category) can itself match six figures of rows — confirmed on one tenant at 100K+ rows, ~200MB. This fetch is bounded by `HIGH_RISK_VULN_PAGE_CAP`/`HIGH_RISK_VULN_ROW_CAP` in `server.js` to keep the cache, `/api/data` response, and browser payload from growing unbounded on tenants with a very large matching CVE count.
 
 ---
 

@@ -723,6 +723,19 @@ async function fetchAttackPaths() {
 // but accepts expression:"ge" — matches the FortiCNAPP console's own "Risk score >= 9"
 // query-builder clause, which is NOT severity-gated (can return Medium/Low/Info CVEs with
 // a high risk score that Critical/High-only queries never see at all).
+//
+// On large tenants this query alone can match six figures of rows (confirmed: one tenant
+// estimated 100K+, ~2KB/row once machineTags/evalCtx are attached — ~200MB). Unlike
+// fetchVulns() (which caps its output at 500 rows), this used to follow every nextPage with
+// no limit at all, so the full set landed in cache.highRiskVulns and got re-JSON.stringify'd
+// on every single /api/data request (server-side) and shipped whole to the browser
+// (client-side) — the actual crash/hang, not just a one-time fetch cost. HIGH_RISK_VULN_PAGE_CAP
+// bounds the fetch itself (worst-case memory during pagination); the final sort+slice below
+// bounds what actually gets persisted/served, mirroring fetchVulns()'s existing pattern. Every
+// consumer (riskFindingHostExposure(), iehbQualifyingHostSet(), the Risk Findings table) only
+// ever needs a handful of the highest-risk rows, never the full set.
+const HIGH_RISK_VULN_PAGE_CAP = 30;   // 30 × 5000 rows/page = 150K rows hard ceiling on the fetch
+const HIGH_RISK_VULN_ROW_CAP  = 2000; // final cap on what's stored/served, sorted by cveRiskScore desc
 async function fetchHighRiskVulns() {
   const tok = await ensureToken();
   let allRows = [];
@@ -733,7 +746,10 @@ async function fetchHighRiskVulns() {
       { field: 'status', expression: 'eq', value: 'Active' },
       { field: 'cveRiskScore', expression: 'ge', value: 9 },
     ],
-    returns: ['vulnId', 'severity', 'hostRiskScore', 'cveRiskScore', 'riskScore', 'featureKey', 'fixInfo', 'evalCtx', 'machineTags', 'mid', 'startTime'],
+    // Trimmed to fields consumers actually read (machineTags, evalCtx.hostname, mid,
+    // cveRiskScore/riskScore, vulnId, featureKey.name) — severity/fixInfo/hostRiskScore/
+    // hostRiskInfo/startTime were fetched but never used by anything reading cache.highRiskVulns.
+    returns: ['vulnId', 'cveRiskScore', 'riskScore', 'featureKey', 'evalCtx', 'machineTags', 'mid'],
     paging: { rows: 5000 },
   };
   let pageNum = 0;
@@ -748,14 +764,21 @@ async function fetchHighRiskVulns() {
       allRows.push(...rows);
       const nextUrl = resp?.paging?.urls?.nextPage;
       if (!nextUrl) break;
+      if (pageNum >= HIGH_RISK_VULN_PAGE_CAP) {
+        console.log(`  [high-risk-vulns] hit page cap (${HIGH_RISK_VULN_PAGE_CAP}) with ${allRows.length} rows — stopping early, tenant has more matches than this fetch will collect`);
+        break;
+      }
       path = new URL(nextUrl).pathname.replace(/^\/api\/v2\//, '');
     } catch (e) {
       console.log(`  [high-risk-vulns] page ${pageNum} ERR:`, e.message.slice(0, 150));
       break;
     }
   }
-  console.log(`  [high-risk-vulns] total:${allRows.length} (cveRiskScore >= 9, any severity)`);
-  return allRows;
+  const capped = allRows
+    .sort((a, b) => parseFloat(b.cveRiskScore ?? b.riskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.riskScore ?? 0))
+    .slice(0, HIGH_RISK_VULN_ROW_CAP);
+  console.log(`  [high-risk-vulns] total:${allRows.length} (cveRiskScore >= 9, any severity) → kept top ${capped.length}`);
+  return capped;
 }
 
 // Shared "Machine status in (Online, Launched)" check — module-scope so both fetchVulns()
