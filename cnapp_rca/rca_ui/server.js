@@ -10839,7 +10839,12 @@ function requestHandler(req, res) {
     res.writeHead(302, { Location: '/mobile', ...CORS });
     res.end();
   } else if (req.url === '/') {
-    const authed = /rca_auth=/.test(req.headers.cookie || '');
+    // rca_auth was a leftover reference to a cookie no code path has ever set — /api/login
+    // (10834) sets rca_email, and every other gate check in this file (Admin Settings, manual
+    // refresh, showUserBadge()) already reads rca_email. This mismatch meant the gate re-showed
+    // on every visit to / even immediately after a successful login, since the cookie it was
+    // actually looking for could never exist.
+    const authed = /rca_email=/.test(req.headers.cookie || '');
     if (!authed) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE });
       res.end(LOGIN_HTML);
