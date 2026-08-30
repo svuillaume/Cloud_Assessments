@@ -39,6 +39,7 @@ cd rca_ui
 sudo docker build -t rca-dashboard .
 sudo docker run --rm -d --name rca \
   -p 80:80 -p 443:8443 \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
   --env-file .env \
   -v letsencrypt:/etc/letsencrypt \
   rca-dashboard

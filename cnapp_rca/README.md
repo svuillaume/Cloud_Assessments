@@ -328,6 +328,7 @@ sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
     -p 443:8443 \
+    --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
     --env-file .env \
     -v letsencrypt:/etc/letsencrypt \
     -v rca-cache:/app/data \
@@ -336,11 +337,13 @@ sudo docker run --rm -d \
 
 `-v rca-cache:/app/data` persists the fetched-data cache to a named Docker volume — see [Persistent Cache](#persistent-cache) below. Omitting it still works, it just means every container recreation starts from a blank cache instead of last-known-good data.
 
+The container runs **rootless** — as the `node` user (uid 1000) baked into the base image, never root — with every Linux capability dropped except the two it actually needs: `NET_BIND_SERVICE` (to bind port 80 without being root) and `CHOWN` (a one-time self-heal of volume ownership on startup; see `entrypoint.sh`). `--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN` above isn't optional hardening bolted on top — it's required for the container to run as designed, and both convenience scripts below already include it.
+
 Or use the convenience scripts:
 
 ```bash
-./deploy.sh   # Public EC2 — also updates DuckDNS A record
-./install.sh  # Private cloud — skips DuckDNS
+./install.sh               # ports 80/443, includes the least-privilege flags above
+./deploy_CASignedCert.sh   # HTTP-only variant for a pre-issued/CA-signed cert flow
 ```
 
 ### Verify
@@ -358,6 +361,7 @@ sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
     -p 8443:8443 \
+    --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
     -v /path/to/certs:/certs:ro \
     -e TLS_CERT=/certs/fullchain.pem \
     -e TLS_KEY=/certs/privkey.pem \
@@ -366,6 +370,8 @@ sudo docker run --rm -d \
 ```
 
 Set `SELF_SIGNED=true` in `.env` to generate a self-signed cert automatically (no Let's Encrypt, no domain required).
+
+> **Bring-your-own-cert + rootless:** `/certs` is a host bind mount, so its file permissions come from the *host*, not the image — unlike the Docker-managed `letsencrypt`/`rca-cache` volumes, nothing in this repo can chown it for you. If the host cert/key files are owned by root with restrictive permissions (a common default), the container's non-root `node` user (uid 1000) won't be able to read them and TLS startup will fail. Either `chmod` them readable, or `chown` them to uid 1000 on the host, before starting the container.
 
 ---
 

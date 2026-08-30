@@ -49,14 +49,19 @@ docker cp server.js rca:/app/server.js && docker restart rca
 sudo docker build -t rca-dashboard .
 sudo docker run --rm -d --name rca \
   -p 80:80 -p 8443:8443 \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
   --env-file .env \
   -v letsencrypt:/etc/letsencrypt \
   rca-dashboard
 
 # Convenience scripts (both build + stop-existing + run):
-./deploy.sh               # public EC2, ports 80/8443
-./deploy_PrivateCloud.sh  # private cloud, ports 80/443
+./install.sh               # ports 80/443, includes the cap flags above
+./deploy_CASignedCert.sh   # HTTP-only variant for a pre-issued/CA-signed cert flow
 ```
+
+Both scripts already run the container rootless with the least-privilege flags above (see
+"Rootless / least-privilege container" below) — the flags aren't optional extras layered on top,
+they're baked into `install.sh`/`deploy_CASignedCert.sh` themselves.
 
 Copy `.env.example` → `.env` and fill in credentials. Values must NOT be quoted (Docker reads the file literally). `SELF_SIGNED=true` generates a local cert when DNS isn't propagated yet; supplying `TLS_CERT`/`TLS_KEY` skips both certbot and self-signed. The Dockerfile installs `certbot`, `openssl`, and `chromium` (headless Chromium is invoked by both report builders to render PDFs — `entrypoint.sh` handles the TLS branch at container start).
 
@@ -140,6 +145,11 @@ Everything lives in one file. Rough layout, in order:
 **DNS / IP pool**
 - `resolveReachableIP()` probes all DNS IPs at startup via TCP on port 443 and caches the first reachable one
 - Blacklisted IPs expire after 12h; DNS is re-probed every 24h
+
+**Rootless / least-privilege container**
+- The Dockerfile sets `USER node` — the container runs as the `node` user (uid/gid 1000) baked into the `node:18-alpine` base image, never as root. `install.sh` and `deploy_CASignedCert.sh` both run it with `--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN`, dropping every Linux capability except the two actually needed: `NET_BIND_SERVICE` (both Node itself and certbot's standalone ACME challenge bind port 80, a privileged port) and `CHOWN` (entrypoint.sh's one-time ownership self-heal, below). Verified end-to-end against a real build: non-root PID 1, `/proc/1/status`'s `CapBnd` decodes to exactly those two capabilities, port 80 binds successfully, and PDF report generation (headless Chromium, already invoked everywhere with `--no-sandbox`, so it needs no extra capability) still works.
+- The Dockerfile pre-creates and chowns `/app`, `/app/data`, `/etc/letsencrypt`, `/var/lib/letsencrypt`, and `/var/log/letsencrypt` to `node:node` at build time. Docker seeds a *fresh* named volume's initial content and ownership from whatever already exists at that mount path in the image, so a first-time `-v letsencrypt:/etc/letsencrypt` / `-v rca-cache:/app/data` mount inherits correct ownership automatically — no root needed at runtime for that case.
+- `entrypoint.sh` runs a best-effort `chown -R node:node /etc/letsencrypt /app/data` at startup, silently ignored on failure, to self-heal an *existing* volume left root-owned by a prior root-run deployment. `CAP_CHOWN` lets a non-root process change a file's owner, but it does **not** grant directory traversal into a restrictively-permissioned tree it otherwise can't read — a deeply-locked-down pre-existing volume may only get partially fixed by this. The guaranteed fallback for migrating an existing deployment is a one-time host-side fix: `docker run --rm -v letsencrypt:/etc/letsencrypt -v rca-cache:/app/data alpine chown -R 1000:1000 /etc/letsencrypt /app/data`.
 
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache — the fastest way to iterate on dashboard/report UI without live credentials

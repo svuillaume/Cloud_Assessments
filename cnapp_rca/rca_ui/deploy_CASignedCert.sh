@@ -12,12 +12,18 @@ if sudo docker ps --format '{{.Names}}' | grep -qx "rca"; then
   sleep 1
 fi
 
+# NOTE: this HTTP-only run block previously had -p 443:8443 and -v letsencrypt:/etc/letsencrypt
+# commented out mid-command, which (since a `#` starting a continued line ends that logical
+# shell command right there) silently truncated the whole `docker run` invocation before
+# --env-file/rca-dashboard were ever reached. Left as HTTP-only intentionally, just fixed to
+# actually be valid shell.
 sudo docker run --rm -d \
   --name rca \
   -p 80:80 \
-#  -p 443:8443 \
+  --cap-drop=ALL \
+  --cap-add=NET_BIND_SERVICE \
+  --cap-add=CHOWN \
   --env-file .env \
-#  -v letsencrypt:/etc/letsencrypt \
   rca-dashboard
 
 # Fetch EC2 public IP (IMDSv2)
