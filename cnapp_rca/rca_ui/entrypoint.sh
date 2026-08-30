@@ -7,18 +7,25 @@
 #   (none)            — plain HTTP on PORT (default 8888)
 #
 # Runs as the non-root `node` user (see Dockerfile) — the whole container should be started
-# with --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN for least-privilege.
+# with --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN for least-privilege. Note:
+# `chown`/`node`/`python3` in this image carry file capabilities (setcap, in the Dockerfile) —
+# `--cap-add` alone does NOT make a capability usable by a non-root process here. Verified
+# empirically: with only --cap-add=CHOWN and no setcap, `chown` failed "Operation not permitted"
+# even though the capability showed up in CapBnd — Docker populates the bounding set but not the
+# effective/ambient sets for a non-root exec on this runtime, so the capability was granted "in
+# principle" but never actually usable. File capabilities sidestep that; see the Dockerfile.
 
 # ── One-time ownership self-heal for pre-existing volumes ──────────────────────
 # The Dockerfile pre-chowns /etc/letsencrypt and /app/data so a *fresh* named volume mount
 # inherits correct ownership automatically. A volume that already existed from a prior
 # root-run deployment of this container won't have picked that up, though — this best-effort
-# fixes it in place if CAP_CHOWN was granted. Silent on failure so this never turns into a hard
-# startup failure — including the one case CAP_CHOWN alone can't fully cover: it lets this
-# non-root process change a file's *owner* without already owning it, but it does NOT grant
-# directory *traversal* into a restrictively-permissioned (e.g. 0700) tree it can't otherwise
-# read into, so a deeply-locked-down existing volume may only get partially fixed here. If
-# certbot/the app still can't write after this runs, do a one-time host-side fix instead:
+# fixes it in place (verified against a reproduced root-owned volume: this now correctly
+# self-heals to node:node). Silent on failure so this never turns into a hard startup failure —
+# including the one remaining case CAP_CHOWN can't fully cover: it lets this process change a
+# file's *owner* without already owning it, but it does NOT grant directory *traversal* into a
+# restrictively-permissioned (e.g. 0700) tree it can't otherwise read into, so a deeply-locked-
+# down existing volume may only get partially fixed here. If certbot/the app still can't write
+# after this runs, do a one-time host-side fix instead:
 #   docker run --rm -v letsencrypt:/etc/letsencrypt -v rca-cache:/app/data alpine \
 #     chown -R 1000:1000 /etc/letsencrypt /app/data
 chown -R node:node /etc/letsencrypt /app/data 2>/dev/null || true

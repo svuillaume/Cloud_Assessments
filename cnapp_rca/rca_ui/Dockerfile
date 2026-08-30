@@ -1,5 +1,20 @@
 FROM node:18-alpine
-RUN apk add --no-cache certbot openssl chromium
+RUN apk add --no-cache certbot openssl chromium libcap
+# `docker run --cap-add=X` on a non-root (USER node) process only populates the container's
+# capability BOUNDING set — verified empirically that it does NOT also populate the EFFECTIVE/
+# AMBIENT sets a non-root exec actually needs to use that capability (CapBnd showed the granted
+# caps present, CapEff/CapAmb both stayed all-zero, and `chown` failed "Operation not permitted"
+# despite --cap-add=CHOWN being set). File capabilities sidestep this entirely — they're checked
+# directly against the binary's own extended attributes at execve() time, independent of ambient
+# propagation, and only require the capability to already be within the container's bounding set
+# (which --cap-add establishes) — so they're the reliable way to make NET_BIND_SERVICE/CHOWN
+# actually usable by the non-root `node` user set below, on any host, regardless of whether that
+# host also happens to have net.ipv4.ip_unprivileged_port_start=0 (which — separately — already
+# make privileged-port binds work for everyone regardless of capabilities, and is NOT something
+# to rely on, since a hardened host can and often does set it back to 1024).
+RUN setcap cap_chown=+ep "$(readlink -f "$(which chown)")" && \
+    setcap cap_net_bind_service=+ep "$(readlink -f "$(which node)")" && \
+    setcap cap_net_bind_service=+ep "$(readlink -f "$(which python3)")"
 WORKDIR /app
 COPY server.js .
 COPY roi-calculator.html .
@@ -24,8 +39,10 @@ EXPOSE 80 8443
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Run with least-privilege flags — rootless (USER node above) plus every Linux capability
-# dropped except the two actually needed: NET_BIND_SERVICE (both Node and certbot's standalone
-# ACME challenge bind port 80, a privileged port <1024) and CHOWN (entrypoint.sh's one-time
-# ownership self-heal on pre-existing, root-owned volumes — see comment above):
+# dropped except the two actually needed: NET_BIND_SERVICE (Node/certbot/python3's port-80
+# binds, made effective via the setcap block above) and CHOWN (entrypoint.sh's one-time
+# ownership self-heal on pre-existing, root-owned volumes, likewise via setcap):
 #   docker run --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN ...
-# (already wired into install.sh / deploy_CASignedCert.sh)
+# (already wired into install.sh / deploy_CASignedCert.sh) — --cap-add alone, without the
+# setcap block above, does NOT actually make these usable by the non-root user; see that
+# comment for why.
