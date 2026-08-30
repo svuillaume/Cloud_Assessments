@@ -39,6 +39,7 @@ cd rca_ui
 sudo docker build -t rca-dashboard .
 sudo docker run --rm -d --name rca \
   -p 80:80 -p 443:8443 \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
   --env-file .env \
   -v letsencrypt:/etc/letsencrypt \
   rca-dashboard
@@ -108,11 +109,11 @@ The dashboard JS (starting ~line 1604 inside the template literal) fetches `/api
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache
 
-**Posture score formula**
+**Posture score formula** (see `rca_ui/CLAUDE.md`'s score field glossary and `rca_ui/SCORING_GUIDE.md` for the full, current, authoritative version — this is a summary, kept in sync but not the primary reference)
 ```
-postureScore = max(0, round(100 − mean(findingRiskScores) − min(20, secretCount × 0.5)))
+postureScore = max(0, round(100 − mean(findingRiskScores)))
 ```
-Risk weights: alerts→95, CVEs→`riskScore×10` (max 100), compliance→80, identities→`risk_score×100` (max 100). Secrets apply a separate −0.5 pt penalty each, capped at −20 pts.
+Risk weights, drawn from the shared `SEVERITY_WEIGHTS = { critical: 100, high: 70, medium: 40, low: 10 }` table: alerts→100/70/40 by severity, CVEs→`(cveRiskScore ?? riskScore)×10` (max 100, only counted if ≥ `HIGH_RISK_CVE_THRESHOLD` = 9.85), compliance→100 flat, identities→`identityRiskScore()` (80 flat for admin+no-MFA+stale, else `risk_score×100` max 100), secrets→10 flat. There is no separate secret-count penalty — that mechanism was removed.
 
 **Correlated Risk Findings per Asset — scoring formula**
 
@@ -121,12 +122,12 @@ Four factors ranked Critical → Low, summed per host then normalized 0–100:
 | Factor | Severity | Points | Data source |
 |--------|----------|--------|-------------|
 | CIEM High-Perm credential | Critical | +100 per secret | `secretsAll` where `SECRET_TYPE` ∈ SSH key / AWS / GCP / Azure credential types |
-| Secret (generic) | High | +50 per secret | `secretsAll` — all other secret types |
-| CVE Internet Threat Exposure | Medium | `riskScore × 10` per CVE (max 100) | `vulns` — Lacework composite score (CVSS + exploitability + network exposure) |
+| Secret (generic) | High | +70 per secret | `secretsAll` — all other secret types |
+| CVE Internet Threat Exposure | Medium | `(cveRiskScore ?? riskScore) × 10` per CVE (max 100), only if ≥ `HIGH_RISK_CVE_THRESHOLD` (9.85) — otherwise 0 | `vulns` — FortiCNAPP's proprietary Risk Score (CVSS + prevalence + exploitability + exposure) |
 | Critical Misconfiguration | Low | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide critical policies; same boost applied to every at-risk host |
 
 ```
-assetRawRisk = Σ(CIEM×100) + Σ(secret×50) + Σ(cve.riskScore×10) + min(60, critCompliance×10)
+assetRawRisk = Σ(CIEM×100) + Σ(secret×70) + Σ(cve≥9.85 ? cve.riskScore×10 : 0) + min(60, critCompliance×10)
 normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
 ```
 

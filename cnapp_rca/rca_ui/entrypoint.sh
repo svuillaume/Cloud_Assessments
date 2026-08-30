@@ -5,6 +5,23 @@
 #   DOMAIN + LE_EMAIL — obtain a Let's Encrypt cert via certbot (port 80 must be open)
 #   TLS_CERT + TLS_KEY — use an existing certificate (skips everything above)
 #   (none)            — plain HTTP on PORT (default 8888)
+#
+# Runs as the non-root `node` user (see Dockerfile) — the whole container should be started
+# with --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN for least-privilege.
+
+# ── One-time ownership self-heal for pre-existing volumes ──────────────────────
+# The Dockerfile pre-chowns /etc/letsencrypt and /app/data so a *fresh* named volume mount
+# inherits correct ownership automatically. A volume that already existed from a prior
+# root-run deployment of this container won't have picked that up, though — this best-effort
+# fixes it in place if CAP_CHOWN was granted. Silent on failure so this never turns into a hard
+# startup failure — including the one case CAP_CHOWN alone can't fully cover: it lets this
+# non-root process change a file's *owner* without already owning it, but it does NOT grant
+# directory *traversal* into a restrictively-permissioned (e.g. 0700) tree it can't otherwise
+# read into, so a deeply-locked-down existing volume may only get partially fixed here. If
+# certbot/the app still can't write after this runs, do a one-time host-side fix instead:
+#   docker run --rm -v letsencrypt:/etc/letsencrypt -v rca-cache:/app/data alpine \
+#     chown -R 1000:1000 /etc/letsencrypt /app/data
+chown -R node:node /etc/letsencrypt /app/data 2>/dev/null || true
 
 SS_DIR="/tmp/selfsigned"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"

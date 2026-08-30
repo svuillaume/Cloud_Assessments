@@ -78,8 +78,8 @@ A few things that make this codebase different from a typical web app, worth kno
 | **Secrets** | Discovered secrets and credentials, scoped to internet-exposed hosts only — a secret on a purely internal host isn't part of the external attack surface this tab tracks |
 | **Critical Misconfigurations** | CSPM policy violations, Critical & High severity |
 | **Internet Accessible Ressources** | Every asset FortiCNAPP's Attack Path Analysis (`LW_APA_EXPOSURE_PATHS`) has traced a route to from the internet, across all target types **except FortiGate/Fortinet appliances** (those have their own dedicated tab below), with click-to-filter tiles |
-| **Internet Exposed Host** | A second, independently-filtered host view that deliberately reproduces the FortiCNAPP **console's own** "Hosts" query, not this app's usual (stricter) exposure methodology: Host Risk Score ≥ 7 (a per-**machine** composite score, not a per-CVE one) · Machine status Online/Launched · Vulnerability status Active · Internet Exposed = True using Lacework's **raw** exposure tag (not the app's verified SG/NSG/FW-rule signal used everywhere else — the two can disagree). Enriched with Critical CSPM findings, Secrets, and high-permission IAM role/instance profile (AWS). A host qualifying here is automatically excluded from Private Host Most Exposed below, so the same host never shows up as both "Private" and "Internet Exposed" |
-| **Private Host Most Exposed** | Non-internet-exposed hosts with CVE risk ≥ 9, enriched with correlated Secrets/CIEM credentials — rendered as asset-detail cards (Asset Details, Cloud Context, Security Findings, full CVE table). Hosts qualifying for Internet Exposed Host (above) are excluded here even if this panel's own verified-exposure check would otherwise call them private |
+| **Internet Exposed Resource** (formerly "Internet Exposed Host") | A direct listing of every resource FortiCNAPP's Attack Path engine (`LW_APA_ATTACK_PATHS`) has traced an Internet route to — server-side floor `path_score ≥ 40`, no severity/host-risk-score cutoff at all, and not restricted to compute hosts (S3 buckets and other resource types appear too). A host qualifying here is automatically excluded from Private Host Most Exposed below, so the same host never shows up as both "Private" and "Internet Exposed" |
+| **Private Host Most Exposed** | Non-internet-exposed hosts with `cveRiskScore` (fallback `riskScore`) `≥ 9.85`, enriched with correlated Secrets/CIEM credentials — rendered as asset-detail cards (Asset Details, Cloud Context, Security Findings, full CVE table). Hosts qualifying for Internet Exposed Resource (above) are excluded here even if this panel's own verified-exposure check would otherwise call them private |
 | **Public Storage Exposure** | S3 / Azure Blob buckets confirmed public via policy/ACL, or via a traced Internet→bucket network path (`LW_APA_EXPOSURE_PATHS`) |
 | **FortiGate** | Fortinet appliance inventory — FortiGate plus other Fortinet product lines (FortiManager, FortiADC, etc.), discovered via compute inventory and exposure-path scans, with click-to-filter summary tiles |
 
@@ -107,16 +107,16 @@ Risk weights per finding type:
 
 | Finding type | Risk weight |
 |-------------|------------|
-| High-Fidelity Alert — Critical | 80 |
-| High-Fidelity Alert — High | 60 |
+| High-Fidelity Alert — Critical | 100 |
+| High-Fidelity Alert — High | 70 |
 | High-Fidelity Alert — Medium | 40 |
-| CVE (Internet Threat Exposure, `riskScore ≥ 8` only — lower-risk CVEs are excluded) | `riskScore × 10` (max 100) |
-| Critical Misconfiguration | 80 |
+| CVE (Internet Threat Exposure, only counted if `cveRiskScore` (fallback `riskScore`) `≥ 9.85`) | `(cveRiskScore ?? riskScore) × 10` (max 100) |
+| Critical Misconfiguration | 100 |
 | Identity — Admin + No-MFA + (unused entitlements ≥ 80% OR an access key ≥ 180 days old) | 80 |
 | Identity — otherwise | `risk_score × 100` (max 100) |
 | Secret (discovered credential) | 10 |
 
-> **Several different risk thresholds exist in this tool — don't confuse them.** The posture score above weights CVEs at `riskScore ≥ 8`. The Private Host Most Exposed panel displays CVEs at `cveRiskScore ≥ 9`. The Internet Exposed Host panel uses a **host**-level threshold instead — `hostRiskScore ≥ 7` — deliberately reproducing the FortiCNAPP console's own "Hosts" query rather than a CVE-level cutoff, and reads Lacework's raw (not this app's verified) internet-exposure tag. The Risk Findings Inventory's "Host Exposure" category is stricter still, at `cveRiskScore ≥ 9.95` (a separate, fully-paginated fetch, not the 500-row-capped one behind the posture score). Each exists for a different purpose — see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full breakdown.
+> **Several different risk thresholds exist in this tool — don't confuse them.** The posture score above and the Private Host Most Exposed panel both now share one constant, `HIGH_RISK_CVE_THRESHOLD = 9.85`, on the same preferred field (`cveRiskScore`, FortiCNAPP's documented "Risk Score" — fallback `riskScore`, a separate, less-trusted field). The Internet Exposed Resource panel (formerly "Internet Exposed Host") uses an unrelated mechanism entirely — it lists every resource FortiCNAPP's Attack Path engine (`LW_APA_ATTACK_PATHS`) has traced an Internet route to, filtered server-side at `path_score ≥ 40`, not a per-CVE or per-host risk-score cutoff at all. The Risk Findings Inventory's "Host Exposure" category also now uses the same shared `HIGH_RISK_CVE_THRESHOLD` (previously a separate, tighter `≥ 9.95`) on its own fully-paginated fetch (not the 500-row-capped one behind the posture score). Each exists for a different purpose — see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md) for the full breakdown.
 
 > For the full per-CSP formula, worked examples, and scoring rationale see [`SCORING_GUIDE.md`](./SCORING_GUIDE.md).
 
@@ -131,12 +131,12 @@ Hosts are ranked by a combined four-factor risk score that correlates CVEs, secr
 | Factor | Severity | Points | Data source |
 |--------|----------|--------|-------------|
 | CIEM High-Perm credential | Critical | +100 per credential | `secretsAll` — SSH keys, AWS/GCP/Azure credentials |
-| Secret (generic) | High | +50 per secret | `secretsAll` — all other secret types |
-| CVE Internet Threat Exposure | Medium | `riskScore × 10` per CVE | `vulns` — Lacework composite risk score |
+| Secret (generic) | High | +70 per secret | `secretsAll` — all other secret types |
+| CVE Internet Threat Exposure | Medium | `(cveRiskScore ?? riskScore) × 10` per CVE, only if `≥ 9.85` — otherwise 0 | `vulns` — FortiCNAPP's proprietary Risk Score |
 | Critical Misconfiguration | Low | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide, same boost per at-risk host |
 
 ```
-assetRawRisk    = Σ(CIEM×100) + Σ(secret×50) + Σ(cve.riskScore×10) + min(60, critCompliance×10)
+assetRawRisk    = Σ(CIEM×100) + Σ(secret×70) + Σ(cve≥9.85 ? cve.riskScore×10 : 0) + min(60, critCompliance×10)
 normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
 ```
 
@@ -215,8 +215,8 @@ Eight fixed-position circles appear per row — colored when active, gray when n
 | Identities | Critical + 75%+ unused + Full Admin | **7 days** | AWS / Azure / GCP roles, users, service accounts; hard-capped at 7d (LQL limit) |
 | Secrets (SSH keys) | All | **7 days** | Hard-capped at 7d (LQL limit) |
 | Secrets All | All | **7 days** | Hard-capped at 7d (LQL limit) |
-| CVEs / Vulnerabilities | Critical, High · riskScore ≥ 8 · Unpatched (Active) | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged, capped at 500 rows. Not restricted to internet-exposed hosts at fetch time — exposure is a separate, per-host signal checked afterward by each panel individually |
-| Host Exposure (Risk Findings Inventory) | Any severity · cveRiskScore ≥ 9 | **7 days** | Separate, fully-paginated fetch (`fetchHighRiskVulns()`) — not capped at 500 rows like the row above. The Risk Findings Inventory further narrows this to ≥ 9.95 (displayed risk score rounds to 100) and to hosts also confirmed internet-exposed in the CVE fetch above |
+| CVEs / Vulnerabilities | Critical, High · cveRiskScore ≥ 8 · Unpatched (Active) | **7 days** | Hard cap imposed by Lacework API; two parallel calls merged, capped at 500 rows. Not restricted to internet-exposed hosts at fetch time — exposure is a separate, per-host signal checked afterward by each panel individually |
+| Host Exposure (Risk Findings Inventory) | Any severity · cveRiskScore ≥ 9.85 (`HIGH_RISK_CVE_THRESHOLD`) | **7 days** | Separate, fully-paginated fetch (`fetchHighRiskVulns()`) — not capped at 500 rows like the row above. Restricted to hosts also confirmed internet-exposed in the CVE fetch above. Uses the same shared threshold as the posture score and Private Host Most Exposed now (previously its own separate, tighter `≥ 9.95`) |
 
 The default window is **14 days** and can be adjusted in the Admin Settings panel (7 / 14 / 21 / 30 days). CVEs, Identities, and Secrets always remain at 7 days due to API/LQL limits.
 
@@ -328,6 +328,7 @@ sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
     -p 443:8443 \
+    --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
     --env-file .env \
     -v letsencrypt:/etc/letsencrypt \
     -v rca-cache:/app/data \
@@ -336,11 +337,13 @@ sudo docker run --rm -d \
 
 `-v rca-cache:/app/data` persists the fetched-data cache to a named Docker volume — see [Persistent Cache](#persistent-cache) below. Omitting it still works, it just means every container recreation starts from a blank cache instead of last-known-good data.
 
+The container runs **rootless** — as the `node` user (uid 1000) baked into the base image, never root — with every Linux capability dropped except the two it actually needs: `NET_BIND_SERVICE` (to bind port 80 without being root) and `CHOWN` (a one-time self-heal of volume ownership on startup; see `entrypoint.sh`). `--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN` above isn't optional hardening bolted on top — it's required for the container to run as designed, and both convenience scripts below already include it.
+
 Or use the convenience scripts:
 
 ```bash
-./deploy.sh   # Public EC2 — also updates DuckDNS A record
-./install.sh  # Private cloud — skips DuckDNS
+./install.sh               # ports 80/443, includes the least-privilege flags above
+./deploy_CASignedCert.sh   # HTTP-only variant for a pre-issued/CA-signed cert flow
 ```
 
 ### Verify
@@ -358,6 +361,7 @@ sudo docker run --rm -d \
     --name rca \
     -p 80:80 \
     -p 8443:8443 \
+    --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
     -v /path/to/certs:/certs:ro \
     -e TLS_CERT=/certs/fullchain.pem \
     -e TLS_KEY=/certs/privkey.pem \
@@ -366,6 +370,8 @@ sudo docker run --rm -d \
 ```
 
 Set `SELF_SIGNED=true` in `.env` to generate a self-signed cert automatically (no Let's Encrypt, no domain required).
+
+> **Bring-your-own-cert + rootless:** `/certs` is a host bind mount, so its file permissions come from the *host*, not the image — unlike the Docker-managed `letsencrypt`/`rca-cache` volumes, nothing in this repo can chown it for you. If the host cert/key files are owned by root with restrictive permissions (a common default), the container's non-root `node` user (uid 1000) won't be able to read them and TLS startup will fail. Either `chmod` them readable, or `chown` them to uid 1000 on the host, before starting the container.
 
 ---
 

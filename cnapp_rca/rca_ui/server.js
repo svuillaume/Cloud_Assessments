@@ -714,15 +714,18 @@ async function fetchAttackPaths() {
   return rows;
 }
 
-// ── High-risk vulnerabilities — cveRiskScore >= 9, ANY severity ────────────────
+// ── High-risk vulnerabilities — cveRiskScore >= HIGH_RISK_CVE_THRESHOLD, ANY severity ──
 // Powers Risk Findings' "Host Exposure" category specifically (filtered further to
 // internet-exposed hosts client-side) — deliberately separate from fetchVulns()/cache.vulns
 // below, which stays Critical/High-severity-only and continues to drive posture score,
 // reports, the asset risk map, and every other existing consumer unchanged.
 // Confirmed live: the API rejects expression:"gte" (400 "Invalid format in request body")
-// but accepts expression:"ge" — matches the FortiCNAPP console's own "Risk score >= 9"
+// but accepts expression:"ge" — matches the FortiCNAPP console's own "Risk score >= N"
 // query-builder clause, which is NOT severity-gated (can return Medium/Low/Info CVEs with
-// a high risk score that Critical/High-only queries never see at all).
+// a high risk score that Critical/High-only queries never see at all). NOTE: unverified
+// against the live API with a decimal value — the previous integer value (9) was confirmed
+// live; if the API rejects a fractional `value`, fall back to rounding or re-verify against
+// a real tenant.
 //
 // On large tenants this query alone can match six figures of rows (confirmed: one tenant
 // estimated 100K+, ~2KB/row once machineTags/evalCtx are attached — ~200MB). Unlike
@@ -744,7 +747,7 @@ async function fetchHighRiskVulns() {
     timeFilter: timeFilter(7),
     filters: [
       { field: 'status', expression: 'eq', value: 'Active' },
-      { field: 'cveRiskScore', expression: 'ge', value: 9 },
+      { field: 'cveRiskScore', expression: 'ge', value: HIGH_RISK_CVE_THRESHOLD },
     ],
     // Trimmed to fields consumers actually read (machineTags, evalCtx.hostname, mid,
     // cveRiskScore/riskScore, vulnId, featureKey.name) — severity/fixInfo/hostRiskScore/
@@ -777,7 +780,7 @@ async function fetchHighRiskVulns() {
   const capped = allRows
     .sort((a, b) => parseFloat(b.cveRiskScore ?? b.riskScore ?? 0) - parseFloat(a.cveRiskScore ?? a.riskScore ?? 0))
     .slice(0, HIGH_RISK_VULN_ROW_CAP);
-  console.log(`  [high-risk-vulns] total:${allRows.length} (cveRiskScore >= 9, any severity) → kept top ${capped.length}`);
+  console.log(`  [high-risk-vulns] total:${allRows.length} (cveRiskScore >= ${HIGH_RISK_CVE_THRESHOLD}, any severity) → kept top ${capped.length}`);
   return capped;
 }
 
@@ -1565,6 +1568,29 @@ function oldestActiveKeyAgeDays(r) {
 function isAdminNoMfaIdentity(r) {
   return !isServiceAccount(r) && !isRoleType(r) && isHighPermissive(r) && isNoMfa(r);
 }
+// Shared Critical/High/Medium/Low point vocabulary — used by calcPostureScore, asset risk
+// mapping, and per-CSP scoring so a "High" finding carries the same weight everywhere instead
+// of each function inventing its own numbers. Embedded verbatim into buildHtml()'s and
+// MOBILE_HTML's client <script> via JSON.stringify() below so server and client stay in sync.
+// Continuous, non-bucketed scores (CVE riskScore×10, identityRiskScore) are untouched by this —
+// they were never Critical/High/Medium/Low lookups to begin with.
+const SEVERITY_WEIGHTS = { critical: 100, high: 70, medium: 40, low: 10 };
+// Asset Risk Tier score-bucketing cutoffs (normalized 0–100 composite score -> tier label).
+// Deliberately a separate table from SEVERITY_WEIGHTS: those weight individual findings, this
+// buckets the already-computed composite score — different units, shouldn't share values.
+const ASSET_TIER_THRESHOLDS = { critical: 75, high: 50, medium: 30 };
+// The shared "high-risk CVE" floor, unified from what used to be a scattered mix of 8/9/9.5/
+//9.95/10 across different files — see CLAUDE.md's score glossary. Always compared against
+// `cveRiskScore ?? riskScore ?? ...`, preferring cveRiskScore (FortiCNAPP's documented,
+// console-matching "Risk Score" — see https://docs.fortinet.com/document/forticnapp/latest/
+// administration-guide/903844/risk-score) over the less-trusted plain `riskScore` field.
+const HIGH_RISK_CVE_THRESHOLD = 9.85;
+// A second, tighter tier ONLY for buildReportHtml's "is this essentially maxed-out" copy/badge
+// distinction (outcome text + critCnt) — deliberately NOT collapsed into HIGH_RISK_CVE_THRESHOLD
+// above, because doing so would make critCnt equal every row already passing the 9.85 floor,
+// erasing the distinction it exists for. cveRiskScore practically never reaches exactly 10
+// (observed max ~9.98), so 9.95 stays a meaningful, reachable "near-max" cutoff.
+const MAX_SEVERITY_CVE_THRESHOLD = 9.95;
 // Admin + No-MFA + (unused entitlements ≥80% OR an access key ≥180d old) → flat 80 (same
 // tier as a Critical alert). Otherwise falls back to the raw FortiCNAPP CIEM risk_score.
 function identityRiskScore(r) {
@@ -2839,6 +2865,12 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
 
 <script>
 const REFRESH=${intervalSec};
+// Embedded verbatim from the server-side SEVERITY_WEIGHTS/ASSET_TIER_THRESHOLDS constants —
+// see their definition above identityRiskScore() in server.js — so the dashboard's live
+// scoring matches the report builders' Node-side scoring exactly, not a hand-copied guess.
+const SEVERITY_WEIGHTS=${JSON.stringify(SEVERITY_WEIGHTS)};
+const ASSET_TIER_THRESHOLDS=${JSON.stringify(ASSET_TIER_THRESHOLDS)};
+const HIGH_RISK_CVE_THRESHOLD=${JSON.stringify(HIGH_RISK_CVE_THRESHOLD)};
 let cd=10,_isStartup=true;
 function fmtSec(s){
   if(s>=3600){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+(m>0?' '+m+'m':'');}
@@ -3000,12 +3032,12 @@ function ciemCategoryLabel(t){
 
 function _renderVulns(rows,err){
   if(err){state('body-v','',err);return;}
-  // Panel threshold raised to CVE risk ≥ 9 (tighter than the server's own ≥ 8 base fetch) —
-  // filtered client-side since 9 is a strict subset of the already-fetched ≥8 data, same
-  // scoped-filter pattern as the Beta tab's own ≥9 gate (no separate fetch needed).
-  rows=(rows||[]).filter(function(r){return parseFloat(r.cveRiskScore??r.riskScore??r.hostRiskScore??0)>=9;});
+  // Panel threshold is HIGH_RISK_CVE_THRESHOLD (tighter than the server's own ≥ 8 base fetch)
+  // — filtered client-side since it's a strict subset of the already-fetched ≥8 data, same
+  // scoped-filter pattern as the Beta tab's own gate below (no separate fetch needed).
+  rows=(rows||[]).filter(function(r){return parseFloat(r.cveRiskScore??r.riskScore??r.hostRiskScore??0)>=HIGH_RISK_CVE_THRESHOLD;});
   setKpi('kpi-v',rows.length);setCount('cnt-v',rows.length,true);
-  if(!rows.length){state('body-v','','≥ 9 risk score · internet-exposed · unpatched — no results');return;}
+  if(!rows.length){state('body-v','','≥ '+HIGH_RISK_CVE_THRESHOLD+' risk score · internet-exposed · unpatched — no results');return;}
 
   // ── Pull correlated data from global cache ─────────────────────────────────
   var _ld=_lastData||{};
@@ -3916,23 +3948,20 @@ function riskFindingIdentities(identities){
 // Host Exposure count/list shown in Risk Findings (Overview "Exposure" tile, inventory
 // badge, and inventory table row) — single source of truth so all three can't drift apart
 // the way they did when only the inventory table's items list got fixed. Sourced from
-// highRiskVulns (server-side cveRiskScore>=9, ANY severity — see fetchHighRiskVulns()),
-// restricted to hosts that also appear as internet-exposed in the Host Internet Exposure
-// tab itself (cache.vulns, Critical/High only) — keeps this list and that tab in agreement
-// instead of highRiskVulns' broader any-severity scan surfacing hosts the tab has no entry
-// for at all. Threshold is >=9.5, not >=9 (fetchHighRiskVulns()'s own server-side floor) —
-// raised per explicit request, kept as a client-side filter on top of the >=9 fetch rather
-// than re-querying, since >=9.5 is a strict subset.
+// highRiskVulns (server-side cveRiskScore>=HIGH_RISK_CVE_THRESHOLD, ANY severity — see
+// fetchHighRiskVulns()), restricted to hosts that also appear as internet-exposed in the
+// Host Internet Exposure tab itself (cache.vulns, Critical/High only) — keeps this list and
+// that tab in agreement instead of highRiskVulns' broader any-severity scan surfacing hosts
+// the tab has no entry for at all. Threshold is HIGH_RISK_CVE_THRESHOLD, the same shared
+// "high-risk CVE" floor used everywhere else in this file — this used to be its own separate
+// literal (first 9.5, later silently changed to 9.95 without updating this comment); unified
+// per explicit request rather than left to drift independently again.
 function riskFindingHostExposure(d){
   const tabExposedHosts=new Set((d.vulns||[]).filter(r=>{const mt=r.machineTags;const mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;return mtObj&&mtObj.lw_InternetExposure==='Yes';}).map(r=>{const mt=r.machineTags;return mt&&mt.Hostname;}).filter(Boolean));
-  // >=9.95 rather than the raw 0–10 scale's true max (10) — cveRiskScore in practice never
-  // reaches exactly 10 (observed max ~9.98); this is the cutoff where the displayed
-  // Math.round(cveRiskScore*10) risk score reads 100, matching what "risk score = 100" means
-  // to a reader of the table rather than the underlying float.
   return(d.highRiskVulns||[]).filter(r=>{
     const mt=r.machineTags;
     const mtObj=(mt&&typeof mt==='object'&&!Array.isArray(mt))?mt:null;
-    return mtObj&&mtObj.lw_InternetExposure==='Yes'&&tabExposedHosts.has(mtObj.Hostname)&&parseFloat(r.cveRiskScore??r.riskScore??0)>=9.95;
+    return mtObj&&mtObj.lw_InternetExposure==='Yes'&&tabExposedHosts.has(mtObj.Hostname)&&parseFloat(r.cveRiskScore??r.riskScore??0)>=HIGH_RISK_CVE_THRESHOLD;
   });
 }
 
@@ -4230,8 +4259,12 @@ function buildAssetRiskMap(d){
     var host=(mtObj&&mtObj.Hostname)||(r.evalCtx&&r.evalCtx.hostname)||r.mid||'';
     if(!host)return;
     if(!map[host])map[host]={name:host,vulns:[],ciemSecrets:[],genericSecrets:[],risk:0,ciem:0,secretRisk:0,threatRisk:0,miscRisk:0,internetExposed:false,instanceId:'',publicIP:null,cloud:''};
-    var w=Math.min(100,parseFloat(r.riskScore||0)*10);
-    map[host].vulns.push({id:r.vulnId||'',score:parseFloat(r.riskScore||0),w:w});
+    // cveRiskScore preferred over riskScore (the less-trusted field — see CLAUDE.md's score
+    // glossary), floored at HIGH_RISK_CVE_THRESHOLD like every other "high-risk CVE" gate.
+    // Below the floor the CVE still gets listed but contributes zero risk weight.
+    var cveRs=parseFloat(r.cveRiskScore??r.riskScore??0);
+    var w=cveRs>=HIGH_RISK_CVE_THRESHOLD?Math.min(100,cveRs*10):0;
+    map[host].vulns.push({id:r.vulnId||'',score:cveRs,w:w});
     map[host].threatRisk+=w;map[host].risk+=w;
     if(mtObj&&mtObj.lw_InternetExposure==='Yes')map[host].internetExposed=true;
     if(!map[host].instanceId&&mtObj&&mtObj.InstanceId)map[host].instanceId=mtObj.InstanceId;
@@ -4274,8 +4307,8 @@ function buildAssetRiskMap(d){
     }
     if(!matchKey)return;
     var t=(r.SECRET_TYPE||'').toUpperCase();
-    if(CIEM_SET[t]){map[matchKey].ciemSecrets.push(r.SECRET_TYPE);map[matchKey].ciem+=100;map[matchKey].risk+=100;}
-    else{map[matchKey].genericSecrets.push(r.SECRET_TYPE);map[matchKey].secretRisk+=50;map[matchKey].risk+=50;}
+    if(CIEM_SET[t]){map[matchKey].ciemSecrets.push(r.SECRET_TYPE);map[matchKey].ciem+=SEVERITY_WEIGHTS.critical;map[matchKey].risk+=SEVERITY_WEIGHTS.critical;}
+    else{map[matchKey].genericSecrets.push(r.SECRET_TYPE);map[matchKey].secretRisk+=SEVERITY_WEIGHTS.high;map[matchKey].risk+=SEVERITY_WEIGHTS.high;}
   });
   var critMisc=(d.compliance||[]).filter(function(c){return(c.severity||'').toLowerCase()==='critical';}).length;
   var miscBoost=Math.min(60,critMisc*10);
@@ -4793,14 +4826,14 @@ function identityRiskScore(r){
 
 // Cloud Security Posture Score: higher = better posture (0–100).
 // postureScore = 100 − mean(findingRiskScores).  No findings → 100.
-// Alert: CRITICAL=80/HIGH=60/MEDIUM=40  |  CVE: riskScore×10 (only riskScore≥8)  |  Compliance: 80  |  Identity: see identityRiskScore()  |  Secret: 10
+// Alert: SEVERITY_WEIGHTS.critical/high/medium  |  CVE: (cveRiskScore??riskScore)×10, only if ≥HIGH_RISK_CVE_THRESHOLD  |  Compliance: SEVERITY_WEIGHTS.critical  |  Identity: see identityRiskScore()  |  Secret: SEVERITY_WEIGHTS.low
 function calcPostureScore(d){
   const risks=[];
-  (d.alerts||[]).forEach(r=>{const s=(r.severity||'').toLowerCase();risks.push(s==='critical'?80:s==='high'?60:40);});
-  (d.vulns||[]).forEach(r=>{const rs=parseFloat(r.riskScore||0);if(rs>=8)risks.push(Math.min(100,rs*10));});
-  (d.compliance||[]).forEach(()=>risks.push(80));
+  (d.alerts||[]).forEach(r=>{const s=(r.severity||'').toLowerCase();risks.push(s==='critical'?SEVERITY_WEIGHTS.critical:s==='high'?SEVERITY_WEIGHTS.high:SEVERITY_WEIGHTS.medium);});
+  (d.vulns||[]).forEach(r=>{const rs=parseFloat(r.cveRiskScore??r.riskScore??0);if(rs>=HIGH_RISK_CVE_THRESHOLD)risks.push(Math.min(100,rs*10));});
+  (d.compliance||[]).forEach(()=>risks.push(SEVERITY_WEIGHTS.critical));
   (d.identities||[]).forEach(r=>risks.push(identityRiskScore(r)));
-  (d.secretsAll||[]).forEach(()=>risks.push(10));
+  (d.secretsAll||[]).forEach(()=>risks.push(SEVERITY_WEIGHTS.low));
   return Math.max(0, Math.round(risks.length ? 100-risks.reduce((s,v)=>s+v,0)/risks.length : 100));
 }
 // Cloud Security Score maturity model — combines Option 2's progression with Option 1's
@@ -4903,7 +4936,7 @@ function calcCspScore(d,csp){
   });
   const total=C+H+M+L;
   if(total===0)return null;
-  const penalty=40*(C/total)+30*(H/total)+20*(M/total)+10*(L/total);
+  const penalty=SEVERITY_WEIGHTS.critical*(C/total)+SEVERITY_WEIGHTS.high*(H/total)+SEVERITY_WEIGHTS.medium*(M/total)+SEVERITY_WEIGHTS.low*(L/total);
   return Math.max(0,Math.round(100-penalty));
 }
 function cspBadgeColor(csp){return{aws:'#FF9900',azure:'#0078D4',gcp:'#4285F4'}[csp]||'#94a3b8';}
@@ -6727,6 +6760,11 @@ a.step:hover{box-shadow:0 4px 16px rgba(0,0,0,.13)}
   Last refresh: <span id="ltime">—</span>
 </div>
 <script>
+// Embedded verbatim from the server-side SEVERITY_WEIGHTS/HIGH_RISK_CVE_THRESHOLD constants
+// (see their definition above identityRiskScore() in server.js) — keeps the mobile posture
+// score in sync with the desktop dashboard's and report builders' scoring.
+const SEVERITY_WEIGHTS=${JSON.stringify(SEVERITY_WEIGHTS)};
+const HIGH_RISK_CVE_THRESHOLD=${JSON.stringify(HIGH_RISK_CVE_THRESHOLD)};
 function scoreColor(p){return p>=81?'#3b82f6':p>=61?'#22c55e':p>=31?'#f59e0b':'#ef4444';}
 function scoreTier(p){return p>=81?'Optimized':p>=61?'Advanced':p>=31?'Managed':'Foundational';}
 function scoreTierDetail(p){return p>=81?'Mature cloud security posture with proactive risk management and continuous improvement':p>=61?'Security posture is strong with effective controls and manageable residual risk':p>=31?'Core controls are established, but security gaps and optimization opportunities remain':'Security controls are immature; significant exposure and remediation priorities exist';}
@@ -6778,11 +6816,11 @@ function identityRiskScore(r){
 }
 function calcScore(d){
   var risks=[];
-  (d.alerts||[]).forEach(function(r){var s=(r.severity||'').toLowerCase();risks.push(s==='critical'?80:s==='high'?60:40);});
-  (d.vulns||[]).forEach(function(r){var rs=parseFloat(r.riskScore||0);if(rs>=8)risks.push(Math.min(100,rs*10));});
-  (d.compliance||[]).forEach(function(){risks.push(80);});
+  (d.alerts||[]).forEach(function(r){var s=(r.severity||'').toLowerCase();risks.push(s==='critical'?SEVERITY_WEIGHTS.critical:s==='high'?SEVERITY_WEIGHTS.high:SEVERITY_WEIGHTS.medium);});
+  (d.vulns||[]).forEach(function(r){var rs=parseFloat(r.cveRiskScore??r.riskScore??0);if(rs>=HIGH_RISK_CVE_THRESHOLD)risks.push(Math.min(100,rs*10));});
+  (d.compliance||[]).forEach(function(){risks.push(SEVERITY_WEIGHTS.critical);});
   (d.identities||[]).forEach(function(r){risks.push(identityRiskScore(r));});
-  (d.secretsAll||[]).forEach(function(){risks.push(10);});
+  (d.secretsAll||[]).forEach(function(){risks.push(SEVERITY_WEIGHTS.low);});
   return Math.max(0,Math.round(risks.length?100-risks.reduce(function(s,v){return s+v;},0)/risks.length:100));
 }
 function buildSteps(d,p){
@@ -7892,8 +7930,13 @@ function computeAssetRiskMap(vulns, secretsAll, compliance) {
     const host = (mtObj && mtObj.Hostname) || (r.evalCtx && r.evalCtx.hostname) || r.mid || '';
     if (!host) return;
     if (!map[host]) map[host] = { name: host, vulns: [], ciemSecrets: [], genericSecrets: [], risk: 0, ciem: 0, secretRisk: 0, threatRisk: 0, miscRisk: 0, internetExposed: false };
-    const w = Math.min(100, parseFloat(r.riskScore || 0) * 10);
-    map[host].vulns.push({ id: r.vulnId || '', score: parseFloat(r.riskScore || 0), w });
+    // cveRiskScore preferred over riskScore (the less-trusted field — see CLAUDE.md's score
+    // glossary), floored at HIGH_RISK_CVE_THRESHOLD like every other "high-risk CVE" gate in
+    // this file. Below the floor the CVE still gets listed (map[host].vulns) but contributes
+    // zero risk weight — a moderate CVE stays visible without dragging the asset score down.
+    const cveRs = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
+    const w = cveRs >= HIGH_RISK_CVE_THRESHOLD ? Math.min(100, cveRs * 10) : 0;
+    map[host].vulns.push({ id: r.vulnId || '', score: cveRs, w });
     map[host].threatRisk += w; map[host].risk += w;
     if (mtObj && mtObj.lw_InternetExposure === 'Yes') map[host].internetExposed = true;
   });
@@ -7907,8 +7950,8 @@ function computeAssetRiskMap(vulns, secretsAll, compliance) {
     });
     if (!matchKey) return;
     const t = (r.SECRET_TYPE || '').toUpperCase();
-    if (ciemSet[t]) { map[matchKey].ciemSecrets.push(r.SECRET_TYPE); map[matchKey].ciem += 100; map[matchKey].risk += 100; }
-    else { map[matchKey].genericSecrets.push(r.SECRET_TYPE); map[matchKey].secretRisk += 50; map[matchKey].risk += 50; }
+    if (ciemSet[t]) { map[matchKey].ciemSecrets.push(r.SECRET_TYPE); map[matchKey].ciem += SEVERITY_WEIGHTS.critical; map[matchKey].risk += SEVERITY_WEIGHTS.critical; }
+    else { map[matchKey].genericSecrets.push(r.SECRET_TYPE); map[matchKey].secretRisk += SEVERITY_WEIGHTS.high; map[matchKey].risk += SEVERITY_WEIGHTS.high; }
   });
   const critMisc = (compliance || []).filter(c => (c.severity || '').toLowerCase() === 'critical').length;
   const miscBoost = Math.min(60, critMisc * 10);
@@ -8042,8 +8085,10 @@ function computeCspScores(data) {
     const total = C+H+M+L;
     if(total===0) return { score: null, findings: [] };
     // Rate-based: each bucket's share of this cloud's total findings, not raw counts —
-    // see calcCspScore() client-side for the full rationale.
-    const penalty = 40*(C/total)+30*(H/total)+20*(M/total)+10*(L/total);
+    // see calcCspScore() client-side for the full rationale. Weights come from the shared
+    // SEVERITY_WEIGHTS table, so a cloud that's 100% critical findings can now hit 0 (previously
+    // floored at 60 under the old, CSP-score-only 40/30/20/10 penalty scale).
+    const penalty = SEVERITY_WEIGHTS.critical*(C/total)+SEVERITY_WEIGHTS.high*(H/total)+SEVERITY_WEIGHTS.medium*(M/total)+SEVERITY_WEIGHTS.low*(L/total);
     const score = Math.max(0, Math.round(100-penalty));
     return { score, findings, counts: { C, H, M, L } };
   }
@@ -8081,9 +8126,9 @@ function dashboardTileHtml(href, count, color, label) {
 }
 
 function assetRiskTier(score, exposed) {
-  if (score >= 75) return exposed ? { label: 'CRITICAL', color: '#DA291C' } : { label: 'MEDIUM', color: '#B7770D' };
-  if (score >= 50) return exposed ? { label: 'HIGH', color: '#CC4A1A' } : { label: 'LOW', color: '#5A5A5A' };
-  if (score >= 30) return { label: 'MEDIUM', color: '#B7770D' };
+  if (score >= ASSET_TIER_THRESHOLDS.critical) return exposed ? { label: 'CRITICAL', color: '#DA291C' } : { label: 'MEDIUM', color: '#B7770D' };
+  if (score >= ASSET_TIER_THRESHOLDS.high) return exposed ? { label: 'HIGH', color: '#CC4A1A' } : { label: 'LOW', color: '#5A5A5A' };
+  if (score >= ASSET_TIER_THRESHOLDS.medium) return { label: 'MEDIUM', color: '#B7770D' };
   return { label: 'LOW', color: '#5A5A5A' };
 }
 
@@ -8271,9 +8316,11 @@ function buildReportHtml(data, meta) {
 
   const alerts     = data.alerts     || [];
   // "Critical CVE Vulnerabilities" report section — dashboard-wide fetch already caps at
-  // cveRiskScore>=8 (API hard filter), but this section is tighter: only the highest-risk
-  // CVEs (>=9) make the customer-facing report.
-  const vulns      = (data.vulns || []).filter(r => parseFloat(r.riskScore || 0) >= 9);
+  // cveRiskScore>=8 (API hard filter), but this section is tighter: only CVEs clearing
+  // HIGH_RISK_CVE_THRESHOLD make the customer-facing report. Now reads cveRiskScore (preferred,
+  // FortiCNAPP's documented "Risk Score") with a riskScore fallback, matching the field
+  // preference used everywhere else in this file — previously read riskScore alone.
+  const vulns      = (data.vulns || []).filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? 0) >= HIGH_RISK_CVE_THRESHOLD);
   // governanceReportToComplianceRows() can surface Medium-severity recommendations (its
   // own filter allows SEVERITY<=3, i.e. Critical/High/Medium) — this report section is
   // titled "Critical Non-Compliance Findings", so narrow to Critical/High only here,
@@ -8351,7 +8398,7 @@ function buildReportHtml(data, meta) {
 
   // ── Vuln rows grouped by host, with Internet Exposure badge per host ─────────
   function vulnRowCells(r, i) {
-    const rs  = parseFloat(r.riskScore||0);
+    const rs  = parseFloat(r.cveRiskScore ?? r.riskScore ?? 0);
     const pkg = (r.featureKey && r.featureKey.name) || '—';
     const ver = (r.featureKey && r.featureKey.version) || '';
     const fixVer = (r.fixInfo && r.fixInfo.fixed_version) || '';
@@ -8361,14 +8408,14 @@ function buildReportHtml(data, meta) {
                         '<span class="text-muted">No fix available</span>';
     const fixCell = fixVer ? 'Update <strong>'+esc(pkg)+'</strong> to '+esc(fixVer) :
                     fixAvailable ? 'Vendor fix available — apply immediately' : 'No fix available yet — apply mitigating controls';
-    const outcome = rs >= 10
+    const outcome = rs >= MAX_SEVERITY_CVE_THRESHOLD
       ? 'Full system compromise enabling ransomware deployment, data exfiltration, or lateral movement.'
       : 'Remote code execution enabling host compromise, data exfiltration, or privilege escalation.';
     return '<tr'+(i%2===1?' style="background:#FAFAFA;"':'')+'>'+
       '<td class="narrow">'+(i+1)+'</td>'+
       '<td><span class="badge badge-critical">Critical</span></td>'+
       '<td><strong>'+esc(r.vulnId||r.cveId||'—')+'</strong><br><small class="text-muted">'+esc((r.evalCtx&&r.evalCtx.imageId)?'Container':'Host')+'</small></td>'+
-      '<td style="text-align:center"><span class="risk-chip'+(rs<10?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
+      '<td style="text-align:center"><span class="risk-chip'+(rs<MAX_SEVERITY_CVE_THRESHOLD?' high':'')+'">'+rs.toFixed(1)+'</span></td>'+
       '<td class="med"><strong>'+esc(pkg)+'</strong>'+(ver?'<br><small class="text-muted">'+esc(ver)+'</small>':'')+'</td>'+
       '<td class="med">'+fixVerCell+'</td>'+
       '<td class="wide">'+esc(outcome)+'</td>'+
@@ -8379,10 +8426,10 @@ function buildReportHtml(data, meta) {
 
   const { hosts: vulnHosts } = groupVulnsByHost(vulns);
   // Exposed/Internal host counts reflect the FULL vuln population the server fetched
-  // (riskScore>=8, the API's own cap), not just the >=9 subset used for the CVE listing
-  // below — otherwise a host that's genuinely internet-exposed but has no single CVE
-  // scoring >=9 right now would silently disappear from "how many hosts are exposed"
-  // instead of just having no CVEs listed under it.
+  // (cveRiskScore>=8, the API's own cap), not just the HIGH_RISK_CVE_THRESHOLD subset used for
+  // the CVE listing below — otherwise a host that's genuinely internet-exposed but has no
+  // single CVE clearing that floor right now would silently disappear from "how many hosts
+  // are exposed" instead of just having no CVEs listed under it.
   const { hosts: allVulnHosts, exposedCount: exposedHostCount, internalCount: internalHostCount } = groupVulnsByHost(data.vulns || []);
   // "Secrets Found" is scoped to internet-exposed hosts only — a secret on a purely
   // internal host isn't part of the external attack surface this report is prioritizing.
@@ -8394,7 +8441,7 @@ function buildReportHtml(data, meta) {
   });
 
   const vulnHostGroups = vulnHosts.map(function(h) {
-    const critCnt = h.rows.filter(function(r){ return parseFloat(r.riskScore||0) >= 10; }).length;
+    const critCnt = h.rows.filter(function(r){ return parseFloat(r.cveRiskScore ?? r.riskScore ?? 0) >= MAX_SEVERITY_CVE_THRESHOLD; }).length;
     const badge = h.exposed
       ? '<span class="badge badge-critical">&#9889; Internet Exposed</span>'
       : '<span class="badge badge-info">Internal Only</span>';
@@ -8927,14 +8974,15 @@ function buildReportHtml2(data, meta) {
   }
 
   // ── 10/11. Vuln hosts grouped by internet exposure (shared with Report 1) ─
-  // Filtered to cveRiskScore >= 9 up front, same threshold + fallback chain as the
+  // Filtered to HIGH_RISK_CVE_THRESHOLD up front, same threshold + fallback chain as the
   // dashboard's own Vulnerabilities panel (_renderVulns, client-side) — that panel is
-  // intentionally tighter than the ≥8 severity the API fetch/cache.vulns/posture score/
-  // computeAssetRiskMap use, so without re-applying it here this section's host/CVE counts
-  // would never match what the dashboard actually displays. computeAssetRiskMap() below
-  // deliberately keeps using the unfiltered `vulns`, not this — its CVE-factor scoring is a
-  // separate, unrelated code path (see CLAUDE.md).
-  const hostExposureVulns = vulns.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? r.hostRiskScore ?? 0) >= 9);
+  // intentionally tighter than the ≥8 severity the API fetch/cache.vulns use, so without
+  // re-applying it here this section's host/CVE counts would never match what the dashboard
+  // actually displays. computeAssetRiskMap() below still iterates the unfiltered `vulns` for
+  // host bookkeeping/exposure detection, but its own CVE-weight calc applies this same
+  // HIGH_RISK_CVE_THRESHOLD floor internally now too (see CLAUDE.md) — not literally
+  // "unfiltered" for scoring purposes anymore, just a separately-applied instance of the gate.
+  const hostExposureVulns = vulns.filter(r => parseFloat(r.cveRiskScore ?? r.riskScore ?? r.hostRiskScore ?? 0) >= HIGH_RISK_CVE_THRESHOLD);
   const { hosts: vulnHostsAll } = groupVulnsByHost(hostExposureVulns);
   // A host can be raw-tagged not-exposed (lw_InternetExposure, topological) while
   // FortiCNAPP's own traced Internet→host path engine (exposurePaths) confirms a live

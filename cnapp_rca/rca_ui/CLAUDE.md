@@ -49,14 +49,19 @@ docker cp server.js rca:/app/server.js && docker restart rca
 sudo docker build -t rca-dashboard .
 sudo docker run --rm -d --name rca \
   -p 80:80 -p 8443:8443 \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN \
   --env-file .env \
   -v letsencrypt:/etc/letsencrypt \
   rca-dashboard
 
 # Convenience scripts (both build + stop-existing + run):
-./deploy.sh               # public EC2, ports 80/8443
-./deploy_PrivateCloud.sh  # private cloud, ports 80/443
+./install.sh               # ports 80/443, includes the cap flags above
+./deploy_CASignedCert.sh   # HTTP-only variant for a pre-issued/CA-signed cert flow
 ```
+
+Both scripts already run the container rootless with the least-privilege flags above (see
+"Rootless / least-privilege container" below) — the flags aren't optional extras layered on top,
+they're baked into `install.sh`/`deploy_CASignedCert.sh` themselves.
 
 Copy `.env.example` → `.env` and fill in credentials. Values must NOT be quoted (Docker reads the file literally). `SELF_SIGNED=true` generates a local cert when DNS isn't propagated yet; supplying `TLS_CERT`/`TLS_KEY` skips both certbot and self-signed. The Dockerfile installs `certbot`, `openssl`, and `chromium` (headless Chromium is invoked by both report builders to render PDFs — `entrypoint.sh` handles the TLS branch at container start).
 
@@ -141,6 +146,11 @@ Everything lives in one file. Rough layout, in order:
 - `resolveReachableIP()` probes all DNS IPs at startup via TCP on port 443 and caches the first reachable one
 - Blacklisted IPs expire after 12h; DNS is re-probed every 24h
 
+**Rootless / least-privilege container**
+- The Dockerfile sets `USER node` — the container runs as the `node` user (uid/gid 1000) baked into the `node:18-alpine` base image, never as root. `install.sh` and `deploy_CASignedCert.sh` both run it with `--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN`, dropping every Linux capability except the two actually needed: `NET_BIND_SERVICE` (both Node itself and certbot's standalone ACME challenge bind port 80, a privileged port) and `CHOWN` (entrypoint.sh's one-time ownership self-heal, below). Verified end-to-end against a real build: non-root PID 1, `/proc/1/status`'s `CapBnd` decodes to exactly those two capabilities, port 80 binds successfully, and PDF report generation (headless Chromium, already invoked everywhere with `--no-sandbox`, so it needs no extra capability) still works.
+- The Dockerfile pre-creates and chowns `/app`, `/app/data`, `/etc/letsencrypt`, `/var/lib/letsencrypt`, and `/var/log/letsencrypt` to `node:node` at build time. Docker seeds a *fresh* named volume's initial content and ownership from whatever already exists at that mount path in the image, so a first-time `-v letsencrypt:/etc/letsencrypt` / `-v rca-cache:/app/data` mount inherits correct ownership automatically — no root needed at runtime for that case.
+- `entrypoint.sh` runs a best-effort `chown -R node:node /etc/letsencrypt /app/data` at startup, silently ignored on failure, to self-heal an *existing* volume left root-owned by a prior root-run deployment. `CAP_CHOWN` lets a non-root process change a file's owner, but it does **not** grant directory traversal into a restrictively-permissioned tree it otherwise can't read — a deeply-locked-down pre-existing volume may only get partially fixed by this. The guaranteed fallback for migrating an existing deployment is a one-time host-side fix: `docker run --rm -v letsencrypt:/etc/letsencrypt -v rca-cache:/app/data alpine chown -R 1000:1000 /etc/letsencrypt /app/data`.
+
 **Mock mode**
 - Set `MOCK_FILE=/path/to/mock_data.json` to bypass all API calls; the file is loaded once at startup and serves as the cache — the fastest way to iterate on dashboard/report UI without live credentials
 
@@ -203,30 +213,53 @@ Everything lives in one file. Rough layout, in order:
 **SVG diagram element IDs must be globally unique per render**
 - `hexKillChainSvg()` (used by the Exploit Simulation Layer's Global tab, each per-CSP tab, and the per-host Attack Path modal) generates its own `<defs>` gradient/filter IDs via a running counter (`hexKillChainSvg._seq`), not a hash of the diagram's shape. Inactive tabs'/panels' SVGs are hidden via CSS, not removed from the DOM, so multiple diagram instances can coexist on the page at once — if two of them ever computed the same ID again (as a shape-based hash briefly did, since every per-CSP tab has the same factor count), the browser resolves `url(#id)` fill/filter references against whichever matching element it finds first in document order, silently breaking the *other* diagram's rendering (transparent/unreadable hexagons). Keep ID generation counter-based, not derived from renderable content.
 
+**Score field glossary — `riskScore` vs `cveRiskScore` vs `hostRiskScore` vs `normalizedScore` vs identity `risk_score` vs `path_score`. Don't confuse these — they are five unrelated numbers that happen to share the word "risk"/"score" in their name, on different scales, from different sources, gating different thresholds.**
+
+| Field | Lives on | Scale | What it actually measures | Where it's used |
+|---|---|---|---|---|
+| `cveRiskScore` | a CVE record (`fetchVulns`) | ~0–10 (practically maxes ~9.95, not 10) | FortiCNAPP's proprietary **"Risk Score"** as documented at [docs.fortinet.com/.../risk-score](https://docs.fortinet.com/document/forticnapp/latest/administration-guide/903844/risk-score) — an environment-specific *impact* score, NOT plain CVSS: it blends CVE severity/CVSS with prevalence (number of hosts/images/packages affected), internet exposure, and known/active exploit signals, recalculated daily. Per that doc's own example: a low-CVSS CVE detected across a large or internet-facing portion of the environment scores **high** here even though its CVSS is low. This is the same field the FortiCNAPP console filters on when someone sets "Risk score ≥ N" | The authoritative field everywhere in this file now — see `HIGH_RISK_CVE_THRESHOLD` below. Standard fallback pattern: `cveRiskScore ?? riskScore ?? 0` |
+| `riskScore` | the *same* CVE record, a separate field | ~0–10 | A distinct score Fortinet's public docs don't name separately from "Risk Score" above — but it's empirically **not** the same number: one live CVE sat at `cveRiskScore` 9.95 while its `riskScore` was only 6.3 for the identical record. Because `cveRiskScore` is confirmed to be the documented, console-matching Risk Score, treat `riskScore` as the less-trustworthy/less-current of the two, used only as a fallback | Only read directly (no `cveRiskScore` fallback) by `fetchVulns()`'s own base API filter (`cveRiskScore>=8`, the widest net — everything below unifies as a strict subset of it) and `calcRiskScore()`'s server-side logging approximation (intentionally *not* meant to mirror the real posture score — see below) |
+| `hostRiskScore` | also on the CVE record, despite the name — it's actually a **host**-level composite | ~0–10 | Per Fortinet's docs, host-level risk is a *probability of compromise*: for every vulnerability on the host, FortiCNAPP estimates a per-CVE exploit probability, combines them into an overall probability that at least one succeeds, discounts that by the host's internet exposure, then ×10 for the final score — a fundamentally different calculation from the per-CVE `cveRiskScore` above, not just a different aggregation of the same inputs | Deliberately **not** used as the primary CVE-severity signal (a host can sit at `hostRiskScore` 0.22 while carrying a CVE at `cveRiskScore` 9.74 — one severe CVE gets diluted across everything else factored into that host's compromise probability). Only appears as a last-resort fallback (`cveRiskScore ?? riskScore ?? hostRiskScore ?? 0`) in a couple of display/sort spots |
+| identity `METRICS.risk_score` | an identity record (`fetchIdentities`), not a CVE at all | 0–1 | FortiCNAPP's CIEM identity risk score | `identityRiskScore(r)` multiplies it ×100 so it sits on the same 0–100 scale as everything else in the posture score's mean |
+| `normalizedScore` | not an API field — locally computed by `computeAssetRiskMap`/`buildAssetRiskMap` | 0–100 | A host's summed CIEM+secret+CVE+misconfig points, divided by the max across all hosts in this tenant | Feeds `assetRiskTier()`'s `ASSET_TIER_THRESHOLDS` cutoffs (75/50/30) — **not** compared against any raw `riskScore`/`cveRiskScore` value |
+| `path_score` | an attack-path record (`LW_APA_ATTACK_PATHS`) | 0–100 | The Attack Paths engine's own traced-exploitability score — unrelated to any of the above | `fetchAttackPaths()`'s `≥40` server floor; Attack Paths tab's tighter `≥80` client filter |
+
+**The unified "high-risk CVE" gate — `HIGH_RISK_CVE_THRESHOLD = 9.85`** (defined once, server-side, next to `SEVERITY_WEIGHTS`/`ASSET_TIER_THRESHOLDS`; embedded into `buildHtml()`'s and `MOBILE_HTML`'s client `<script>` via `JSON.stringify()`, same pattern as those two). This used to be a scattered, drifting mix — `fetchHighRiskVulns()`'s server query at `≥9`, `_renderVulns()`'s client filter at `≥9`, `riskFindingHostExposure()`'s gate (first documented as `≥9.5`, silently changed to `≥9.95` without updating that comment), `buildReportHtml2`'s `hostExposureVulns` at `≥9`, `buildReportHtml`'s CVE listing at `≥9` — all now read `cveRiskScore ?? riskScore ?? ...` against this one constant. Two consumers that previously read plain `riskScore` (the less-trusted field, no fallback) were switched onto the same `cveRiskScore ?? riskScore` preference at the same time: **posture score's CVE factor** (`calcPostureScore`, both desktop and mobile copies) and **the asset risk map's CVE factor** (`computeAssetRiskMap`/`buildAssetRiskMap`) — the asset map didn't have any floor before, so this is a new behavior change there, not just a field swap: a CVE below 9.85 now still gets listed on its host but contributes zero risk weight, instead of always contributing `min(100, riskScore×10)`.
+
+Two deliberate exceptions, both in `buildReportHtml` and both kept apart from the 9.85 baseline on purpose via a second constant, `MAX_SEVERITY_CVE_THRESHOLD = 9.95`: the CVE listing's `outcome` copy (a CVE at/above this reads as "full system compromise" instead of "remote code execution"), its risk-chip badge styling, and the per-host `critCnt` badge. Collapsing these onto `HIGH_RISK_CVE_THRESHOLD` would have made `critCnt` equal every row already passing the listing's own floor, erasing the "even more severe" distinction it exists for — so they instead moved from the old, now-unreachable `riskScore ≥ 10` (once `rs` prefers `cveRiskScore`, whose practical ceiling is ~9.95, a literal `≥10` check would never fire again) to `cveRiskScore ?? riskScore ?? 0 ≥ 9.95`, the same "practically maxed out" cutoff `riskFindingHostExposure()` already used. `fetchVulns()`'s own base API filter (`cveRiskScore ≥ 8`) was deliberately left untouched — it's the widest net, and every 9.85/9.95 gate above is already a strict subset of it, so nothing needed to change there.
+
+**Not part of this unification, kept separate on purpose:** `calcRiskScore()` (server-side, `refreshData()` logging only — explicitly documented as a cheaper approximation never shown in the UI, so its own `riskScore ≥ 8` floor was left as-is) and `buildReportHtml2`'s `vulnScoreSeverity()` display bucketing (`≥9`/`≥7`/`≥4`, a 4-tier label function applied to rows already pre-filtered by `HIGH_RISK_CVE_THRESHOLD`, not itself an inclusion gate).
+
 **Posture score formula** (server `calcRiskScore` is a *different*, cheaper approximation used only during `refreshData()` logging — the score shown in the UI is `calcPostureScore`, computed client-side and mirrored nowhere server-side):
 ```
 postureScore = max(0, round(100 − mean(findingRiskScores)))
 ```
-Risk weights per finding: alerts→95, CVEs→`riskScore×10` (max 100), compliance→80, identities→`risk_score×100` (max 100), secrets→75. There is no separate secret-count penalty.
-Bands: ≥90 green · ≥50 amber · <50 red.
+Risk weights per finding, drawn from the shared `SEVERITY_WEIGHTS = { critical: 100, high: 70, medium: 40, low: 10 }` table (also used by the asset risk map and CSP score below, so a "critical" means the same 100 points everywhere):
+- Alert: `SEVERITY_WEIGHTS.critical/high/medium` by severity (100/70/40)
+- CVE: `(cveRiskScore ?? riskScore)×10` (max 100) — **only counted when that value ≥ `HIGH_RISK_CVE_THRESHOLD` (9.85)**; lower-severity CVEs are excluded from the average entirely, not included at a low weight. See the score field glossary above for why `cveRiskScore` is preferred
+- Compliance: flat `SEVERITY_WEIGHTS.critical` (100) — compliance findings reaching this point are already critical-only (see "Critical Misconfigurations" below)
+- Identity: `identityRiskScore(r)` — 80 if it's an admin, no-MFA identity with either ≥80% unused permissions or an old access key; otherwise `min(100, METRICS.risk_score×100)`
+- Secret: flat `SEVERITY_WEIGHTS.low` (10)
 
-**Correlated Risk Findings per Asset** (`computeAssetRiskMap`, shared by dashboard + both reports)
+There is no separate secret-count penalty. Bands: ≥90 green · ≥50 amber · <50 red.
+
+**Correlated Risk Findings per Asset** (`computeAssetRiskMap`/`buildAssetRiskMap`, shared by dashboard + all four reports)
 
 Four factors summed per host, then normalized 0–100:
 
 | Factor | Points | Source |
 |---|---|---|
-| CIEM high-perm credential | +100 per secret | `secretsAll` where `SECRET_TYPE` is an SSH key / AWS / GCP / Azure credential type |
-| Secret (generic) | +50 per secret | `secretsAll` — all other secret types |
-| CVE threat exposure | `riskScore × 10` per CVE (max 100) | `vulns`, matched to host via `machineTags.Hostname` / `evalCtx.hostname` / `mid` |
-| Critical misconfiguration | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide, same boost applied to every host with existing risk |
+| CIEM high-perm credential | `SEVERITY_WEIGHTS.critical` (+100) per secret | `secretsAll` where `SECRET_TYPE` is an SSH key / AWS / GCP / Azure credential type |
+| Secret (generic) | `SEVERITY_WEIGHTS.high` (+70) per secret | `secretsAll` — all other secret types |
+| CVE threat exposure | `(cveRiskScore ?? riskScore) × 10` per CVE (max 100), **only if ≥ `HIGH_RISK_CVE_THRESHOLD` (9.85)** — otherwise 0 | `vulns`, matched to host via `machineTags.Hostname` / `evalCtx.hostname` / `mid`. The CVE still appears in the host's finding list either way; only the risk-weight contribution is gated |
+| Critical misconfiguration | `min(60, criticalPolicyCount × 10)` flat | `compliance` — account-wide, same boost applied to every host with existing risk. Not drawn from `SEVERITY_WEIGHTS` — this is a separate capped account-wide boost, not a per-finding severity weight |
 
 ```
-assetRawRisk   = Σ(ciem×100) + Σ(genericSecret×50) + Σ(cve.riskScore×10) + min(60, critCompliance×10)
+assetRawRisk   = Σ(ciem×100) + Σ(genericSecret×70) + Σ(cve≥9.85 ? cve.riskScore×10 : 0) + min(60, critCompliance×10)
 normalizedScore = round(assetRawRisk / maxAssetRawRisk × 100)
 ```
 
-Risk tier (`assetRiskTier`) — internet exposure (from `fetchTrueExposure`, i.e. an actual open security-group/NSG/firewall rule from a public source, not just a public IP) adjusts the tier:
+Risk tier (`assetRiskTier`, cutoffs in `ASSET_TIER_THRESHOLDS = { critical: 75, high: 50, medium: 30 }`) — internet exposure (from `fetchTrueExposure`, i.e. an actual open security-group/NSG/firewall rule from a public source, not just a public IP) adjusts the tier. These are score-bucketing cutoffs on `normalizedScore`, a different concept from `SEVERITY_WEIGHTS` (which weights individual findings) — kept as their own table on purpose:
 
 | Base score | Internet Exposed | Tier |
 |---|---|---|
@@ -239,9 +272,10 @@ Risk tier (`assetRiskTier`) — internet exposure (from `fetchTrueExposure`, i.e
 
 **Per-CSP score** (`computeCspScores`, server; mirrored client-side by `calcCspScore`) — rate-based, not raw-count-based, so a cloud with 2 findings and a cloud with 200 findings are scored on the same scale:
 ```
-penalty = 40×(critical/total) + 30×(high/total) + 20×(medium/total) + 10×(low/total)
+penalty = SEVERITY_WEIGHTS.critical×(critical/total) + SEVERITY_WEIGHTS.high×(high/total) + SEVERITY_WEIGHTS.medium×(medium/total) + SEVERITY_WEIGHTS.low×(low/total)
 score   = max(0, round(100 − penalty))
 ```
+i.e. `penalty = 100×(critical/total) + 70×(high/total) + 40×(medium/total) + 10×(low/total)`. Because this now uses the same 100/70/40/10 scale as the posture score and asset risk map (previously its own 40/30/20/10 penalty scale, which floored the minimum possible score at 60 even for a 100%-critical cloud), **a cloud whose findings are entirely critical can now score as low as 0**, not 60 — a real behavior change from the old scale, not just a relabeling.
 Alerts/compliance/identities are bucketed into a cloud by keyword matching on alert type/name, `cloud` field, or `PROVIDER_TYPE`/`CLOUD_PROVIDER`. Overall score is the mean of the three CSP scores (clouds with zero findings score 100, not excluded).
 
 ## Collect artefacts from a running container
