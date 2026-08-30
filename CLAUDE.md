@@ -87,8 +87,12 @@ Key sections in order:
 postureScore = max(0, round(100 − mean(findingRiskScores)))
 ```
 
-Risk weights: alerts→95, vulns→`riskScore×10` (max 100), compliance→80, identities→`risk_score×100` (max 100), secrets→75.
+Risk weights (shared `SEVERITY_WEIGHTS` table): alerts→100/70/40 (critical/high/medium), CVEs→`(cveRiskScore ?? riskScore)×10` (max 100, only if ≥ `HIGH_RISK_CVE_THRESHOLD` = 9.85), compliance→100, identities→`identityRiskScore()` (80 flat for admin+no-MFA+stale, else `risk_score×100` max 100), secrets→10.
 Bands: ≥90 green · ≥50 amber · <50 red.
+
+> This file is a coarse cross-product index — for the full, current, and authoritative scoring
+> reference (all formulas, the score field glossary, worked examples) see
+> `cnapp_rca/rca_ui/CLAUDE.md` and `cnapp_rca/SCORING_GUIDE.md`.
 
 ### Report retrieval
 
