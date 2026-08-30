@@ -13,16 +13,17 @@ A live security dashboard and customer-ready Cloud Rapid Assessment Report power
 5. [Correlated Risk Findings per Asset](#correlated-risk-findings-per-asset)
 6. [Identity & Access Risk](#identity--access-risk)
 7. [Assessment Windows](#assessment-windows)
-8. [Prerequisites](#prerequisites)
-9. [Quick Start](#quick-start)
-10. [Step-by-Step Setup](#step-by-step-setup)
-11. [Production Deployment with HTTPS](#production-deployment-with-https)
-12. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
-13. [Persistent Cache](#persistent-cache)
-14. [Updating the Dashboard](#updating-the-dashboard)
-15. [Collecting Visitor Contacts](#collecting-visitor-contacts)
-16. [Troubleshooting](#troubleshooting)
-17. [Additional Resources](#additional-resources)
+8. [Known API Limitations](#known-api-limitations)
+9. [Prerequisites](#prerequisites)
+10. [Quick Start](#quick-start)
+11. [Step-by-Step Setup](#step-by-step-setup)
+12. [Production Deployment with HTTPS](#production-deployment-with-https)
+13. [Using Your Own TLS Certificate](#using-your-own-tls-certificate)
+14. [Persistent Cache](#persistent-cache)
+15. [Updating the Dashboard](#updating-the-dashboard)
+16. [Collecting Visitor Contacts](#collecting-visitor-contacts)
+17. [Troubleshooting](#troubleshooting)
+18. [Additional Resources](#additional-resources)
 
 ---
 
@@ -223,6 +224,19 @@ The default window is **14 days** and can be adjusted in the Admin Settings pane
 
 ---
 
+## Known API Limitations
+
+A few hard caps and coverage gaps in the underlying FortiCNAPP API that shape what this dashboard can show, independent of any bug:
+
+- **Alerts API**: hard-capped at 7 days per request. `alertTimeWindows()` splits the request into 7-day chunks whenever `dynamicDaysBack > 7`.
+- **Vulns API**: always capped at 7 days, regardless of the `daysBack` setting — there's no chunking workaround for this one.
+- **Attack Paths** (`LW_APA_ATTACK_PATHS`): server-side floor `path_score >= 40` (shared with the Attack Paths tab, which further filters to `>= 80` client-side). Raising the shared floor above 80 would silently drop rows the Attack Paths tab needs.
+- **Exposure Paths** (`LW_APA_EXPOSURE_PATHS`): coverage can be very sparse — e.g. the `ec2:instance` target type can return as few as 1 row tenant-wide. Not every asset has a traced path even if it's genuinely exposed.
+
+> On large tenants, the underlying `Vulnerabilities/Hosts/search` query behind `fetchHighRiskVulns()` (Risk Findings' "Host Exposure" category) can itself match six figures of rows — confirmed on one tenant at 100K+ rows, ~200MB. This fetch is bounded by `HIGH_RISK_VULN_PAGE_CAP`/`HIGH_RISK_VULN_ROW_CAP` in `server.js` to keep the cache, `/api/data` response, and browser payload from growing unbounded on tenants with a very large matching CVE count.
+
+---
+
 ## Prerequisites
 
 ### 1. Runtime Environment
@@ -325,8 +339,8 @@ sudo docker run --rm -d \
 Or use the convenience scripts:
 
 ```bash
-./deploy.sh              # Public EC2 — also updates DuckDNS A record
-./deploy_PrivateCloud.sh # Private cloud — skips DuckDNS
+./deploy.sh   # Public EC2 — also updates DuckDNS A record
+./install.sh  # Private cloud — skips DuckDNS
 ```
 
 ### Verify
@@ -362,7 +376,7 @@ The dashboard's fetched-data cache (alerts, CVEs, identities, compliance, secret
 ### How it's persisted
 
 - **`docker restart rca`** (hot-deploy) already preserves it with no extra setup — the container's writable filesystem layer survives a restart on its own.
-- **A full `docker rm` + recreate** (e.g. via `deploy.sh`/`deploy_PrivateCloud.sh`) needs the cache directory mounted to a Docker volume, which both scripts do automatically:
+- **A full `docker rm` + recreate** (e.g. via `deploy.sh`/`install.sh`) needs the cache directory mounted to a Docker volume, which both scripts do automatically:
   ```
   -v rca-cache:/app/data
   ```

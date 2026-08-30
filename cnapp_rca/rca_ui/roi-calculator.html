@@ -678,6 +678,10 @@ button {
                 <label>Workloads to Protect</label>
                 <input id="roi_workloads" type="number" min="0" value="250">
             </div>
+            <div class="input-group">
+                <label>Sales Discount (%)</label>
+                <input id="roi_workloadDiscount" type="number" min="0" max="100" step="0.1" value="0">
+            </div>
             <button onclick="togglePricingDetails()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; margin-top: 8px;">💰 Pricing Tiers</button>
             <div id="pricingDetailsBox" class="guidance-box" style="display: none; margin-top: 10px;">
                 <strong>Pricing Tiers (Annual, Fixed for 3-yr contract):</strong><br>
@@ -692,6 +696,10 @@ button {
             <div class="input-group">
                 <label>Developers (MOQ: 20)</label>
                 <input id="roi_developers" type="number" min="0" value="0">
+            </div>
+            <div class="input-group">
+                <label>Sales Discount (%)</label>
+                <input id="roi_codeDiscount" type="number" min="0" max="100" step="0.1" value="0">
             </div>
             <button onclick="toggleCodeSecPricing()" style="background: rgba(255,255,255,.1); color: #f5f5f7; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 12px; margin-top: 8px;">💰 Code Security</button>
             <div id="codeSecPricingBox" class="guidance-box" style="display: none; margin-top: 10px;">
@@ -790,7 +798,6 @@ button {
             <button class="calculate-btn" onclick="calculateInvestmentROI1Year()">Calculate 1-Year ROI</button>
             <button class="calculate-btn" onclick="calculateInvestmentROI2Year()">Calculate 2-Year ROI</button>
             <button class="calculate-btn" onclick="calculateInvestmentROI()">Calculate 3-Year ROI</button>
-            <button class="transfer-btn" onclick="transferALEfromFinancial()">← Auto-Load ALE</button>
             <button class="reset-btn" onclick="resetInvestmentROI()">Reset</button>
         </div>
 
@@ -908,6 +915,9 @@ function switchTab(event, tabName) {
     document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
     document.getElementById(tabName).classList.add('active');
     event.target.classList.add('active');
+    if (tabName === 'investment-roi' && lastFinancialRisk.ale > 0) {
+        document.getElementById('roi_ale').value = Math.round(lastFinancialRisk.ale);
+    }
 }
 
 function toggleFormulaDetails() {
@@ -985,6 +995,7 @@ function prefillCloudRiskFromQuery() {
         hfAlerts: 'cr_hfAlerts',
         hostExposure: 'cr_hostExposure',
         identityRisk: 'cr_identityRisk',
+        secretsDetected: 'cr_secretsDetected',
         misconfigs: 'cr_misconfigs'
     };
     var filledAny = false;
@@ -1325,6 +1336,8 @@ function calculateInvestmentROI2Year() {
 function calculateInvestmentROIForYears(numYears) {
     let workloads = Number(document.getElementById('roi_workloads').value);
     let developers = Number(document.getElementById('roi_developers').value);
+    let workloadDiscount = Number(document.getElementById('roi_workloadDiscount').value) || 0;
+    let codeDiscount = Number(document.getElementById('roi_codeDiscount').value) || 0;
     let inflation = Number(document.getElementById('roi_inflation').value) / 100;
     let ale = Number(document.getElementById('roi_ale').value);
     let profileKey = document.getElementById('roi_profile').value;
@@ -1341,8 +1354,10 @@ function calculateInvestmentROIForYears(numYears) {
     else if (workloads >= 250) { tierName = "250-2,499 (Tier 1)"; pricePerWorkload = 400; }
     else { alert("Min 250 workloads"); return; }
 
-    let codePrice = (developers >= 20) ? 650 * developers : 0;
-    let yearlyFortiCost = (workloads * pricePerWorkload) + codePrice;
+    let salesPricePerWorkload = pricePerWorkload * (1 - workloadDiscount / 100);
+    let salesCodePricePerDev = 650 * (1 - codeDiscount / 100);
+    let codePrice = (developers >= 20) ? salesCodePricePerDev * developers : 0;
+    let yearlyFortiCost = (workloads * salesPricePerWorkload) + codePrice;
     let totalCost = yearlyFortiCost * numYears;
 
     let riskReductions = profile.riskReduction;
@@ -1415,18 +1430,11 @@ function calculateInvestmentROIForYears(numYears) {
     document.getElementById('roi_results').classList.remove('hidden');
 }
 
-function transferALEfromFinancial() {
-    if (lastFinancialRisk.ale <= 0) {
-        alert('Calculate Financial Risk first');
-        return;
-    }
-    document.getElementById('roi_ale').value = Math.round(lastFinancialRisk.ale);
-    alert(`Loaded ALE: $${Math.round(lastFinancialRisk.ale).toLocaleString()}`);
-}
-
 function resetInvestmentROI() {
     document.getElementById('roi_workloads').value = 250;
     document.getElementById('roi_developers').value = 0;
+    document.getElementById('roi_workloadDiscount').value = 0;
+    document.getElementById('roi_codeDiscount').value = 0;
     document.getElementById('roi_inflation').value = 3.5;
     document.getElementById('roi_ale').value = 228750;
     document.getElementById('roi_profile').value = 'conservative';
