@@ -5734,18 +5734,26 @@ function triggerCacheRefresh(){
 }
 
 // ── Welcome / What's New popup ───────────────────────────────────────────────
-// Add up to 3 entries here when a feature is flagged for announcement; bump
-// NEW_FEATURES_VERSION so users who already dismissed the previous batch see the
-// new one. Leave the array empty and no popup shows at all.
+// Add up to 3 entries here when a feature is flagged for announcement, with today's date
+// (YYYY-MM-DD) in the 'date' field — bump NEW_FEATURES_VERSION so users who already dismissed the
+// previous batch see the new one. Entries older than NEW_FEATURES_MAX_AGE_DAYS are dropped
+// automatically (see activeNewFeatures() below) rather than needing manual cleanup — an
+// announcement that's a month old isn't "new" anymore regardless of dismiss-tracking.
+// Leave the array empty (or let everything age out) and no popup shows at all.
 const NEW_FEATURES_VERSION='2';
+const NEW_FEATURES_MAX_AGE_DAYS=30;
 const NEW_FEATURES=[
-  {title:'Dark &amp; Light Theme',desc:'Switch between dark and light mode anytime using the toggle in the top-right corner — your preference is remembered.'},
-  {title:'FortiCNAPP ROI Calculator',desc:'New in the sidebar under Action &amp; Reporting — estimate the financial return of FortiCNAPP based on your own cloud footprint and risk profile.'},
+  {title:'Dark &amp; Light Theme',desc:'Switch between dark and light mode anytime using the toggle in the top-right corner — your preference is remembered.',date:'2026-07-31'},
+  {title:'FortiCNAPP ROI Calculator',desc:'New in the sidebar under Action &amp; Reporting — estimate the financial return of FortiCNAPP based on your own cloud footprint and risk profile.',date:'2026-07-31'},
 ];
+function activeNewFeatures(){
+  const cutoff=Date.now()-NEW_FEATURES_MAX_AGE_DAYS*86400000;
+  return NEW_FEATURES.filter(function(f){return !f.date||new Date(f.date).getTime()>=cutoff;});
+}
 function renderWelcomeFeatures(){
   const el=document.getElementById('welcome-features');
   if(!el)return;
-  el.innerHTML=NEW_FEATURES.map(function(f){
+  el.innerHTML=activeNewFeatures().map(function(f){
     return '<div style="display:flex;gap:10px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px">'
       +'<div style="width:26px;height:26px;border-radius:6px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;flex-shrink:0">'
         +'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
@@ -5756,7 +5764,7 @@ function renderWelcomeFeatures(){
   }).join('');
 }
 function maybeShowWelcomeModal(){
-  if(!NEW_FEATURES.length)return;
+  if(!activeNewFeatures().length)return;
   try{
     if(localStorage.getItem('rca-hide-whats-new')==='true')return;
     if(localStorage.getItem('rca-seen-features-version')===NEW_FEATURES_VERSION)return;
