@@ -1,0 +1,23 @@
+# NodePort 30443 — reachable at https://<any-node-ip>:30443 (self-signed cert, see
+# deployment.yaml's SELF_SIGNED=true). No Ingress, no cert-manager.
+#
+# Originally 8443, but that's OUTSIDE Kubernetes' default NodePort range (30000-32767) and
+# was REJECTED by this cluster's API server ("provided port is not in the valid range") on
+# actual apply — note `--dry-run=server` did NOT catch this; the port-range check only fires
+# during real port allocation. Falling back to 30443 (in range) per this file's own prior
+# guidance. Container's own listen port is still 8443 (targetPort: https) — only the
+# externally-reachable NodePort changed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rca
+  namespace: rca
+spec:
+  selector:
+    app: rca
+  ports:
+    - name: https
+      port: 8443
+      targetPort: https
+      nodePort: 30443
+  type: NodePort

@@ -1,0 +1,137 @@
+# ── Single-replica constraint — do not scale this beyond 1 ──────────────────────────────
+# server.js holds several pieces of state in plain module-level JS variables with no shared
+# external store: the live dashboard `cache` (alerts/vulns/compliance/etc, persisted to disk
+# only as a restart-recovery snapshot, not a source of truth other pods could read), the
+# manual-refresh-cache 4h cooldown timer, lastGovernanceReport, lastReportLogo, and the
+# resolved-reachable-IP DNS cache. Running >1 replica would give each pod its own independent,
+# inconsistent view of all of this — e.g. one pod could serve a report with yesterday's
+# uploaded logo while another serves one with no logo at all, depending purely on which pod
+# a request happened to land on. Keep replicas: 1 and strategy: Recreate (not RollingUpdate —
+# with a ReadWriteOnce PVC, a rolling update can otherwise wedge waiting for the new pod to
+# mount a volume the old pod still holds).
+#
+# TLS via SELF_SIGNED=true — no Ingress, no cert-manager (see service.yaml, a NodePort
+# exposing 8443 directly). entrypoint.sh generates a local self-signed cert at boot
+# (SS_DIR=/tmp/selfsigned — ephemeral, NOT on the rca-cache PVC), then server.js listens on
+# PORT_TLS (8443, HTTPS) and PORT (8888, HTTP→HTTPS redirect only). Since the cert lives in
+# /tmp, every pod restart/recreate regenerates it — same as a full `docker rm`+recreate in
+# the original Docker deployment (rca_ui/CLAUDE.md), not a plain `docker restart` (which
+# reuses the existing cert). Practically: expect the browser's "unsafe cert" warning to need
+# re-accepting after every pod restart, not just once. Both ports are unprivileged (8443/8888
+# > 1024), so this pod still needs no NET_BIND_SERVICE capability, unlike the Docker
+# Dockerfile's own EXPOSE 80 for direct exposure.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca
+  namespace: rca
+  labels:
+    app: rca
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rca
+  template:
+    metadata:
+      labels:
+        app: rca
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000 # matches the `node` user (uid/gid 1000) baked into node:18-alpine —
+                       # makes the rca-cache PVC mount owned/writable by it automatically,
+                       # the K8s-native equivalent of the Dockerfile's own chown step.
+      containers:
+        - name: rca
+          # Build from this directory's Dockerfile and push to your own registry —
+          # there's no public image for this app. e.g.:
+          #   docker build -t <your-registry>/rca-dashboard:latest .
+          #   docker push <your-registry>/rca-dashboard:latest
+          image: REPLACE_ME/rca-dashboard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: http
+              containerPort: 8888 # HTTP→HTTPS redirect only once SELF_SIGNED is active —
+                                   # not exposed externally, see service.yaml
+          envFrom:
+            - secretRef:
+                name: rca-credentials
+          env:
+            - name: PORT
+              value: "8888"
+            - name: SELF_SIGNED
+              value: "true"
+          volumeMounts:
+            - name: cache
+              mountPath: /app/data
+          # /health is a plain liveness check (see rca_ui/CLAUDE.md's route table) — it
+          # doesn't depend on the FortiCNAPP API being reachable, only that the process is up.
+          # scheme: HTTPS against the self-signed cert works fine — kubelet's httpGet probe
+          # doesn't verify certificates, so there's no need to trust it separately.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Starting cold, refreshData()'s first cycle (alerts/vulns/identities/secrets in
+          # parallel, then a Critical-severity compliance scan across up to 150 policies in
+          # throttled batches — see rca_ui/CLAUDE.md) can run several minutes. loadCacheFromDisk()
+          # serves the persisted snapshot immediately either way, so readiness isn't gated on
+          # that finishing — this startupProbe just gives the process itself enough headroom
+          # to come up before liveness starts counting failures against it.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            failureThreshold: 12
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi # headless Chromium (PDF report generation) is the main spike —
+                              # tune based on observed usage, this is a starting point, not
+                              # a measured number.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # app writes rca*.html/pdf, contacts.csv, and
+                                           # data/cache.json under /app at runtime
+            capabilities:
+              drop: ["ALL"]
+              # Must add these back, not just drop ALL — verified empirically (both locally
+              # and on a live EKS pod) that `drop: ["ALL"]` alone leaves the container's
+              # capability bounding set fully empty, which breaks execve() entirely for the
+              # non-root `node` user in THIS image (any exec — even /bin/sh — fails
+              # "operation not permitted"), because chown/node/python3 carry file
+              # capabilities (setcap, see Dockerfile) and an empty bounding set alongside
+              # those xattrs trips a kernel/runtime edge case that EPERMs every exec, not
+              # just the setcap'd binaries. install.sh's docker run flags
+              # (--cap-drop=ALL --cap-add=NET_BIND_SERVICE --cap-add=CHOWN) already avoid
+              # this — this Kubernetes manifest just hadn't matched them. Confirmed adding
+              # these two resolves it and matches the Dockerfile's own documented capability
+              # requirements (NET_BIND_SERVICE for port <1024 binds, CHOWN for entrypoint.sh's
+              # volume ownership self-heal) — don't drop back to bare ["ALL"].
+              add: ["NET_BIND_SERVICE", "CHOWN"]
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: rca-cache

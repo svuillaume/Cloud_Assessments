@@ -1,0 +1,12 @@
+# secret.yaml is deliberately NOT listed here — see its own comments. Generate the real
+# Secret from your .env first (kubectl create secret ... | kubectl apply -f -), then apply
+# everything else with:
+#   kubectl apply -k k8s/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rca
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
