@@ -23,7 +23,11 @@
 #   IMAGE_TAG=latest                       (optional, default: latest)
 set -eu
 
-cd "$(dirname "$0")"
+# This script lives in k8s/, but Dockerfile/.env/.env.k8s live one level up in rca_ui/ — cd
+# there so relative paths below (Dockerfile via `docker build .`, .env, .env.k8s) resolve
+# correctly regardless of where this script is invoked from. k8s/-relative paths further down
+# (namespace.yaml, deployment.yaml, etc.) are then written as `k8s/...` from that root.
+cd "$(dirname "$0")/.."
 
 if [ -f .env.k8s ]; then . ./.env.k8s; fi
 

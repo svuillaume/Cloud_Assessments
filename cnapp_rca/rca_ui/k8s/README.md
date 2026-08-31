@@ -42,30 +42,33 @@ None of the above is `rca`-specific — any workload on the cluster needing a PV
 wall. Diagnose with `kubectl describe pvc <name> -n <namespace>` — `ExternalProvisioning`
 events waiting on `ebs.csi.aws.com` with no matching pods in `kube-system` point straight at #1.
 
-## Automated deploy — `deploy_k8s.sh`
+## Automated deploy — `k8s/deploy_k8s.sh`
 
 `deploy_k8s.sh` does everything in the manual **Deploy** section below for you — builds/pushes
 the image, applies the namespace, syncs the credentials Secret from `.env`, and
 renders/applies the rest of `k8s/` with your real image substituted in at apply time (the
-checked-in YAML keeps its `REPLACE_ME` placeholder untouched either way):
+checked-in YAML keeps its `REPLACE_ME` placeholder untouched either way). It lives in `k8s/`
+alongside the manifests, but builds from `rca_ui/` (one level up — where `Dockerfile` and
+`.env` are) regardless of which directory you run it from:
 
 ```bash
 export REGISTRY=your-registry.example.com   # required
 export IMAGE_TAG=latest                     # optional, default: latest
-./deploy_k8s.sh
+k8s/deploy_k8s.sh
 ```
 
-Or put those in a `.env.k8s` file (kept separate from `.env`, which holds FortiCNAPP
-credentials, not deploy config) and just run `./deploy_k8s.sh` — it sources that file if
-present. The script prints the current `kubectl` context and asks for confirmation before
-touching anything, since it's pointed at whatever cluster your kubeconfig currently targets.
+Or put those in a `.env.k8s` file in `rca_ui/` (kept separate from `.env`, which holds
+FortiCNAPP credentials, not deploy config) and just run `k8s/deploy_k8s.sh` — it sources that
+file if present. The script prints the current `kubectl` context and asks for confirmation
+before touching anything, since it's pointed at whatever cluster your kubeconfig currently
+targets.
 
 The rest of this doc is the manual walkthrough the script automates — read it if you want to
 understand or customize what's happening, or to deploy by hand instead.
 
 ## Deploy
 
-Run from this directory (`rca_ui/`):
+Manual walkthrough — run these from `rca_ui/` (`k8s/deploy_k8s.sh` above does this for you):
 
 ```bash
 # 1. Build and push the image (needs a registry your cluster can actually pull from).
@@ -123,6 +126,47 @@ kubectl set image deployment/rca rca=<your-registry>/rca-dashboard:vNEXT -n rca
 
 (or update the tag in `k8s/deployment.yaml` and re-run `kubectl apply -k k8s/` if you prefer
 keeping the manifest as the source of truth for the current image tag).
+
+## Tear down — `k8s/rca_tear_down.sh`
+
+`rca_tear_down.sh` (lives next to `deploy_k8s.sh` in `k8s/`) automates the three modes below —
+prints the current `kubectl` context and asks for confirmation before deleting anything, same
+as the deploy script:
+
+```bash
+k8s/rca_tear_down.sh              # full teardown (default)
+k8s/rca_tear_down.sh --keep-pvc   # keep the namespace + PVC, drop everything else
+k8s/rca_tear_down.sh --restart    # just restart the pod(s), nothing removed
+```
+
+The manual equivalent of the default (full) mode — cascades to delete the Deployment,
+Service, PVC (and its underlying EBS volume, since `gp2`'s reclaim policy is `Delete`), and
+Secret in one shot:
+
+```bash
+kubectl delete namespace rca
+```
+
+Manual equivalents of the narrower modes:
+
+| Goal | Command |
+|---|---|
+| Remove the app but **keep the PVC** (preserve `cache.json` for a future redeploy) | `kubectl delete deployment,service,secret -n rca -l app=rca` — leave the PVC alone |
+| Just restart the pod without removing anything | `kubectl delete pod -n rca -l app=rca` (the Deployment recreates it within seconds) |
+
+Tearing down the namespace does **not** touch anything at the cluster level — the EKS cluster
+itself, the `aws-ebs-csi-driver` add-on, the `AmazonEBSCSIDriverPolicy` IAM attachment, and any
+security group rule you opened for external access all stay in place, so a later
+`k8s/deploy_k8s.sh` doesn't need to repeat the fresh-cluster prerequisites above. `rca_tear_down.sh`
+deliberately does **not** touch these either (they're account/cluster-specific, not something
+a generic script should guess at) — reverse them manually if you're decommissioning the
+cluster entirely:
+
+```bash
+aws eks delete-addon --cluster-name <cluster> --addon-name aws-ebs-csi-driver
+aws iam detach-role-policy --role-name <node-role> --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+aws ec2 revoke-security-group-ingress --group-id <node-sg-id> --protocol tcp --port 30443 --cidr <your-ip>/32
+```
 
 ## Things to know before running this in production
 
