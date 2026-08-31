@@ -7132,6 +7132,11 @@ const REPORT_CSS = `
             margin-bottom: 0;
         }
         .report-topbar-left { display: flex; align-items: center; gap: 14px; }
+        .report-topbar-right { display: flex; align-items: center; }
+        /* No background box behind the logo on purpose — many customer logos (light/white
+           wordmark variants, like a real one tested here) are designed for a dark background,
+           which this topbar already is; a white backdrop would make a white logo invisible. */
+        .report-topbar-right .customer-logo { max-height: 30px; max-width: 160px; object-fit: contain; }
         .report-topbar .brand-logo { height: 18px; width: auto; color: #fff; flex-shrink: 0; }
         .report-topbar .brand-sep { width: 1px; height: 18px; background: rgba(255,255,255,0.2); flex-shrink: 0; }
         .report-topbar .topbar-title { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.75); letter-spacing: 1.8px; text-transform: uppercase; }
@@ -7173,20 +7178,6 @@ const REPORT_CSS = `
             flex-direction: column;
             min-height: 62vh;
             position: relative;
-        }
-        .report-cover .customer-logo {
-            /* No background box behind the logo on purpose — the cover is already a colored
-               gradient, and many customer logos (like light/white wordmark variants) are
-               designed specifically for a dark/colored background, not a white one. A white
-               backdrop here would make a white logo invisible. If a logo needs contrast it
-               doesn't get from the gradient, that's a customer-provided-asset issue, not
-               something this fixed backdrop can solve for every logo anyway. */
-            position: absolute;
-            top: 1.5rem;
-            right: 2rem;
-            max-height: 60px;
-            max-width: 180px;
-            object-fit: contain;
         }
         .report-cover .report-type {
             font-size: 0.8rem;
@@ -7890,14 +7881,19 @@ const FORTINET_LOGO_SVG = '<svg class="brand-logo" xmlns="http://www.w3.org/2000
 // Shared report header — replaces the plain-text "FORTINET" wordmark used by
 // buildReportHtml()/2/3/4 with the real logo + topbar layout (logo, separator,
 // report label) so all four reports share one consistent, self-contained header.
-function reportTopbarHtml(subtitle, logoOnly) {
+// rightHtml (optional) renders in a second flex child on the right — .report-topbar is
+// already `justify-content: space-between`, so passing it lines up with the Fortinet logo
+// on the same row instead of floating separately elsewhere on the page (e.g. the customer
+// logo in buildReportHtml2()).
+function reportTopbarHtml(subtitle, logoOnly, rightHtml) {
+  const right = rightHtml ? '<div class="report-topbar-right">' + rightHtml + '</div>' : '';
   if (logoOnly) {
-    return '<div class="report-topbar"><div class="report-topbar-left">' + FORTINET_LOGO_SVG + '</div></div>';
+    return '<div class="report-topbar"><div class="report-topbar-left">' + FORTINET_LOGO_SVG + '</div>' + right + '</div>';
   }
   return '<div class="report-topbar"><div class="report-topbar-left">' + FORTINET_LOGO_SVG +
     '<div class="brand-sep"></div><span class="topbar-title">Rapid Cloud Assessment</span>' +
     (subtitle ? '<span class="topbar-sub">' + subtitle + '</span>' : '') +
-    '</div></div>';
+    '</div>' + right + '</div>';
 }
 
 // Wraps a findings table behind a collapsed toggle once it exceeds `threshold` rows,
@@ -9631,10 +9627,9 @@ function buildReportHtml2(data, meta) {
   '  <title>Rapid Cloud Assessment (Beta) – '+esc(customer)+'</title>\n' +
   '  <style type="text/css">\n' + REPORT_CSS + '\n' +
   '  </style>\n</head>\n<body>\n' +
-  reportTopbarHtml(null, true) + '\n' +
+  reportTopbarHtml(null, true, reportLogo ? '<img class="customer-logo" src="'+reportLogo+'" alt="'+esc(customer)+' logo">' : '') + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
-  (reportLogo ? '  <img class="customer-logo" src="'+reportLogo+'" alt="'+esc(customer)+' logo">\n' : '') +
   '  <h1>Rapid Cloud Assessment Report</h1>\n' +
   (function() {
     const arcLen=550, fill=Math.round((score/100)*arcLen);
