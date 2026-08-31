@@ -2928,6 +2928,10 @@ const REFRESH=${intervalSec};
 const SEVERITY_WEIGHTS=${JSON.stringify(SEVERITY_WEIGHTS)};
 const ASSET_TIER_THRESHOLDS=${JSON.stringify(ASSET_TIER_THRESHOLDS)};
 const HIGH_RISK_CVE_THRESHOLD=${JSON.stringify(HIGH_RISK_CVE_THRESHOLD)};
+// Same LW_ACCOUNT-derived label as the sidebar's "Customer <Name>" (see buildHtml()'s
+// ACCOUNT_LABEL) — used to auto-populate the Customer Name field on every "Generate Report"
+// flow, since that's the actual tenant being assessed, not whichever visitor is logged in.
+const ACCOUNT_LABEL=${JSON.stringify(ACCOUNT_LABEL)};
 let cd=10,_isStartup=true;
 function fmtSec(s){
   if(s>=3600){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+(m>0?' '+m+'m':'');}
@@ -5530,23 +5534,11 @@ function getCookie(name){
   return v?decodeURIComponent(v.trim().slice(name.length+1)):null;
 }
 
-function wireReportBtn(user){
-  if(!user) return;
-  const params=new URLSearchParams({customer:(user.company||'Customer'),author:(user.first||'')+(user.last?' '+user.last:'')});
-  const btn=document.getElementById('rpt-btn-link');
-  if(btn)btn.href='/report?'+params.toString();
-  const btn3=document.getElementById('rpt3-btn-link');
-  if(btn3)btn3.href='/report3?'+params.toString();
-  const btn4=document.getElementById('rpt4-btn-link');
-  if(btn4)btn4.href='/report4?'+params.toString();
-  // report2 goes through the Generate Cloud Security Report modal (openSma2Modal) instead
-  // of a direct link — stash the logged-in user's defaults for it to pre-fill.
-  window._sma2Defaults={customer:(user.company||'Customer'),author:(user.first||'')+(user.last?' '+user.last:'')};
-}
-
 function openSma2Modal(){
-  const d=window._sma2Defaults||{};
-  document.getElementById('sma2-customer').value=d.customer||'';
+  // Customer Name defaults to the LW_ACCOUNT-derived label (the actual tenant being
+  // assessed) — same reasoning as the sidebar's "Customer <Name>" label — rather than
+  // being left blank for the visitor to type in every time.
+  document.getElementById('sma2-customer').value=ACCOUNT_LABEL||'';
   document.getElementById('sma2-requester').value='';
   document.getElementById('sma2-conclusion').value='';
   document.getElementById('sma2-overlay').style.display='flex';
@@ -5555,10 +5547,9 @@ function closeSma2Modal(){
   document.getElementById('sma2-overlay').style.display='none';
 }
 function runSma2Modal(){
-  const d=window._sma2Defaults||{};
   const params=new URLSearchParams({
-    customer:(document.getElementById('sma2-customer').value||d.customer||'Customer').trim(),
-    author:d.author||'',
+    customer:(document.getElementById('sma2-customer').value||ACCOUNT_LABEL||'Customer').trim(),
+    author:'',
     requester:(document.getElementById('sma2-requester').value||'').trim(),
     conclusion:(document.getElementById('sma2-conclusion').value||'').trim(),
   });
