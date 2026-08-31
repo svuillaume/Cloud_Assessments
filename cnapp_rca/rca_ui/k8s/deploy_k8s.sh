@@ -65,7 +65,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 sed "s#REPLACE_ME/rca-dashboard:latest#$IMAGE#" k8s/deployment.yaml > "$TMP/deployment.yaml"
-cp k8s/pvc.yaml k8s/service.yaml k8s/kustomization.yaml "$TMP/"
+cp k8s/namespace.yaml k8s/pvc.yaml k8s/service.yaml k8s/kustomization.yaml "$TMP/"
 
 echo "==> Applying manifests"
 kubectl apply -k "$TMP"
