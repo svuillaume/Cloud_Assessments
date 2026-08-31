@@ -5738,13 +5738,13 @@ function triggerCacheRefresh(){
 // (YYYY-MM-DD) in the 'date' field — bump NEW_FEATURES_VERSION so users who already dismissed the
 // previous batch see the new one. Entries older than NEW_FEATURES_MAX_AGE_DAYS are dropped
 // automatically (see activeNewFeatures() below) rather than needing manual cleanup — an
-// announcement that's a month old isn't "new" anymore regardless of dismiss-tracking.
+// announcement that's a quarter old isn't "new" anymore regardless of dismiss-tracking.
 // Leave the array empty (or let everything age out) and no popup shows at all.
-const NEW_FEATURES_VERSION='2';
-const NEW_FEATURES_MAX_AGE_DAYS=30;
+const NEW_FEATURES_VERSION='3';
+const NEW_FEATURES_MAX_AGE_DAYS=90;
 const NEW_FEATURES=[
-  {title:'Dark &amp; Light Theme',desc:'Switch between dark and light mode anytime using the toggle in the top-right corner — your preference is remembered.',date:'2026-07-31'},
-  {title:'FortiCNAPP ROI Calculator',desc:'New in the sidebar under Action &amp; Reporting — estimate the financial return of FortiCNAPP based on your own cloud footprint and risk profile.',date:'2026-07-31'},
+  {title:'Customer Logo on Reports',desc:'Upload a PNG or SVG logo when generating the Cloud Security Report — it now appears top-right on the report cover page.',date:'2026-08-31'},
+  {title:'Auto-Filled Customer Name',desc:'The Customer Name field is now pre-filled from your connected FortiCNAPP tenant when generating a report — no more typing it in every time.',date:'2026-08-31'},
 ];
 function activeNewFeatures(){
   const cutoff=Date.now()-NEW_FEATURES_MAX_AGE_DAYS*86400000;
