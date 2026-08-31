@@ -98,13 +98,16 @@ kubectl apply -k k8s/
 kubectl get pods -n rca
 kubectl logs -n rca -l app=rca -f
 
-# 7. Find a node's reachable IP
+# 7. Find a node's reachable address — prefer the AWS public DNS FQDN (ExternalDNS) over the
+#    bare IP: stable across the underlying EC2 instance's public IP changing on stop/start.
+kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}'
+# Falls back to ExternalIP if ExternalDNS isn't populated (e.g. non-AWS clusters):
 kubectl get nodes -o wide
 ```
 
-The app is then reachable at `https://<node-ip>:30443` (self-signed cert — accept the browser
-warning) — no DNS or CA-issued cert step needed. Even when node IPs are public (not every
-managed cluster's nodes are — check with `kubectl get nodes -o wide`), the node's security
+The app is then reachable at `https://<node-fqdn-or-ip>:30443` (self-signed cert — accept the
+browser warning) — no DNS or CA-issued cert step needed. Even when node addresses are public
+(not every managed cluster's nodes are — check with `kubectl get nodes -o wide`), the node's security
 group typically has no inbound rule for arbitrary external traffic by default, only
 self-referencing rules for cluster-internal communication. Open it explicitly, scoped as
 tight as your access pattern allows:

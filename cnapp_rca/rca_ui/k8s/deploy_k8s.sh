@@ -76,8 +76,24 @@ kubectl rollout status deployment/rca -n rca --timeout=180s
 echo
 echo "==> Status"
 kubectl get pods -n rca
+
+# Prefer the node's AWS public DNS FQDN (ExternalDNS, e.g. ec2-x-x-x-x.<region>.compute.
+# amazonaws.com) over a bare IP — works the same for the self-signed cert either way, but a
+# FQDN is stable across an EC2 instance's public IP changing on stop/start, and is what
+# EKS/AWS itself calls the address. Falls back to ExternalIP (works on non-AWS clusters, or
+# if ExternalDNS isn't populated), and finally to a private-IP note if neither is present.
+NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+if [ -z "$NODE_ADDR" ]; then
+  NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+fi
+
 echo
-echo "Reachable at https://<node-ip>:30443 (self-signed cert — accept the browser warning)."
+if [ -n "$NODE_ADDR" ]; then
+  echo "Reachable at https://$NODE_ADDR:30443 (self-signed cert — accept the browser warning)."
+else
+  echo "No external node address found — node IPs are likely private-only on this cluster."
+  echo "You'll need a jump host/VPN into the cluster's network. Node IPs:"
+  kubectl get nodes -o wide
+fi
 echo "You likely also need a security group/firewall rule opening 30443 to your IP — see"
-echo "k8s/README.md. Find a node IP with:"
-kubectl get nodes -o wide
+echo "k8s/README.md."
