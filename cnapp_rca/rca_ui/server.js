@@ -671,10 +671,15 @@ async function fetchTrueExposure() {
 async function fetchExposurePaths() {
   const RETURN = 'RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, target';
   const SOURCE = 'LW_APA_EXPOSURE_PATHS a, array_to_rows(a.TARGETS) as (target)';
+  // Per-target-type failures stay swallowed-to-[] on purpose (one target type erroring
+  // shouldn't blank out the others) — but the error itself is now collected into
+  // _fetchErrors below instead of being fully discarded, so refreshData() can still surface
+  // it in cache.errors.exposurePaths rather than looking identical to "zero paths traced".
+  const fetchErrors = [];
   function q(targetType) {
     const queryText = `{ source { ${SOURCE} } FILTER { target:"type" = "${targetType}" } return distinct { ${RETURN} } }`;
     return post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
-      .catch(e => { console.log(`  [exposure-paths] ${targetType} ERR:`, e.message.slice(0, 150)); return []; });
+      .catch(e => { console.log(`  [exposure-paths] ${targetType} ERR:`, e.message.slice(0, 150)); fetchErrors.push(`${targetType}: ${e.message}`); return []; });
   }
   // Unfiltered — every traced Internet→Target path regardless of target type, TARGETS left
   // as its raw (unflattened) array rather than array_to_rows-exploded like the per-type
@@ -683,7 +688,7 @@ async function fetchExposurePaths() {
   function qAll() {
     const queryText = `{ source { LW_APA_EXPOSURE_PATHS } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
     return post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
-      .catch(e => { console.log('  [exposure-paths] all ERR:', e.message.slice(0, 150)); return []; });
+      .catch(e => { console.log('  [exposure-paths] all ERR:', e.message.slice(0, 150)); fetchErrors.push(`all: ${e.message}`); return []; });
   }
   const [s3, ec2, azureVm, azureBlob, fortigate, all] = await Promise.all([
     q('s3:bucket'),
@@ -694,7 +699,7 @@ async function fetchExposurePaths() {
     qAll(),
   ]);
   console.log(`  [exposure-paths] s3:${s3.length} ec2:${ec2.length} azureVm:${azureVm.length} azureBlob:${azureBlob.length} fortigate:${fortigate.length} all:${all.length}`);
-  return { s3, ec2, azureVm, azureBlob, fortigate, all };
+  return { s3, ec2, azureVm, azureBlob, fortigate, all, _fetchErrors: fetchErrors };
 }
 
 // ── Attack Paths — LW_APA_ATTACK_PATHS (Attack Path Analysis) ──────────────────
@@ -708,8 +713,10 @@ async function fetchExposurePaths() {
 // (renderAttackPaths()) applies its own tighter path_score >= 80 client-side on top.
 async function fetchAttackPaths() {
   const queryText = `{ source { LW_APA_ATTACK_PATHS } FILTER { METRICS:"path_score" >= 40 } return distinct { RECORD_CREATED_TIME, PATH_ID, PROVIDER_TYPE, DOMAIN_ID, METRICS, PATH, TARGETS } }`;
-  const rows = await post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000)
-    .catch(e => { console.log('  [attack-paths] ERR:', e.message.slice(0, 150)); return []; });
+  // No internal catch — let a failure (auth/DNS/config) propagate so refreshData()'s
+  // Promise.allSettled records it in cache.errors.attackPaths, instead of looking
+  // identical to "genuinely zero attack paths" (single query, no partial-success to preserve).
+  const rows = await post('Queries/execute', { query: { queryText }, arguments: timeArgs(dynamicDaysBack) }, 60000);
   console.log(`  [attack-paths] total:${rows.length}${rows[0] ? ' sample METRICS: ' + JSON.stringify(rows[0].METRICS) : ' (no rows)'}`);
   return rows;
 }
@@ -815,10 +822,15 @@ async function fetchVulns() {
     }, 60000);
   }
 
+  // Per-branch failures stay swallowed-to-fallback on purpose (one branch erroring
+  // shouldn't blank the others) — but each error is now collected into _fetchErrors below
+  // instead of being fully discarded, so refreshData() can surface it in cache.errors.vulns
+  // rather than looking identical to "zero vulnerabilities".
+  const fetchErrors = [];
   const [crits, highs, trueExposure] = await Promise.all([
-    vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); return []; }),
-    vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); return []; }),
-    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); return { getExposureEvidence: () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }), azureComputerNames: {}, fortiInventory: [], instanceIamProfile: {} }; }),
+    vulnQuery('Critical').catch(e => { console.log('  [vulns] Critical fetch failed:', e.message); fetchErrors.push(`Critical: ${e.message}`); return []; }),
+    vulnQuery('High').catch(e     => { console.log('  [vulns] High fetch failed:', e.message); fetchErrors.push(`High: ${e.message}`); return []; }),
+    fetchTrueExposure().catch(e   => { console.log('  [true-exposure] fetch failed:', e.message); fetchErrors.push(`trueExposure: ${e.message}`); return { getExposureEvidence: () => ({ exposed: false, restricted: false, publicIp: '', reasons: [] }), azureComputerNames: {}, fortiInventory: [], instanceIamProfile: {} }; }),
   ]);
   const { getExposureEvidence, azureComputerNames, fortiInventory, instanceIamProfile } = trueExposure;
 
@@ -884,7 +896,7 @@ async function fetchVulns() {
   // rather than re-running those CFG queries a second time from refreshData(). Same for
   // getExposureEvidence — refreshData() reuses it to verify-exposure-correct
   // fetchHighRiskVulns()'s rows too, instead of a second full CFG re-fetch.
-  return { rows: vulnRows, fortiInventory, instanceIamProfile, getExposureEvidence };
+  return { rows: vulnRows, fortiInventory, instanceIamProfile, getExposureEvidence, _fetchErrors: fetchErrors };
 }
 
 // ── 3. Top Critical Non-Compliance ───────────────────────────────────────────
@@ -952,7 +964,10 @@ async function fetchCompliance() {
     console.log(`  [compliance] ${all.filter(p=>p.policyType==='Compliance').length} total compliance policies, ${incompatible} skipped (non-LQL query schema), evaluating ${policies.length} critical (capped at ${COMPLIANCE_POLICY_CAP})`);
   } catch (e) {
     console.log(`  [compliance/Policies] ${e.message.slice(0,120)}`);
-    return [];
+    // Propagate — a total failure to even list policies (auth/DNS/config) must surface in
+    // cache.errors.compliance, not look identical to "zero enabled Critical policies". The
+    // per-policy failures in runPolicy() below stay swallowed on purpose (partial tolerance).
+    throw e;
   }
 
   // Step 2 — run policy queries in parallel batches of 3 (avoids rate-limit, ~3× faster than
@@ -1061,11 +1076,17 @@ async function fetchIdentities() {
     }
   }`;
 
+  // mainQuery's failure is NOT caught here — it's the primary identity data, so a failure
+  // (auth/DNS/config) must propagate up to refreshData()'s Promise.allSettled and surface in
+  // cache.errors.identities, instead of looking identical to "zero identities in this tenant".
+  // trustQuery/linkedQuery are optional enrichment (role-trust graph, LQL type map) — losing
+  // either one degrades a secondary feature, not the whole identities dataset, so those stay
+  // swallowed-to-[] on failure.
   const [rows, trustRows, linkedRows] = await Promise.all([
     post('Queries/execute', {
       query: { queryText: mainQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
-    }, 60000).catch(() => []),
+    }, 60000),
     post('Queries/execute', {
       query: { queryText: trustQuery },
       arguments: [{ name: 'StartTimeRange', value: tf.startTime }, { name: 'EndTimeRange', value: tf.endTime }],
@@ -1668,9 +1689,30 @@ async function refreshData() {
   const fortiInventory = Array.isArray(vulnsResult) ? [] : (vulnsResult.fortiInventory || []);
   const instanceIamProfile = Array.isArray(vulnsResult) ? {} : (vulnsResult.instanceIamProfile || {});
   const getExposureEvidence = Array.isArray(vulnsResult) ? null : vulnsResult.getExposureEvidence;
+  // fetchVulns() always resolves (its Critical/High/trueExposure branches each catch their own
+  // errors to stay partial-tolerant) — surface any of those here so a total outage doesn't look
+  // identical to "zero vulnerabilities". Only when vulns actually ended up empty, though:
+  // _renderVulns(rows, err) blanks the whole panel and shows just the error text whenever err
+  // is truthy, discarding rows — so if e.g. only the trueExposure enrichment branch failed
+  // while Critical/High both succeeded, vulns is still fully valid and must not be treated as
+  // an error (that would blank a perfectly good table over an unrelated, non-fatal failure).
+  if (!Array.isArray(vulnsResult) && vulnsResult._fetchErrors?.length && vulns.length === 0) {
+    errors.vulns = vulnsResult._fetchErrors.join('; ');
+    console.error(`  [vulns] ERROR: ${errors.vulns}`);
+  }
   const identities    = unwrap(i,  'identities');
   const secrets      = unwrap(s,  'secrets');
   const exposurePaths = ep.status === 'fulfilled' ? ep.value : (unwrap(ep, 'exposurePaths'), { s3: [], ec2: [], azureVm: [], azureBlob: [], fortigate: [], all: [] });
+  // Same as vulns above — fetchExposurePaths() always resolves per-target-type, and no
+  // single target type failing should flip the dashboard's global error indicator/banner
+  // while every other type (and every panel consuming this data) is fine — only surface
+  // this when every target type came back empty, i.e. there's genuinely nothing traced.
+  const exposurePathsTotal = (exposurePaths.s3?.length||0) + (exposurePaths.ec2?.length||0) + (exposurePaths.azureVm?.length||0) + (exposurePaths.azureBlob?.length||0) + (exposurePaths.fortigate?.length||0) + (exposurePaths.all?.length||0);
+  if (ep.status === 'fulfilled' && exposurePaths._fetchErrors?.length && exposurePathsTotal === 0) {
+    errors.exposurePaths = exposurePaths._fetchErrors.join('; ');
+    console.error(`  [exposurePaths] ERROR: ${errors.exposurePaths}`);
+  }
+  delete exposurePaths._fetchErrors; // internal only — exposurePaths is stored in cache/served as-is
   const attackPaths   = unwrap(ap, 'attackPaths');
   // fetchHighRiskVulns() itself applies no machine-status filter (unlike fetchVulns()) —
   // exclude stopped/deallocated/terminated hosts here so every consumer of cache.highRiskVulns
@@ -1727,6 +1769,14 @@ async function refreshData() {
       const freshComp = unwrap(res, 'compliance');
       // Retain last good compliance result when rate-limited (429 → empty list)
       const compliance = freshComp.length > 0 ? freshComp : (cache.compliance ?? []);
+      // unwrap() sets errors.compliance whenever fetchCompliance() rejected — but
+      // renderCompliance(rows, err) blanks the panel and shows only the error text
+      // whenever err is truthy, discarding rows even when they're valid. If the retention
+      // fallback above found good (if stale) data, clear the error so the panel keeps
+      // showing it instead of a scary blank — only a transient fetch hiccup happened, not
+      // an actual loss of data. Genuinely empty compliance (no fresh AND no cached data)
+      // still surfaces the error, since there's really nothing to show.
+      if (compliance.length > 0) delete errors.compliance;
       cache = { ...cache, compliance, summary: { ...cache.summary, compliance: compliance.length } };
       return compliance;
     });
@@ -1768,6 +1818,13 @@ async function refreshData() {
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
 
 function buildHtml(_account, intervalSec) {
+  // Sidebar "Customer <Name>" label — derived from LW_ACCOUNT (e.g. "demo" from
+  // "demo.lacework.net"), not from whoever's login email domain or registered company name
+  // happens to be — LW_ACCOUNT is the actual tenant this deployment is assessing, which is
+  // what that label is meant to communicate. Stripped down to a safe hostname-label charset
+  // before interpolation into raw HTML (no generic esc() helper in this function's scope).
+  const _acctLabelRaw = (_account || '').split('.')[0].replace(/[^A-Za-z0-9_-]/g, '');
+  const ACCOUNT_LABEL = _acctLabelRaw ? _acctLabelRaw.charAt(0).toUpperCase() + _acctLabelRaw.slice(1) : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2292,7 +2349,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
     <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center;margin-bottom:8px">
-      <div><b id="acct-lbl" style="color:#9ca3af">Customer Name</b></div>
+      <div><b id="acct-lbl" style="color:#9ca3af">${ACCOUNT_LABEL ? 'Customer ' + ACCOUNT_LABEL : 'Customer Name'}</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
     </div>
@@ -5516,8 +5573,9 @@ function showUserBadge(user){
   document.getElementById('tb-role').textContent=(user.title?user.title+' · ':'')+( user.company||'');
   document.getElementById('tb-admin-badge').style.display='none';
   document.getElementById('tb-user-wrap').style.display='flex';
-  const acct=document.getElementById('acct-lbl');
-  if(acct&&user.company)acct.textContent=user.company;
+  // acct-lbl ("Customer <Name>") is intentionally NOT touched here — it's server-rendered
+  // from LW_ACCOUNT (the tenant this deployment is actually assessing), not from whichever
+  // visitor happens to be logged in or what company they typed at registration.
 }
 function logout(){
   window.location.href='/';
@@ -5549,26 +5607,6 @@ function toggleTheme(){
   updateThemeToggleIcon();
 }
 updateThemeToggleIcon();
-
-// Derive the sidebar's "Customer <Name>" label from the login email's domain
-// (rca_email cookie set by /api/login) when no explicit company name has been
-// captured via the separate visitor-registration flow (showUserBadge overrides this).
-function initCustomerNameFromEmail(){
-  const m=document.cookie.match(/(?:^|; )rca_email=([^;]*)/);
-  if(!m)return;
-  let email='';
-  try{email=decodeURIComponent(m[1]);}catch(e){return;}
-  const at=email.indexOf('@');
-  if(at<0)return;
-  const domainParts=email.slice(at+1).split('.').filter(Boolean);
-  if(domainParts.length<2)return;
-  const label=domainParts[domainParts.length-2];
-  if(!label)return;
-  const name=label.charAt(0).toUpperCase()+label.slice(1);
-  const acct=document.getElementById('acct-lbl');
-  if(acct)acct.textContent='Customer '+name;
-}
-initCustomerNameFromEmail();
 
 // Fortinet-only sidebar features (currently: manual cache refresh) — courtesy client-side
 // gate matching the rca_email cookie set at login; POST /api/refresh-cache independently
@@ -9267,7 +9305,35 @@ function buildReportHtml2(data, meta) {
       '<table class="exec-table"><thead><tr><th style="width:160px">Hostname</th><th style="width:280px">File Path</th><th style="width:100px">Key Type</th><th style="width:90px">Permissions</th></tr></thead><tbody>' +
       sshKeyRows + '</tbody></table>',
       sshKeys.length, 'SSH keys'
-    ) : '<p style="text-align:center;color:#999;padding:1.5rem">No overly-permissive SSH keys found</p>') + '\n</section>';
+    ) : '<p style="text-align:center;color:#999;padding:1.5rem">No overly-permissive SSH keys found</p>') +
+    '<div style="margin-top:16px;padding:14px 16px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;font-size:12px;color:#334155;line-height:1.6">' +
+      '<p style="margin:0 0 10px;font-weight:700;color:#1e293b">0600 vs 0400 &mdash; Why Permission Mode Matters</p>' +
+      '<p style="margin:0 0 10px">On Linux, both <code>0600</code> and <code>0400</code> protect a file from other users, but <code>0400</code> is more restrictive.</p>' +
+      '<table style="width:100%;border-collapse:collapse;margin:0 0 10px;font-size:11px">' +
+        '<thead><tr style="background:#EEF2F7">' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Permission</th>' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Owner Read</th>' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Owner Write</th>' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Group</th>' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Others</th>' +
+          '<th style="text-align:left;padding:6px 8px;border:1px solid #E2E8F0">Security</th>' +
+        '</tr></thead>' +
+        '<tbody>' +
+          '<tr><td style="padding:6px 8px;border:1px solid #E2E8F0">0400</td><td style="padding:6px 8px;border:1px solid #E2E8F0">Yes</td><td style="padding:6px 8px;border:1px solid #E2E8F0">No</td><td style="padding:6px 8px;border:1px solid #E2E8F0">None</td><td style="padding:6px 8px;border:1px solid #E2E8F0">None</td><td style="padding:6px 8px;border:1px solid #E2E8F0"><strong>Higher</strong></td></tr>' +
+          '<tr><td style="padding:6px 8px;border:1px solid #E2E8F0">0600</td><td style="padding:6px 8px;border:1px solid #E2E8F0">Yes</td><td style="padding:6px 8px;border:1px solid #E2E8F0">Yes</td><td style="padding:6px 8px;border:1px solid #E2E8F0">None</td><td style="padding:6px 8px;border:1px solid #E2E8F0">None</td><td style="padding:6px 8px;border:1px solid #E2E8F0">Lower</td></tr>' +
+        '</tbody>' +
+      '</table>' +
+      '<p style="margin:0 0 8px">The security difference is primarily <strong>file integrity</strong>:</p>' +
+      '<ul style="margin:0 0 10px;padding-left:18px">' +
+        '<li><strong>0400</strong> &mdash; owner can only read the file. Even the owner cannot modify it through normal file permissions.</li>' +
+        '<li><strong>0600</strong> &mdash; owner can read and modify the file. No group/other access.</li>' +
+      '</ul>' +
+      '<p style="margin:0 0 8px">For sensitive files such as private keys, credentials, tokens, or configuration containing secrets, <code>0400</code> can reduce the risk of accidental or unauthorized modification if the application only needs read access. However, <code>0400</code> is not automatically more secure in every situation &mdash; if an application legitimately needs to update the file, it can cause operational problems, and administrators may work around it by loosening permissions.</p>' +
+      '<p style="margin:0 0 8px">For example: <code>chmod 0400 private.key</code> is preferable for a read-only private key, while <code>chmod 0600 credentials.conf</code> is appropriate when the owner/application must read and write the credentials file.</p>' +
+      '<p style="margin:0 0 8px">Neither permission protects against root &mdash; root or a process with appropriate privileges can generally read or change either file.</p>' +
+      '<p style="margin:0;font-style:italic;color:#64748B">Conclusion: 0600 vs 0400 is a hardening/integrity distinction, not an exposure-to-other-users issue. The more meaningful security question is whether the file actually needs to be writable.</p>' +
+    '</div>' +
+    '\n</section>';
 
   // Host lookup (any CVE severity, not just >=9) used to enrich attack-path-confirmed
   // compute-host resources below — membership in the list is "has a confirmed Attack Path",
@@ -10826,9 +10892,10 @@ function requestHandler(req, res) {
         fs.appendFile('/app/contacts.csv', row, () => {});
       }
       // Serve dashboard directly — no redirect, so self-signed cert cookie issues don't matter.
-      // rca_email is read client-side to derive the sidebar's "Customer <Name>" label from
-      // the login email's domain (e.g. user@fortinet.com -> "Customer Fortinet") when no
-      // explicit company name was captured via the separate visitor-registration flow.
+      // rca_email is read client-side for the @fortinet.com-only sidebar gate (Admin Settings,
+      // manual cache refresh, etc.) — see the shared courtesy-access-gate note elsewhere in
+      // this file. The sidebar's "Customer <Name>" label is unrelated: it's server-rendered
+      // from LW_ACCOUNT (buildHtml()'s ACCOUNT_LABEL), not derived from this cookie.
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE,
         'Set-Cookie': 'rca_email=' + encodeURIComponent(email) + '; Path=/; Max-Age=2592000; SameSite=Lax',
