@@ -74,6 +74,14 @@ const MANUAL_REFRESH_COOLDOWN_MS = 4 * 3600 * 1000; // 4 hours
 // PDF, its Medium/High/Critical NonCompliant findings drive the Non-Compliance section
 // instead of the ad-hoc Policies-based fallback.
 let lastGovernanceReport = null;
+// Customer logo for the report cover page — a data: URI ("data:image/png;base64,...." or
+// "data:image/svg+xml;base64,...."),
+// uploaded via POST /api/upload-logo from the Generate Cloud Security Report modal.
+// Same "last X" server-state pattern as lastGovernanceReport above: persists across
+// report generations until replaced by a new upload, no per-tenant storage needed since
+// this whole app is single-tenant per deployment (one LW_ACCOUNT per running instance).
+let lastReportLogo = null;
+const REPORT_LOGO_MAX_BYTES = 3 * 1024 * 1024; // 3MB raw upload cap (base64 body is larger)
 let cache = {
   alerts: [], vulns: [], compliance: [], identities: [], publicStorage: [], fortiInventory: [], instanceIamProfile: {}, highRiskVulns: [],
   fetchedAt: null, errors: {}, account: LW_ACCOUNT, subAccount: LW_SUBACCOUNT,
@@ -2717,6 +2725,18 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
         <input id="sma2-customer" type="text" placeholder="Customer name" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px;font-weight:600;color:#0f172a;outline:none;font-family:inherit">
       </div>
       <div style="display:flex;flex-direction:column;gap:3px">
+        <span style="font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b">Customer Logo <span style="font-weight:500;text-transform:none;color:#94a3b8">(optional — PNG or SVG, shown top-right on the report cover page)</span></span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <label for="sma2-logo" style="padding:7px 14px;border:1px solid #cbd5e1;border-radius:6px;font-size:11.5px;font-weight:700;color:#0f172a;background:#f8fafc;cursor:pointer;white-space:nowrap;font-family:inherit">Choose File</label>
+          <span id="sma2-logo-filename" style="font-size:11.5px;color:#94a3b8">No file chosen</span>
+        </div>
+        <input id="sma2-logo" type="file" accept="image/png,image/svg+xml,.svg" onchange="handleSma2LogoChange(event)" style="display:none">
+        <div id="sma2-logo-preview" style="display:none;align-items:center;gap:10px;margin-top:2px">
+          <img id="sma2-logo-preview-img" style="max-height:36px;max-width:120px;object-fit:contain;border:1px solid #e2e8f0;border-radius:4px;padding:2px;background:#fff">
+          <button type="button" onclick="clearSma2Logo()" style="font-size:10.5px;color:#b91c1c;background:none;border:none;cursor:pointer;text-decoration:underline;padding:0">Remove</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px">
         <span style="font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b">RCA Requester</span>
         <input id="sma2-requester" type="text" placeholder="Who requested this assessment?" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px;font-weight:600;color:#0f172a;outline:none;font-family:inherit">
       </div>
@@ -2724,9 +2744,10 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
         <span style="font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#64748b">Fortinet Conclusion <span style="font-weight:500;text-transform:none;color:#94a3b8">(optional — paste custom closing remarks for this customer)</span></span>
         <textarea id="sma2-conclusion" rows="6" placeholder="Paste or write the closing remarks that will appear as the report's final section…" style="padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12.5px;color:#0f172a;outline:none;font-family:inherit;resize:vertical;line-height:1.5"></textarea>
       </div>
+      <div id="sma2-status" style="font-size:11px;color:#b91c1c"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
         <button onclick="closeSma2Modal()" style="padding:8px 16px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;font-weight:700;color:#475569;background:#fff;cursor:pointer">Cancel</button>
-        <button onclick="runSma2Modal()" style="padding:8px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;color:#fff;background:#0f172a;cursor:pointer">Generate Report</button>
+        <button id="sma2-go-btn" onclick="runSma2Modal()" style="padding:8px 18px;border:none;border-radius:6px;font-size:12px;font-weight:700;color:#fff;background:#0f172a;cursor:pointer">Generate Report</button>
       </div>
     </div>
   </div>
@@ -5534,6 +5555,56 @@ function getCookie(name){
   return v?decodeURIComponent(v.trim().slice(name.length+1)):null;
 }
 
+// Customer logo for the report cover (top-right corner) — read client-side as a data URI
+// and POSTed to /api/upload-logo just before opening the report. Server-side (lastReportLogo)
+// persists it across generations, so re-opening this modal without picking a new file still
+// uses whatever was last uploaded — this variable only tracks a *newly selected* file in the
+// current modal session, not the persisted state.
+var _sma2LogoDataUri=null;
+function handleSma2LogoChange(ev){
+  var f=ev.target.files&&ev.target.files[0];
+  var status=document.getElementById('sma2-status');
+  var preview=document.getElementById('sma2-logo-preview');
+  var filenameEl=document.getElementById('sma2-logo-filename');
+  if(status)status.textContent='';
+  if(!f){_sma2LogoDataUri=null;if(preview)preview.style.display='none';if(filenameEl)filenameEl.textContent='No file chosen';return;}
+  // Some browsers/OSes don't reliably tag .svg files with the image/svg+xml MIME type in
+  // the file picker, so fall back to the file extension when f.type is empty/unrecognized.
+  var isPng=f.type==='image/png';
+  var isSvg=f.type==='image/svg+xml'||(!f.type&&(f.name||'').toLowerCase().slice(-4)==='.svg');
+  if(!isPng&&!isSvg){
+    if(status)status.textContent='Please choose a PNG or SVG file.';
+    ev.target.value='';
+    _sma2LogoDataUri=null;
+    if(preview)preview.style.display='none';
+    if(filenameEl)filenameEl.textContent='No file chosen';
+    return;
+  }
+  if(filenameEl)filenameEl.textContent=f.name;
+  var reader=new FileReader();
+  reader.onload=function(){
+    var result=reader.result;
+    // If the browser didn't tag the file as image/svg+xml (the .svg-extension fallback
+    // above), FileReader produces a data URI with no/wrong MIME type — normalize it so the
+    // server's strict data:image/(png|svg+xml);base64,... validation still accepts it.
+    if(isSvg&&result.indexOf('data:image/svg+xml;base64,')!==0){
+      var b64=result.slice(result.indexOf(',')+1);
+      result='data:image/svg+xml;base64,'+b64;
+    }
+    _sma2LogoDataUri=result;
+    document.getElementById('sma2-logo-preview-img').src=_sma2LogoDataUri;
+    if(preview)preview.style.display='flex';
+  };
+  reader.onerror=function(){ if(status)status.textContent='Could not read that file.'; };
+  reader.readAsDataURL(f);
+}
+function clearSma2Logo(){
+  _sma2LogoDataUri=null;
+  document.getElementById('sma2-logo').value='';
+  document.getElementById('sma2-logo-preview').style.display='none';
+  const filenameEl=document.getElementById('sma2-logo-filename');
+  if(filenameEl)filenameEl.textContent='No file chosen';
+}
 function openSma2Modal(){
   // Customer Name defaults to the LW_ACCOUNT-derived label (the actual tenant being
   // assessed) — same reasoning as the sidebar's "Customer <Name>" label — rather than
@@ -5541,6 +5612,8 @@ function openSma2Modal(){
   document.getElementById('sma2-customer').value=ACCOUNT_LABEL||'';
   document.getElementById('sma2-requester').value='';
   document.getElementById('sma2-conclusion').value='';
+  clearSma2Logo();
+  document.getElementById('sma2-status').textContent='';
   document.getElementById('sma2-overlay').style.display='flex';
 }
 function closeSma2Modal(){
@@ -5553,8 +5626,32 @@ function runSma2Modal(){
     requester:(document.getElementById('sma2-requester').value||'').trim(),
     conclusion:(document.getElementById('sma2-conclusion').value||'').trim(),
   });
-  window.open('/report2?'+params.toString(),'_blank');
-  closeSma2Modal();
+  const reportUrl='/report2?'+params.toString();
+  if(!_sma2LogoDataUri){
+    window.open(reportUrl,'_blank');
+    closeSma2Modal();
+    return;
+  }
+  // Open the destination tab synchronously (still inside the click gesture) so popup
+  // blockers don't block it, then navigate it once the logo upload finishes.
+  const newTab=window.open('about:blank','_blank');
+  const goBtn=document.getElementById('sma2-go-btn');
+  const status=document.getElementById('sma2-status');
+  goBtn.disabled=true;goBtn.textContent='Uploading logo…';
+  status.style.color='#64748b';status.textContent='Uploading logo…';
+  fetch('/api/upload-logo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({logo:_sma2LogoDataUri})})
+    .then(r=>r.json().catch(()=>({})).then(body=>({status:r.status,body})))
+    .then(res=>{
+      if(res.status!==200)throw new Error((res.body&&res.body.error)||'Upload failed');
+      if(newTab)newTab.location.href=reportUrl;else window.open(reportUrl,'_blank');
+      closeSma2Modal();
+    })
+    .catch(err=>{
+      status.style.color='#b91c1c';
+      status.textContent='Logo upload failed: '+(err.message||err)+' — generating report without the new logo.';
+      if(newTab)newTab.location.href=reportUrl;else window.open(reportUrl,'_blank');
+    })
+    .finally(()=>{ goBtn.disabled=false;goBtn.textContent='Generate Report'; });
 }
 
 function showUserBadge(user){
@@ -5637,18 +5734,26 @@ function triggerCacheRefresh(){
 }
 
 // ── Welcome / What's New popup ───────────────────────────────────────────────
-// Add up to 3 entries here when a feature is flagged for announcement; bump
-// NEW_FEATURES_VERSION so users who already dismissed the previous batch see the
-// new one. Leave the array empty and no popup shows at all.
-const NEW_FEATURES_VERSION='2';
+// Add up to 3 entries here when a feature is flagged for announcement, with today's date
+// (YYYY-MM-DD) in the 'date' field — bump NEW_FEATURES_VERSION so users who already dismissed the
+// previous batch see the new one. Entries older than NEW_FEATURES_MAX_AGE_DAYS are dropped
+// automatically (see activeNewFeatures() below) rather than needing manual cleanup — an
+// announcement that's a quarter old isn't "new" anymore regardless of dismiss-tracking.
+// Leave the array empty (or let everything age out) and no popup shows at all.
+const NEW_FEATURES_VERSION='3';
+const NEW_FEATURES_MAX_AGE_DAYS=90;
 const NEW_FEATURES=[
-  {title:'Dark &amp; Light Theme',desc:'Switch between dark and light mode anytime using the toggle in the top-right corner — your preference is remembered.'},
-  {title:'FortiCNAPP ROI Calculator',desc:'New in the sidebar under Action &amp; Reporting — estimate the financial return of FortiCNAPP based on your own cloud footprint and risk profile.'},
+  {title:'Customer Logo on Reports',desc:'Upload a PNG or SVG logo when generating the Cloud Security Report — it now appears top-right on the report cover page.',date:'2026-08-31'},
+  {title:'Auto-Filled Customer Name',desc:'The Customer Name field is now pre-filled from your connected FortiCNAPP tenant when generating a report — no more typing it in every time.',date:'2026-08-31'},
 ];
+function activeNewFeatures(){
+  const cutoff=Date.now()-NEW_FEATURES_MAX_AGE_DAYS*86400000;
+  return NEW_FEATURES.filter(function(f){return !f.date||new Date(f.date).getTime()>=cutoff;});
+}
 function renderWelcomeFeatures(){
   const el=document.getElementById('welcome-features');
   if(!el)return;
-  el.innerHTML=NEW_FEATURES.map(function(f){
+  el.innerHTML=activeNewFeatures().map(function(f){
     return '<div style="display:flex;gap:10px;padding:10px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px">'
       +'<div style="width:26px;height:26px;border-radius:6px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;flex-shrink:0">'
         +'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
@@ -5659,7 +5764,7 @@ function renderWelcomeFeatures(){
   }).join('');
 }
 function maybeShowWelcomeModal(){
-  if(!NEW_FEATURES.length)return;
+  if(!activeNewFeatures().length)return;
   try{
     if(localStorage.getItem('rca-hide-whats-new')==='true')return;
     if(localStorage.getItem('rca-seen-features-version')===NEW_FEATURES_VERSION)return;
@@ -7067,6 +7172,21 @@ const REPORT_CSS = `
             display: flex;
             flex-direction: column;
             min-height: 62vh;
+            position: relative;
+        }
+        .report-cover .customer-logo {
+            /* No background box behind the logo on purpose — the cover is already a colored
+               gradient, and many customer logos (like light/white wordmark variants) are
+               designed specifically for a dark/colored background, not a white one. A white
+               backdrop here would make a white logo invisible. If a logo needs contrast it
+               doesn't get from the gradient, that's a customer-provided-asset issue, not
+               something this fixed backdrop can solve for every logo anyway. */
+            position: absolute;
+            top: 1.5rem;
+            right: 2rem;
+            max-height: 60px;
+            max-width: 180px;
+            object-fit: contain;
         }
         .report-cover .report-type {
             font-size: 0.8rem;
@@ -8879,6 +8999,10 @@ function buildReportHtml2(data, meta) {
   const author     = ((meta && meta.author)     || 'Fortinet').trim();
   const requester  = ((meta && meta.requester)  || '').trim();
   const conclusion = ((meta && meta.conclusion) || '').trim();
+  // Sanitized reports are meant for external sharing without leaking customer-identifying
+  // data (see sanitizeCacheData()) — the uploaded logo defeats that purpose, so suppress it
+  // here rather than requiring every caller to remember to strip it.
+  const reportLogo = (meta && meta.sanitize) ? null : lastReportLogo;
   const dateStr  = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
   const alerts      = data.alerts      || [];
@@ -9510,6 +9634,7 @@ function buildReportHtml2(data, meta) {
   reportTopbarHtml(null, true) + '\n' +
   '<button type="button" class="pdf-export-btn no-print" onclick="window.print()">&#128196; Export to PDF</button>\n' +
   '<div class="report-cover">\n' +
+  (reportLogo ? '  <img class="customer-logo" src="'+reportLogo+'" alt="'+esc(customer)+' logo">\n' : '') +
   '  <h1>Rapid Cloud Assessment Report</h1>\n' +
   (function() {
     const arcLen=550, fill=Math.round((score/100)*arcLen);
@@ -10286,6 +10411,45 @@ function requestHandler(req, res) {
     res.end();
     return;
   }
+  if (req.method === 'POST' && req.url === '/api/upload-logo') {
+    // Customer logo for the report cover page top-right corner — see lastReportLogo above.
+    // PNG or SVG; a lightweight manual size guard since this app has no npm dependencies
+    // (no body-parser/multer) — request body is read as-is and capped here. Always rendered
+    // via <img src="data:...">, never inlined as markup or via <object>/<iframe> — browsers
+    // run SVG loaded through <img> in a restricted mode with no script execution and no
+    // external resource loads, so this is safe regardless of what the SVG markup contains.
+    let body = '';
+    let tooLarge = false;
+    req.on('data', c => {
+      if (tooLarge) return;
+      body += c;
+      if (body.length > REPORT_LOGO_MAX_BYTES * 1.4) { // base64 overhead (~1.33x) + margin
+        tooLarge = true;
+        res.writeHead(413, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: 'Logo too large (max 3MB)' }));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (tooLarge) return;
+      try {
+        const { logo } = JSON.parse(body);
+        if (typeof logo !== 'string' || !/^data:image\/(png|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(logo)) {
+          res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+          res.end(JSON.stringify({ error: 'Expected a PNG or SVG data URI (data:image/png;base64,... or data:image/svg+xml;base64,...)' }));
+          return;
+        }
+        lastReportLogo = logo;
+        console.log(`[upload-logo] stored (${Math.round(logo.length/1024)}KB base64)`);
+        res.writeHead(200, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json', ...CORS });
+        res.end(JSON.stringify({ error: 'Invalid request body' }));
+      }
+    });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/api/register') {
     let body = '';
     req.on('data', c => body += c);
@@ -10769,7 +10933,7 @@ function requestHandler(req, res) {
     (async () => {
     await ensureFreshCache();
     const reportData = sanitize ? sanitizeCacheData(cache) : cache;
-    const reportHtml = buildReportHtml2(reportData, { customer, author, requester, conclusion });
+    const reportHtml = buildReportHtml2(reportData, { customer, author, requester, conclusion, sanitize });
     const reportPath = path.join(__dirname, 'rca2.html');
     const pdfPath    = path.join(__dirname, 'rca2.pdf');
     fs.writeFile(reportPath, reportHtml, err => {
@@ -10846,7 +11010,7 @@ function requestHandler(req, res) {
     // Always sanitize (this route IS the sanitized entry point) — scrubs hostnames,
     // ARNs, account IDs, IPs, emails, secret IDs from the underlying finding data.
     const reportData = sanitizeCacheData(cache);
-    let reportHtml = buildReportHtml2(reportData, { customer, author, requester, conclusion });
+    let reportHtml = buildReportHtml2(reportData, { customer, author, requester, conclusion, sanitize: true });
     // sanitizeCacheData() only scrubs finding data, not Fortinet branding baked into
     // the template itself — strip that separately so this is safe to hand externally.
     reportHtml = reportHtml
