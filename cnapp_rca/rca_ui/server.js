@@ -1818,6 +1818,13 @@ async function refreshData() {
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
 
 function buildHtml(_account, intervalSec) {
+  // Sidebar "Customer <Name>" label — derived from LW_ACCOUNT (e.g. "demo" from
+  // "demo.lacework.net"), not from whoever's login email domain or registered company name
+  // happens to be — LW_ACCOUNT is the actual tenant this deployment is assessing, which is
+  // what that label is meant to communicate. Stripped down to a safe hostname-label charset
+  // before interpolation into raw HTML (no generic esc() helper in this function's scope).
+  const _acctLabelRaw = (_account || '').split('.')[0].replace(/[^A-Za-z0-9_-]/g, '');
+  const ACCOUNT_LABEL = _acctLabelRaw ? _acctLabelRaw.charAt(0).toUpperCase() + _acctLabelRaw.slice(1) : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2342,7 +2349,7 @@ td.desc{font-size:11px;max-width:520px;padding-top:6px;padding-bottom:6px}
   <div style="padding:12px 14px;border-top:1px solid #1f2937;margin-top:auto">
     <span id="kpi-a" style="display:none"></span><span id="kpi-v" style="display:none"></span><span id="kpi-i" style="display:none"></span><span id="kpi-c" style="display:none"></span>
     <div style="font-size:10px;color:#6b7280;line-height:1.8;text-align:center;margin-bottom:8px">
-      <div><b id="acct-lbl" style="color:#9ca3af">Customer Name</b></div>
+      <div><b id="acct-lbl" style="color:#9ca3af">${ACCOUNT_LABEL ? 'Customer ' + ACCOUNT_LABEL : 'Customer Name'}</b></div>
       <div>Last refresh: <b id="fetched-at" style="color:#9ca3af">—</b></div>
       <div style="display:flex;align-items:center;justify-content:center;gap:5px"><div class="live-dot" id="live-dot"></div><span id="countdown">Initializing…</span></div>
     </div>
@@ -5566,8 +5573,9 @@ function showUserBadge(user){
   document.getElementById('tb-role').textContent=(user.title?user.title+' · ':'')+( user.company||'');
   document.getElementById('tb-admin-badge').style.display='none';
   document.getElementById('tb-user-wrap').style.display='flex';
-  const acct=document.getElementById('acct-lbl');
-  if(acct&&user.company)acct.textContent=user.company;
+  // acct-lbl ("Customer <Name>") is intentionally NOT touched here — it's server-rendered
+  // from LW_ACCOUNT (the tenant this deployment is actually assessing), not from whichever
+  // visitor happens to be logged in or what company they typed at registration.
 }
 function logout(){
   window.location.href='/';
@@ -5599,26 +5607,6 @@ function toggleTheme(){
   updateThemeToggleIcon();
 }
 updateThemeToggleIcon();
-
-// Derive the sidebar's "Customer <Name>" label from the login email's domain
-// (rca_email cookie set by /api/login) when no explicit company name has been
-// captured via the separate visitor-registration flow (showUserBadge overrides this).
-function initCustomerNameFromEmail(){
-  const m=document.cookie.match(/(?:^|; )rca_email=([^;]*)/);
-  if(!m)return;
-  let email='';
-  try{email=decodeURIComponent(m[1]);}catch(e){return;}
-  const at=email.indexOf('@');
-  if(at<0)return;
-  const domainParts=email.slice(at+1).split('.').filter(Boolean);
-  if(domainParts.length<2)return;
-  const label=domainParts[domainParts.length-2];
-  if(!label)return;
-  const name=label.charAt(0).toUpperCase()+label.slice(1);
-  const acct=document.getElementById('acct-lbl');
-  if(acct)acct.textContent='Customer '+name;
-}
-initCustomerNameFromEmail();
 
 // Fortinet-only sidebar features (currently: manual cache refresh) — courtesy client-side
 // gate matching the rca_email cookie set at login; POST /api/refresh-cache independently
@@ -10904,9 +10892,10 @@ function requestHandler(req, res) {
         fs.appendFile('/app/contacts.csv', row, () => {});
       }
       // Serve dashboard directly — no redirect, so self-signed cert cookie issues don't matter.
-      // rca_email is read client-side to derive the sidebar's "Customer <Name>" label from
-      // the login email's domain (e.g. user@fortinet.com -> "Customer Fortinet") when no
-      // explicit company name was captured via the separate visitor-registration flow.
+      // rca_email is read client-side for the @fortinet.com-only sidebar gate (Admin Settings,
+      // manual cache refresh, etc.) — see the shared courtesy-access-gate note elsewhere in
+      // this file. The sidebar's "Customer <Name>" label is unrelated: it's server-rendered
+      // from LW_ACCOUNT (buildHtml()'s ACCOUNT_LABEL), not derived from this cookie.
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8', ...CORS, ...NO_CACHE,
         'Set-Cookie': 'rca_email=' + encodeURIComponent(email) + '; Path=/; Max-Age=2592000; SameSite=Lax',
