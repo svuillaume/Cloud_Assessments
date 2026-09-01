@@ -1,0 +1,91 @@
+name: RCA Tear Down (CD)
+
+# Manual only — never runs on push. Removes RCA resources from the `rca` namespace on the
+# eks_samv EKS cluster, mirroring cnapp_rca/rca_ui/k8s/rca_tear_down.sh but callable from any
+# machine (same GitHub Secrets-based auth as rca-deploy.yml — see that workflow's header
+# comment for the IAM user's exact scope).
+#
+# Unlike rca_tear_down.sh's local --full mode (`kubectl delete namespace rca`), this
+# workflow's "full" mode does NOT delete the Namespace object itself — it can't: Namespace is
+# a cluster-scoped resource, outside what the gh-actions-rca-deploy IAM user's
+# namespace-scoped EKS access entry (AmazonEKSEditPolicy + AmazonEKSSecretAdminPolicy, both
+# scoped to `rca` only) grants. Instead "full" here deletes every namespaced resource
+# (Deployment, Service, Secret, PVC — PVC deletion still releases the underlying EBS volume
+# via gp2's reclaim policy) and leaves an empty `rca` namespace behind. Functionally
+# equivalent for the app (nothing running, no data) and actually convenient — the next CD
+# deploy run doesn't need the namespace recreated first (rca-deploy.yml's IAM user can't do
+# that either). If you genuinely want the namespace object gone too, run
+# `k8s/rca_tear_down.sh --full` locally with your own broader kubectl access.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Teardown mode'
+        required: true
+        type: choice
+        default: full
+        options:
+          - full
+          - keep-pvc
+          - restart
+
+permissions:
+  contents: read
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        env:
+          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Check namespace exists
+        id: check
+        run: |
+          if kubectl get namespace rca >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Namespace 'rca' not found — nothing to tear down."
+          fi
+
+      # By explicit resource name, not -l app=rca — only the Deployment actually carries that
+      # label (inherited from its pod template); the Service and Secret manifests never set
+      # one of their own. A label selector here would silently leave them behind (a real bug
+      # found and fixed in rca_tear_down.sh's --keep-pvc mode while building this workflow).
+      - name: Tear down (mode - ${{ github.event.inputs.mode }})
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          set -eu
+          case "${{ github.event.inputs.mode }}" in
+            full)
+              echo "==> full: deleting Deployment, Service, Secret, PVC (namespace object itself stays — see this file's header comment)"
+              kubectl delete deployment/rca service/rca secret/rca-credentials -n rca --ignore-not-found
+              kubectl delete pvc rca-cache -n rca --ignore-not-found
+              ;;
+            keep-pvc)
+              echo "==> keep-pvc: deleting Deployment, Service, Secret; PVC preserved"
+              kubectl delete deployment/rca service/rca secret/rca-credentials -n rca --ignore-not-found
+              ;;
+            restart)
+              echo "==> restart: deleting pod(s) only; Deployment recreates them"
+              kubectl delete pod -n rca -l app=rca --ignore-not-found
+              ;;
+          esac
+
+      - name: Status
+        if: steps.check.outputs.exists == 'true'
+        run: kubectl get deployment,service,secret,pvc,pods -n rca 2>&1 || true
