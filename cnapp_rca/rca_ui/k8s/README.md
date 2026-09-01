@@ -42,6 +42,49 @@ None of the above is `rca`-specific — any workload on the cluster needing a PV
 wall. Diagnose with `kubectl describe pvc <name> -n <namespace>` — `ExternalProvisioning`
 events waiting on `ebs.csi.aws.com` with no matching pods in `kube-system` point straight at #1.
 
+## GitHub Actions CI/CD — deploy from any machine, no local `.env` needed
+
+Two workflows live in `.github/workflows/` at the repo root:
+
+- **`rca-ci.yml`** — automatic on every push/PR touching `cnapp_rca/rca_ui/**`. No AWS or
+  FortiCNAPP credentials involved. Syntax-checks `server.js`, shellchecks the deploy/teardown
+  scripts, and validates the `k8s/` manifests still `kustomize build` cleanly (this would have
+  caught the missing-`namespace.yaml`-in-temp-dir bug that broke `deploy_k8s.sh` earlier).
+- **`rca-deploy.yml`** — manual `workflow_dispatch` only, never runs on push. Builds/pushes the
+  image to ECR and deploys to the `eks_samv` cluster's `rca` namespace, reading credentials
+  from **GitHub Secrets** instead of a local `.env`/`.env.k8s` file:
+
+  ```bash
+  gh workflow run rca-deploy.yml -R <owner>/<repo> -f image_tag=<tag>
+  ```
+
+  This is the only deploy path that doesn't require the machine running it to have Docker,
+  AWS CLI, `kubectl`, or a copy of `.env` — everything runs on GitHub's runners. Trade-off:
+  it authenticates as a dedicated, narrowly-scoped IAM user (`gh-actions-rca-deploy`), not
+  your own admin credentials — see the workflow file's header comment for exactly what it can
+  and can't do (notably: it cannot create the `rca` namespace itself, only manage resources
+  inside an already-existing one).
+
+**GitHub Secrets this depends on** (repo → Settings → Secrets and variables → Actions):
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `EKS_CLUSTER_NAME`,
+`ECR_REGISTRY`, `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, and optionally `LW_SUBACCOUNT`.
+
+**Updating the `LW_*` secrets** (e.g. after rotating a FortiCNAPP API key) — `k8s/rca_update_secrets.sh`
+pushes fresh values straight to GitHub's encrypted secret store via `gh secret set`:
+
+```bash
+k8s/rca_update_secrets.sh                            # pulls LW_ACCOUNT/LW_KEY_ID/LW_SECRET/
+                                                       # LW_SUBACCOUNT from rca_ui/.env
+LW_KEY_ID=FORTINET_NEW... k8s/rca_update_secrets.sh   # override just one value
+```
+
+**Deliberately not** a `workflow_dispatch` input for the credential values themselves —
+GitHub Actions workflow inputs are shown in plain text on the run's summary page, visible to
+anyone who can view the repo. Since this repo is **public**, passing `LW_KEY_ID`/`LW_SECRET`
+as `-f` flags to `gh workflow run` would publish them on every run. `rca_update_secrets.sh`
+never touches a workflow run at all — values go straight from your local `.env` to GitHub's
+encrypted secret store.
+
 ## Automated deploy — `k8s/deploy_k8s.sh`
 
 `deploy_k8s.sh` does everything in the manual **Deploy** section below for you — builds/pushes
