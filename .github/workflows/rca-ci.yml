@@ -1,0 +1,51 @@
+name: RCA CI
+
+# Automatic, no AWS/FortiCNAPP credentials involved — safe to run on every push/PR. Just
+# validates that server.js still parses, the k8s manifests still kustomize-build cleanly (the
+# same failure mode that broke deploy_k8s.sh earlier — namespace.yaml missing from its temp
+# dir — would have been caught here), and the deploy/teardown shell scripts pass shellcheck.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'cnapp_rca/rca_ui/**'
+      - '.github/workflows/rca-ci.yml'
+  pull_request:
+    paths:
+      - 'cnapp_rca/rca_ui/**'
+      - '.github/workflows/rca-ci.yml'
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cnapp_rca/rca_ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check server.js
+        run: node --check server.js
+
+      - name: Shellcheck deploy/teardown scripts
+        uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          # SC1091: `. ./.env.k8s` — an optional, gitignored local file that legitimately
+          # doesn't exist in a fresh checkout; the script already guards it with [ -f ... ].
+          SHELLCHECK_OPTS: -e SC1091
+        with:
+          scandir: cnapp_rca/rca_ui/k8s
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Validate Kubernetes manifests build (kustomize)
+        run: |
+          set -eu
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          sed "s#REPLACE_ME/rca-dashboard:latest#ci-placeholder/rca-dashboard:latest#" \
+            k8s/deployment.yaml > "$TMP/deployment.yaml"
+          cp k8s/namespace.yaml k8s/pvc.yaml k8s/service.yaml k8s/kustomization.yaml "$TMP/"
+          kubectl kustomize "$TMP" > /dev/null
+          echo "kustomize build OK"
