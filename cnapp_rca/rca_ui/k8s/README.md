@@ -108,9 +108,25 @@ recreate it once with your own broader access before the next deploy run:
 `kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml`. See either workflow file's header
 comment for the full IAM policy detail.
 
-**GitHub Secrets required** (repo → Settings → Secrets and variables → Actions):
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `EKS_CLUSTER_NAME`,
-`ECR_REGISTRY`, `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, optionally `LW_SUBACCOUNT`.
+One more one-time grant needed, for the same cluster-scoping reason: `rca-deploy.yml`'s
+access-URL step reads a node's public address, and `nodes` is cluster-scoped too — no
+namespace-scoped policy can grant it. Confirmed live that skipping this fails hard
+(`Forbidden: ... cannot list resource "nodes" ... at the cluster scope`), not a transient
+issue. Fixed with a minimal, purpose-built grant (not AWS's broad, read-everywhere
+`AmazonEKSViewPolicy`) — apply once with your own access:
+`kubectl apply -f k8s/ci-node-reader-rbac.yaml`.
+
+**GitHub Secrets and Variables required** (repo → Settings → Secrets and variables →
+Actions). Split deliberately — anything actually sensitive is a Secret; everything else
+(region/cluster/registry) is a plain Variable, because GitHub masks any log output matching a
+*Secret's* value, even harmlessly, and `AWS_REGION`'s value (`ca-central-1`) appearing inside
+the printed access-URL hostname got mangled into `***` when it was one (confirmed live —
+fixed by moving it, `EKS_CLUSTER_NAME`, and `ECR_REGISTRY` to Variables):
+
+| Secrets (`secrets.*`) | Variables (`vars.*`) |
+|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `AWS_REGION`, `EKS_CLUSTER_NAME`, `ECR_REGISTRY` |
+| `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, optionally `LW_SUBACCOUNT` | |
 
 **Updating the `LW_*` secrets** (e.g. after rotating a FortiCNAPP API key):
 

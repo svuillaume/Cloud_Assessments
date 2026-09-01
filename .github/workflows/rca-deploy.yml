@@ -50,14 +50,14 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Log in to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
         env:
-          IMAGE: ${{ secrets.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
+          IMAGE: ${{ vars.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
         run: |
           set -eu
           # GitHub-hosted ubuntu-latest runners are amd64 already (matches the EKS nodes'
@@ -74,8 +74,8 @@ jobs:
 
       - name: Update kubeconfig
         env:
-          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
 
       - name: Verify namespace exists
@@ -107,7 +107,7 @@ jobs:
 
       - name: Apply manifests
         env:
-          IMAGE: ${{ secrets.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
+          IMAGE: ${{ vars.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
         run: |
           set -eu
           TMP="$(mktemp -d)"
