@@ -69,25 +69,23 @@ jobs:
           # This workflow no longer builds anything — rca-ci.yml does, on push, whenever the
           # Docker-relevant files actually change. If this fails after all retries, either
           # that hasn't run yet for this tag (push a change, or check the Actions tab for a
-          # running/failed build-and-push job) or image_tag was mistyped.
-          #
-          # Retried rather than a single check: confirmed live that describe-images can
-          # briefly miss a tag that unquestionably exists — same account/region/repo, no
-          # lifecycle policy, re-running the identical call ~minutes later found it
-          # immediately. A short retry loop absorbs that kind of transient ECR read lag
-          # instead of hard-failing the whole deploy over it.
+          # running/failed build-and-push job), image_tag was mistyped, or — confirmed live
+          # once, the hard way — the IAM user is missing ecr:DescribeImages: an earlier
+          # version of this step redirected the AWS CLI's stderr to /dev/null, so a genuine
+          # AccessDeniedException was indistinguishable from a real "not found" in the log.
+          # stderr is now captured and printed on every failed attempt instead.
           FOUND=false
           for attempt in 1 2 3 4 5; do
-            if aws ecr describe-images --repository-name rca-dashboard --region "$AWS_REGION" \
-                 --image-ids imageTag="${{ github.event.inputs.image_tag }}" >/dev/null 2>&1; then
+            if ERR="$(aws ecr describe-images --repository-name rca-dashboard --region "$AWS_REGION" \
+                 --image-ids imageTag="${{ github.event.inputs.image_tag }}" 2>&1 >/dev/null)"; then
               FOUND=true
               break
             fi
-            echo "Attempt $attempt: $IMAGE not found yet, retrying in 5s..."
+            echo "Attempt $attempt: $ERR"
             sleep 5
           done
           if [ "$FOUND" != "true" ]; then
-            echo "::error::$IMAGE not found in ECR after 5 attempts. rca-ci.yml builds this on every push where Dockerfile/server.js/roi-calculator.html/entrypoint.sh changed — check its build-and-push job before retrying." >&2
+            echo "::error::$IMAGE — see the AWS CLI error(s) logged above (last: $ERR)." >&2
             exit 1
           fi
           echo "$IMAGE exists — proceeding."
