@@ -1,0 +1,125 @@
+name: RCA Deploy (CD)
+
+# Manual only — never runs on push. Builds/pushes the image to ECR and deploys to the
+# `eks_samv` EKS cluster's `rca` namespace, mirroring cnapp_rca/rca_ui/k8s/deploy_k8s.sh but
+# sourcing all credentials from GitHub Secrets instead of a local .env/.env.k8s file, so this
+# doesn't depend on any one machine having those files.
+#
+# AWS auth: a dedicated IAM user (gh-actions-rca-deploy), not the account admin — scoped to
+# ECR push on the rca-dashboard repo only, eks:DescribeCluster on this one cluster, and
+# namespace-scoped EKS access entries (AmazonEKSEditPolicy + AmazonEKSSecretAdminPolicy,
+# both scoped to the `rca` namespace only) for in-cluster permissions. It deliberately cannot
+# create the `rca` namespace itself (Namespace is a cluster-scoped resource, outside what a
+# namespace-scoped access policy grants) — the namespace must already exist. It does today;
+# if a full teardown (rca_tear_down.sh with no flags, or --full) ever removes it again,
+# recreate it once with your own (broader) kubectl access before re-running this workflow:
+#   kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to build and deploy'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cnapp_rca/rca_ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ secrets.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
+        run: |
+          set -eu
+          # GitHub-hosted ubuntu-latest runners are amd64 already (matches the EKS nodes'
+          # arch, verified via `kubectl get nodes -o jsonpath=...nodeInfo.architecture`), so
+          # this doesn't hit the arm64-Mac-building-for-amd64-nodes problem deploy_k8s.sh
+          # documents — --platform is still passed explicitly rather than relied on
+          # implicitly, so this stays correct even if the runner arch ever changes.
+          docker build --platform linux/amd64 -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        env:
+          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Verify namespace exists
+        run: |
+          if ! kubectl get namespace rca >/dev/null 2>&1; then
+            echo "::error::Namespace 'rca' does not exist and this workflow's IAM user cannot create it (namespace-scoped access only). Create it once with broader kubectl access: kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml" >&2
+            exit 1
+          fi
+
+      - name: Sync FortiCNAPP credentials Secret
+        env:
+          # Passed via env:, not interpolated directly into the script body — GitHub's own
+          # guidance: a secret substituted straight into `run:` text becomes part of the
+          # shell command line before execution, so a value containing shell metacharacters
+          # could break the script (or worse). Referencing $VAR keeps it a plain argument.
+          LW_ACCOUNT: ${{ secrets.LW_ACCOUNT }}
+          LW_KEY_ID: ${{ secrets.LW_KEY_ID }}
+          LW_SECRET: ${{ secrets.LW_SECRET }}
+          LW_SUBACCOUNT: ${{ secrets.LW_SUBACCOUNT }}
+        run: |
+          set -eu
+          ARGS="--from-literal=LW_ACCOUNT=$LW_ACCOUNT --from-literal=LW_KEY_ID=$LW_KEY_ID --from-literal=LW_SECRET=$LW_SECRET"
+          if [ -n "$LW_SUBACCOUNT" ]; then
+            ARGS="$ARGS --from-literal=LW_SUBACCOUNT=$LW_SUBACCOUNT"
+          fi
+          # shellcheck disable=SC2086
+          kubectl create secret generic rca-credentials -n rca $ARGS \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply manifests
+        env:
+          IMAGE: ${{ secrets.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
+        run: |
+          set -eu
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          sed "s#REPLACE_ME/rca-dashboard:latest#$IMAGE#" k8s/deployment.yaml > "$TMP/deployment.yaml"
+          cp k8s/pvc.yaml k8s/service.yaml k8s/kustomization.yaml "$TMP/"
+          # namespace.yaml deliberately excluded — see the "Verify namespace exists" step and
+          # this file's header comment on why this workflow's IAM user can't apply it.
+          sed -i '/- namespace.yaml/d' "$TMP/kustomization.yaml"
+          kubectl apply -k "$TMP"
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/rca -n rca --timeout=180s
+
+      - name: Status and access URL
+        run: |
+          kubectl get pods -n rca
+          NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+          if [ -z "$NODE_ADDR" ]; then
+            NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+          fi
+          if [ -n "$NODE_ADDR" ]; then
+            echo "Reachable at https://$NODE_ADDR:30443 (self-signed cert — accept the browser warning)."
+          else
+            echo "No external node address found — node IPs are likely private-only on this cluster."
+          fi

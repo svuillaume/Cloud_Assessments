@@ -1,0 +1,25 @@
+# Persists the in-memory cache snapshot (cache.json, see server.js's saveCacheToDisk()/
+# loadCacheFromDisk()) across pod restarts/rescheduling — same role as the `rca-cache` named
+# Docker volume in install.sh. Without this, every pod restart shows blank panels until the
+# first refreshData() cycle completes (which can take several minutes — see rca_ui/CLAUDE.md's
+# compliance-scan notes).
+#
+# storageClassName is set explicitly to gp2 because this cluster (eks_samv) has a gp2
+# StorageClass but it isn't annotated as the cluster-default (no
+# storageclass.kubernetes.io/is-default-class: "true") — the PVC sat Pending forever with
+# storageClassName omitted since no provisioner ever picked it up. gp2 is a ReadWriteOnce
+# EBS-backed class, which is all this needs since there's only ever one replica — see
+# deployment.yaml's single-replica note. Change this if your cluster's default/preferred
+# class has a different name.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rca-cache
+  namespace: rca
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp2
+  resources:
+    requests:
+      storage: 1Gi

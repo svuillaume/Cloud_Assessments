@@ -1,5 +1,6 @@
 # Credentials & API keys
 .env
+.env.k8s
 !.env.example
 *.json
 
