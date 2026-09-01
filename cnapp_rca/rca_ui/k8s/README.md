@@ -42,9 +42,9 @@ None of the above is `rca`-specific — any workload on the cluster needing a PV
 wall. Diagnose with `kubectl describe pvc <name> -n <namespace>` — `ExternalProvisioning`
 events waiting on `ebs.csi.aws.com` with no matching pods in `kube-system` point straight at #1.
 
-## GitHub Actions CI/CD — deploy from any machine, no local `.env` needed
+## GitHub Actions CI/CD — deploy/tear down from any machine, no local `.env` needed
 
-Two workflows live in `.github/workflows/` at the repo root:
+Three workflows live in `.github/workflows/` at the repo root:
 
 - **`rca-ci.yml`** — automatic on every push/PR touching `cnapp_rca/rca_ui/**`. No AWS or
   FortiCNAPP credentials involved. Syntax-checks `server.js`, shellchecks the deploy/teardown
@@ -58,12 +58,27 @@ Two workflows live in `.github/workflows/` at the repo root:
   gh workflow run rca-deploy.yml -R <owner>/<repo> -f image_tag=<tag>
   ```
 
-  This is the only deploy path that doesn't require the machine running it to have Docker,
-  AWS CLI, `kubectl`, or a copy of `.env` — everything runs on GitHub's runners. Trade-off:
-  it authenticates as a dedicated, narrowly-scoped IAM user (`gh-actions-rca-deploy`), not
-  your own admin credentials — see the workflow file's header comment for exactly what it can
-  and can't do (notably: it cannot create the `rca` namespace itself, only manage resources
-  inside an already-existing one).
+- **`rca-teardown.yml`** — manual `workflow_dispatch` only. Remote equivalent of
+  `k8s/rca_tear_down.sh`, same three modes:
+
+  ```bash
+  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=full       # default
+  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=keep-pvc
+  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=restart
+  ```
+
+  One real difference from the local script: this workflow's `full` mode does **not** delete
+  the `rca` namespace object itself (only `rca_tear_down.sh --full`, run locally with your own
+  broader `kubectl` access, does that) — it deletes every namespaced resource instead
+  (Deployment, Service, Secret, PVC) and leaves an empty namespace behind. See the workflow
+  file's header comment for why (same namespace-scoped IAM limitation as deploy, below).
+
+Both `rca-deploy.yml` and `rca-teardown.yml` are the only paths that don't require the
+machine running them to have Docker, AWS CLI, `kubectl`, or a copy of `.env` — everything
+runs on GitHub's runners. Trade-off: they authenticate as a dedicated, narrowly-scoped IAM
+user (`gh-actions-rca-deploy`), not your own admin credentials — see either workflow file's
+header comment for exactly what it can and can't do (notably: it cannot create *or delete*
+the `rca` namespace object itself, only manage resources inside an already-existing one).
 
 **GitHub Secrets this depends on** (repo → Settings → Secrets and variables → Actions):
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `EKS_CLUSTER_NAME`,
@@ -197,7 +212,7 @@ Manual equivalents of the narrower modes:
 
 | Goal | Command |
 |---|---|
-| Remove the app but **keep the PVC** (preserve `cache.json` for a future redeploy) | `kubectl delete deployment,service,secret -n rca -l app=rca` — leave the PVC alone |
+| Remove the app but **keep the PVC** (preserve `cache.json` for a future redeploy) | `kubectl delete deployment/rca service/rca secret/rca-credentials -n rca` — leave the PVC alone. By explicit name, not `-l app=rca`: only the Deployment carries that label, so a selector here would silently leave the Service/Secret behind |
 | Just restart the pod without removing anything | `kubectl delete pod -n rca -l app=rca` (the Deployment recreates it within seconds) |
 
 Tearing down the namespace does **not** touch anything at the cluster level — the EKS cluster

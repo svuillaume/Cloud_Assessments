@@ -62,7 +62,10 @@ case "$MODE" in
     kubectl delete namespace rca
     ;;
   keep-pvc)
-    kubectl delete deployment,service,secret -n rca -l app=rca --ignore-not-found
+    # By explicit resource name, not -l app=rca — only the Deployment actually carries that
+    # label (inherited from its pod template); the Service and Secret manifests never set one
+    # of their own. A label selector here would silently leave the Service and Secret behind.
+    kubectl delete deployment/rca service/rca secret/rca-credentials -n rca --ignore-not-found
     echo
     echo "PVC left in place:"
     kubectl get pvc -n rca
