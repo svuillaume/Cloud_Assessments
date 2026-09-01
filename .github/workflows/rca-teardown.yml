@@ -41,15 +41,15 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
 
       - name: Update kubeconfig
         env:
-          EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
 
       - name: Check namespace exists
