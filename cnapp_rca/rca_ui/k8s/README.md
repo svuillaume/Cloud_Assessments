@@ -90,10 +90,10 @@ name → **Run workflow** in the GitHub UI.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `rca-ci.yml` | Automatic (push/PR to `cnapp_rca/rca_ui/**`) | `checks` job (push or PR, no credentials): syntax-checks `server.js`, shellchecks the deploy/teardown scripts, validates `k8s/` still `kustomize build`s cleanly. `build-and-push` job (**push only**, never PR): builds/pushes the image to ECR, tagged with the commit SHA and `latest` — but only if the push actually touched `Dockerfile`/`server.js`/`roi-calculator.html`/`entrypoint.sh`; otherwise it's a no-op. |
-| `rca-deploy.yml` | Manual | Verifies the requested tag already exists in ECR (built by `rca-ci.yml`, not by this workflow), then deploys it to the `rca` namespace |
+| `rca-deploy.yml` | Manual | Checks ECR for the requested tag first — if `rca-ci.yml` already built it, deploys straight away; if not (fresh repo, an `image_tag` that doesn't correspond to any CI push, or CI skipped this exact commit), builds and pushes it itself as a fallback before deploying |
 | `rca-teardown.yml` | Manual | Removes RCA resources — 3 modes |
 
-Deploying is now decoupled from building: push a change (or merge one), let `rca-ci.yml` build it, *then* click Deploy — Deploy no longer builds anything itself, so it fails fast with a clear error if the tag you're asking for isn't in ECR yet.
+Building normally happens in `rca-ci.yml` on push, so most Deploy clicks are just "check ECR, then apply manifests" — no build. `rca-deploy.yml` only builds when the requested tag genuinely isn't in ECR yet, so a Deploy click never hard-fails just because CI hasn't built this specific tag.
 
 ### Deploy
 
@@ -134,10 +134,9 @@ gh run watch <run-id> -R svuillaume/Cloud_Assessments --exit-status  # stream un
 <summary><b>IAM scope, GitHub Secrets, and updating credentials</b></summary>
 
 **Auth:** all three workflows run as a dedicated IAM user (`gh-actions-rca-deploy`), *not*
-your admin credentials — scoped to ECR push on `rca-dashboard` (used by `rca-ci.yml`'s
-`build-and-push` job only), `ecr:DescribeImages` read-only on the same repo (used by
-`rca-deploy.yml` to verify the tag it's about to deploy actually exists — it no longer builds
-or pushes anything itself), plus EKS access limited to the `rca` namespace. It **cannot
+your admin credentials — scoped to ECR push + `ecr:DescribeImages` on `rca-dashboard`
+(shared by both `rca-ci.yml`'s `build-and-push` job and `rca-deploy.yml`'s check-then-
+maybe-build step), plus EKS access limited to the `rca` namespace. It **cannot
 create or delete the `rca` namespace object itself** (cluster-scoped resource, outside a
 namespace-scoped access policy). The namespace already exists; if it's ever gone (e.g. a
 local `rca_tear_down.sh --full`, which *can* delete it), recreate it once with your own

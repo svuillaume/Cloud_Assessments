@@ -5,21 +5,25 @@ name: RCA Deploy (CD)
 # Secrets instead of a local .env/.env.k8s file, so this doesn't depend on any one machine
 # having those files.
 #
-# Deliberately does NOT build or push an image — that's rca-ci.yml's job now (its
-# "build-and-push" job, on every push where the Docker-relevant files actually changed).
-# This workflow just verifies the requested tag already exists in ECR before deploying it,
-# so a bad/late click can't silently deploy nothing — see "Verify image exists in ECR" below.
+# Building is normally rca-ci.yml's job (its "build-and-push" job, on every push where the
+# Docker-relevant files actually changed) — this workflow checks ECR for the requested tag
+# first and, if it's already there, skips straight to deploying it (no rebuild). Only when
+# it's genuinely missing (a fresh ECR repo, an image_tag that doesn't correspond to any CI
+# push, or CI's build-and-push job having skipped for this exact commit) does this workflow
+# fall back to building and pushing it itself, so a Deploy click never hard-fails just
+# because CI hasn't built this specific tag yet — see "Check if image exists in ECR" /
+# "Build and push image" below.
 #
 # AWS auth: a dedicated IAM user (gh-actions-rca-deploy), not the account admin — scoped to
 # eks:DescribeCluster on this one cluster, namespace-scoped EKS access entries
 # (AmazonEKSEditPolicy + AmazonEKSSecretAdminPolicy, both scoped to the `rca` namespace only)
-# for in-cluster permissions, and ecr:DescribeImages on the rca-dashboard repo (read-only —
-# this workflow never pushes; that's now rca-ci.yml, using the same IAM user's separate push
-# grant). It deliberately cannot create the `rca` namespace itself (Namespace is a
-# cluster-scoped resource, outside what a namespace-scoped access policy grants) — the
-# namespace must already exist. It does today; if a full teardown (rca_tear_down.sh with no
-# flags, or --full) ever removes it again, recreate it once with your own (broader) kubectl
-# access before re-running this workflow:
+# for in-cluster permissions, and ECR push+describe on the rca-dashboard repo (the same grant
+# rca-ci.yml's build-and-push job uses — one IAM user, shared by both workflows). It
+# deliberately cannot create the `rca` namespace itself (Namespace is a cluster-scoped
+# resource, outside what a namespace-scoped access policy grants) — the namespace must
+# already exist. It does today; if a full teardown (rca_tear_down.sh with no flags, or
+# --full) ever removes it again, recreate it once with your own (broader) kubectl access
+# before re-running this workflow:
 #   kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml
 #
 # One narrow addition on top of the above: this user also needs `get`/`list` on `nodes`
@@ -59,36 +63,49 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Verify image exists in ECR
+      - name: Check if image exists in ECR
+        id: image_check
         env:
           IMAGE: ${{ vars.ECR_REGISTRY }}/rca-dashboard:${{ github.event.inputs.image_tag }}
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           set -eu
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          # This workflow no longer builds anything — rca-ci.yml does, on push, whenever the
-          # Docker-relevant files actually change. If this fails after all retries, either
-          # that hasn't run yet for this tag (push a change, or check the Actions tab for a
-          # running/failed build-and-push job), image_tag was mistyped, or — confirmed live
-          # once, the hard way — the IAM user is missing ecr:DescribeImages: an earlier
-          # version of this step redirected the AWS CLI's stderr to /dev/null, so a genuine
-          # AccessDeniedException was indistinguishable from a real "not found" in the log.
-          # stderr is now captured and printed on every failed attempt instead.
-          FOUND=false
-          for attempt in 1 2 3 4 5; do
-            if ERR="$(aws ecr describe-images --repository-name rca-dashboard --region "$AWS_REGION" \
-                 --image-ids imageTag="${{ github.event.inputs.image_tag }}" 2>&1 >/dev/null)"; then
-              FOUND=true
-              break
-            fi
-            echo "Attempt $attempt: $ERR"
-            sleep 5
-          done
-          if [ "$FOUND" != "true" ]; then
-            echo "::error::$IMAGE — see the AWS CLI error(s) logged above (last: $ERR)." >&2
-            exit 1
+          # A plain check, not a retry loop — a miss here isn't a failure anymore, it's the
+          # signal to build (below), so there's nothing to wait out. stderr is still
+          # captured and printed rather than discarded: an earlier version of this step
+          # redirected it to /dev/null, which once made a genuine ecr:DescribeImages
+          # AccessDeniedException indistinguishable from a real "not found" in the log.
+          if ERR="$(aws ecr describe-images --repository-name rca-dashboard --region "$AWS_REGION" \
+               --image-ids imageTag="${{ github.event.inputs.image_tag }}" 2>&1 >/dev/null)"; then
+            echo "$IMAGE already exists — skipping build."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$IMAGE not found: $ERR"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "$IMAGE exists — proceeding."
+
+      - name: Log in to ECR
+        if: steps.image_check.outputs.exists != 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        if: steps.image_check.outputs.exists != 'true'
+        run: |
+          set -eu
+          # Fallback only — rca-ci.yml is normally what builds this, on push, whenever
+          # Dockerfile/server.js/roi-calculator.html/entrypoint.sh actually change. This
+          # runs when the requested tag genuinely isn't in ECR yet (a fresh repo, an
+          # image_tag that doesn't correspond to any CI push, or CI's build-and-push job
+          # having skipped for the exact commit this tag would map to).
+          #
+          # GitHub-hosted ubuntu-latest runners are amd64 already (matches the EKS nodes'
+          # arch, verified via `kubectl get nodes -o jsonpath=...nodeInfo.architecture`), so
+          # this doesn't hit the arm64-Mac-building-for-amd64-nodes problem deploy_k8s.sh
+          # documents — --platform is still passed explicitly rather than relied on
+          # implicitly, so this stays correct even if the runner arch ever changes.
+          docker build --platform linux/amd64 -t "$IMAGE" .
+          docker push "$IMAGE"
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
