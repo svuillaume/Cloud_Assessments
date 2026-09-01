@@ -1,12 +1,21 @@
 #!/usr/bin/env node
-// RCA Report — a small local admin page with two buttons: Deploy RCA and Decommission RCA.
-// Deliberately NOT part of the customer-facing dashboard (server.js) and NOT deployed into
-// the EKS cluster it manages — see k8s/README.md's "RCA Report control panel" section for
-// why: the dashboard's @fortinet.com email gate isn't real access control, and a page
-// tearing down the very pod serving it couldn't show a final "done" status. This runs
-// locally instead, and shells out to the `gh` CLI (reusing whatever `gh auth login` session
-// is already active on this machine — the same one used manually throughout this repo's
-// deploy work) rather than holding its own GitHub token.
+// RCA Report — a small local admin console with two actions: Deploy RCA and Decommission
+// RCA, plus a live health pill (top-right: HEALTHY / NOT DEPLOYED / UNREACHABLE) and a
+// real-time pipeline view of each workflow step while a run is in flight. Deliberately NOT
+// part of the customer-facing dashboard (server.js) and NOT deployed into the EKS cluster it
+// manages — see k8s/README.md's "RCA Report control panel" section for why: the dashboard's
+// @fortinet.com email gate isn't real access control, and a page tearing down the very pod
+// serving it couldn't show a final "done" status. This runs locally instead, and shells out
+// to the `gh` CLI (reusing whatever `gh auth login` session is already active on this
+// machine — the same one used manually throughout this repo's deploy work) rather than
+// holding its own GitHub token.
+//
+// Health is inferred from GitHub Actions history (whichever of rca-deploy.yml/
+// rca-teardown.yml most recently succeeded), then — only when that points at "deployed" —
+// confirmed with a real server-side HTTPS request to the app's own /health endpoint
+// (rejectUnauthorized:false, since it's the app's own self-signed cert, same trust decision
+// a browser makes clicking through the "unsafe cert" warning). CI success alone doesn't mean
+// the app is actually reachable right now, so both signals matter.
 //
 // Usage:
 //   node k8s/rca_control_panel.cjs
@@ -21,12 +30,23 @@
 'use strict';
 
 const http = require('http');
+const https = require('https');
 const { execFile } = require('child_process');
 const { URL } = require('url');
 
 const REPO = process.env.REPO || 'svuillaume/Cloud_Assessments';
 const PORT = Number(process.env.PORT) || 4321;
 const HOST = process.env.HOST || '127.0.0.1';
+
+// GitHub always lists every step of a job upfront (queued ones included, with status
+// "pending"), so the frontend can render a stable, live-filling pipeline straight from this
+// list — no need to hardcode a step list per workflow. Only the bookkeeping steps GitHub adds
+// automatically are filtered out here; everything the workflow YAML itself names is real
+// signal and passed through as-is.
+const NOISE_STEPS = new Set(['Set up job', 'Complete job']);
+function isNoiseStep(name) {
+  return NOISE_STEPS.has(name) || name.startsWith('Post ');
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -65,8 +85,13 @@ async function dispatchAndFindRun(workflow, extraArgs) {
 }
 
 async function getRunStatus(runId) {
-  const out = await gh(['run', 'view', String(runId), '-R', REPO, '--json', 'status,conclusion,url']);
-  return JSON.parse(out);
+  const out = await gh(['run', 'view', String(runId), '-R', REPO, '--json', 'status,conclusion,url,jobs']);
+  const data = JSON.parse(out);
+  const job = data.jobs && data.jobs[0];
+  const steps = (job ? job.steps : [])
+    .filter((s) => !isNoiseStep(s.name))
+    .map((s) => ({ name: s.name, status: s.status, conclusion: s.conclusion || null }));
+  return { status: data.status, conclusion: data.conclusion, url: data.url, steps };
 }
 
 async function getDeployFqdn(runId) {
@@ -79,6 +104,58 @@ async function getDeployFqdn(runId) {
   // a real resolved address never starts with one.
   const m = out.match(/Reachable at (https:\/\/(?!\$)\S+)/);
   return m ? m[1] : null;
+}
+
+async function lastSuccessfulRun(workflow) {
+  const out = await gh([
+    'run', 'list', '-R', REPO,
+    '--workflow', workflow,
+    '--status', 'success',
+    '--limit', '1',
+    '--json', 'databaseId,createdAt',
+  ]);
+  const runs = JSON.parse(out);
+  return runs[0] || null;
+}
+
+// self-signed cert (SELF_SIGNED=true, entrypoint.sh) — rejectUnauthorized:false is
+// deliberate here, same trust decision a browser makes when you click through the "unsafe
+// cert" warning, just made server-side so this check doesn't depend on the browser having
+// visited (and trusted) that origin already.
+function checkHealth(fqdn) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const req = https.get(`${fqdn}/health`, { rejectUnauthorized: false, timeout: 6000 }, (res) => {
+      settled = true;
+      resolve(res.statusCode >= 200 && res.statusCode < 300);
+      res.resume();
+    });
+    req.on('error', () => { if (!settled) resolve(false); });
+    req.on('timeout', () => { req.destroy(); if (!settled) resolve(false); });
+  });
+}
+
+// "Deployed" is inferred from GitHub Actions history, not a live cluster query (this tool
+// deliberately has no kubectl/AWS access of its own — only `gh`) — whichever of the two
+// workflows most recently completed successfully wins. If that's a deploy, actually reach out
+// to the app's /health endpoint to distinguish "deployed and healthy" from "deployed per CI
+// but not actually reachable" (SG rule missing, pod crash-looping, etc.) — CI success alone
+// doesn't guarantee that.
+async function getAppHealth() {
+  const [deploy, teardown] = await Promise.all([
+    lastSuccessfulRun('rca-deploy.yml'),
+    lastSuccessfulRun('rca-teardown.yml'),
+  ]);
+  const deployAt = deploy ? new Date(deploy.createdAt).getTime() : -1;
+  const teardownAt = teardown ? new Date(teardown.createdAt).getTime() : -1;
+
+  if (!deploy || teardownAt > deployAt) {
+    return { state: 'not-deployed' };
+  }
+  const fqdn = await getDeployFqdn(deploy.databaseId);
+  if (!fqdn) return { state: 'unknown' };
+  const healthy = await checkHealth(fqdn);
+  return { state: healthy ? 'healthy' : 'unreachable', fqdn };
 }
 
 function sendJson(res, status, body) {
@@ -112,144 +189,333 @@ const PAGE_HTML = `<!doctype html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RCA Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0b0d10; --panel:#151a1f; --border:#262d35; --text:#f1f3f5; --text2:#98a2ad;
-          --red:#ee3124; --green:#2fb673; --amber:#e0a52b; }
+  :root {
+    --bg: #0a0e12;
+    --surface: #12181f;
+    --surface-2: #1a222b;
+    --line: #232d38;
+    --text: #eef2f6;
+    --text-dim: #7c8a99;
+    --text-faint: #4b5866;
+    --deploy: #3ddc84;
+    --deploy-dim: #1d5c3d;
+    --decom: #ff5a5f;
+    --decom-dim: #6b2224;
+    --amber: #f5b83d;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  header { padding:28px 32px 8px; }
-  header h1 { margin:0; font-size:22px; font-weight:650; letter-spacing:-0.01em; }
-  header p { margin:6px 0 0; color:var(--text2); font-size:13px; }
-  main { max-width:720px; margin:0 auto; padding:24px 32px 60px; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
-  .actions { display:flex; gap:14px; flex-wrap:wrap; }
-  button { font:inherit; font-weight:600; font-size:14px; border:none; border-radius:8px; padding:12px 20px; cursor:pointer; transition:opacity .15s; }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  button:not(:disabled):hover { opacity:.88; }
-  #btn-deploy { background:var(--green); color:#04120a; }
-  #btn-decommission { background:var(--red); color:#fff; }
-  .status-row { display:flex; align-items:center; gap:10px; margin-top:18px; font-size:14px; }
-  .dot { width:9px; height:9px; border-radius:50%; background:var(--text2); flex:none; }
-  .dot.running { background:var(--amber); animation:pulse 1.2s infinite; }
-  .dot.ok { background:var(--green); }
-  .dot.err { background:var(--red); }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
-  .fqdn-box { margin-top:16px; padding:16px; background:#0e2a1c; border:1px solid #1f5c3d; border-radius:8px; }
-  .fqdn-box a { color:var(--green); font-weight:600; word-break:break-all; }
-  .muted { color:var(--text2); font-size:13px; }
-  .run-link { color:#7aa7ff; text-decoration:none; }
-  .run-link:hover { text-decoration:underline; }
+  ::selection { background: var(--deploy-dim); color: var(--text); }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 var(--sans);
+    background-image:
+      radial-gradient(circle at 15% 0%, rgba(61,220,132,0.06), transparent 45%),
+      radial-gradient(circle at 85% 15%, rgba(255,90,95,0.05), transparent 40%);
+    background-attachment: fixed;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 40px 24px 80px; animation: fade-up .4s ease both; }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  h1 { font: 700 20px/1 var(--mono); margin: 0; letter-spacing: -0.01em; }
+  .repo { margin: 8px 0 28px; color: var(--text-dim); font: 13px var(--mono); }
+  .repo b { color: var(--text-faint); font-weight: 500; }
+
+  .status-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px;
+                 border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+                 font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); }
+  .led { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex: none; }
+  .led.checking { background: var(--text-dim); animation: breathe 1.2s ease-in-out infinite; }
+  .led.healthy { background: var(--deploy); box-shadow: 0 0 8px var(--deploy); animation: breathe 2.4s ease-in-out infinite; }
+  .led.down { background: var(--decom); box-shadow: 0 0 6px var(--decom); }
+  .status-pill.healthy { color: var(--deploy); border-color: var(--deploy-dim); }
+  .status-pill.down { color: var(--decom); border-color: var(--decom-dim); }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 520px) { .actions { grid-template-columns: 1fr; } }
+
+  button.tile {
+    all: unset; cursor: pointer; box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color .15s, transform .1s, box-shadow .2s;
+  }
+  button.tile:hover:not(:disabled) { transform: translateY(-1px); }
+  button.tile:active:not(:disabled) { transform: translateY(0); }
+  button.tile:focus-visible { outline: 2px solid var(--text-dim); outline-offset: 2px; }
+  button.tile:disabled { opacity: .4; cursor: not-allowed; }
+  #btn-deploy:hover:not(:disabled) { border-color: var(--deploy); box-shadow: 0 0 0 1px var(--deploy), 0 0 24px -8px var(--deploy); }
+  #btn-decommission:hover:not(:disabled) { border-color: var(--decom); box-shadow: 0 0 0 1px var(--decom), 0 0 24px -8px var(--decom); }
+  .tile-icon { width: 20px; height: 20px; }
+  #btn-deploy .tile-icon { color: var(--deploy); }
+  #btn-decommission .tile-icon { color: var(--decom); }
+  .tile-label { font: 600 14px var(--mono); letter-spacing: .01em; }
+  .tile-desc { font: 12px/1.5 var(--sans); color: var(--text-dim); }
+
+  .pipeline-wrap { max-height: 0; overflow: hidden; transition: max-height .4s ease; }
+  .pipeline-wrap.open { max-height: 900px; }
+  .pipeline { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .pipeline-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+  .pipeline-title { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); }
+  .pipeline-link { font: 12px var(--mono); color: var(--text-dim); text-decoration: none; }
+  .pipeline-link:hover { color: var(--text); }
+
+  .steps { position: relative; padding-left: 28px; }
+  .conduit { position: absolute; left: 9px; top: 6px; bottom: 6px; width: 2px; background: var(--line); border-radius: 1px; overflow: hidden; }
+  .conduit-fill { width: 100%; height: 0%; background: linear-gradient(var(--fill-color, var(--deploy)), var(--fill-color, var(--deploy))); transition: height .5s cubic-bezier(.4,0,.2,1); box-shadow: 0 0 10px var(--fill-color, var(--deploy)); }
+
+  .step { position: relative; padding: 0 0 20px; }
+  .step:last-child { padding-bottom: 0; }
+  .step-node { position: absolute; left: -28px; top: 1px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; }
+  .step-node .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-faint); transition: background .2s, box-shadow .2s; }
+  .step.done .step-node .dot { background: var(--fill-color, var(--deploy)); }
+  .step.running .step-node .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe 1s ease-in-out infinite; }
+  .step.failed .step-node .dot { background: var(--decom); box-shadow: 0 0 8px var(--decom); }
+  .step.skipped .step-node .dot { background: var(--text-faint); opacity: .4; }
+
+  .step-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .step-name { font: 13px var(--mono); color: var(--text-faint); transition: color .2s; }
+  .step.done .step-name, .step.running .step-name, .step.failed .step-name { color: var(--text); }
+  .step-state { font: 11px var(--mono); color: var(--text-faint); flex: none; text-transform: uppercase; letter-spacing: .04em; }
+  .step.running .step-state { color: var(--amber); }
+  .step.failed .step-state { color: var(--decom); }
+  .step.done .step-state { color: var(--fill-color, var(--deploy)); }
+
+  @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+
+  .result { margin-top: 20px; padding: 16px 18px; border-radius: 10px; border: 1px solid var(--line);
+            background: var(--surface); animation: fade-up .3s ease both; }
+  .result.success { border-color: var(--deploy-dim); background: linear-gradient(180deg, rgba(61,220,132,.07), transparent); }
+  .result.success.decom { border-color: var(--decom-dim); background: linear-gradient(180deg, rgba(255,90,95,.07), transparent); }
+  .result.error { border-color: var(--decom-dim); background: linear-gradient(180deg, rgba(255,90,95,.08), transparent); }
+  .result-title { font: 600 13px var(--mono); margin-bottom: 4px; }
+  .result.success .result-title { color: var(--deploy); }
+  .result.success.decom .result-title { color: var(--decom); }
+  .result.error .result-title { color: var(--decom); }
+  .fqdn-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .fqdn-row a { font: 13px var(--mono); color: var(--text); text-decoration: none; word-break: break-all; }
+  .fqdn-row a:hover { text-decoration: underline; }
+  .copy-btn { all: unset; cursor: pointer; font: 11px var(--mono); color: var(--text-dim); border: 1px solid var(--line);
+              border-radius: 6px; padding: 3px 8px; flex: none; }
+  .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+  .idle-hint { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--text-faint); }
+  footer { margin-top: 40px; font: 12px/1.6 var(--sans); color: var(--text-faint); }
+  footer code { font-family: var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>RCA Report</h1>
-  <p>Deploy or decommission the RCA dashboard on <code>eks_samv</code> via GitHub Actions — repo: <code id="repo"></code></p>
-</header>
 <main>
-  <div class="card">
-    <div class="actions">
-      <button id="btn-deploy">Deploy RCA</button>
-      <button id="btn-decommission">Decommission RCA</button>
-    </div>
-    <div class="status-row" id="status-row" hidden>
-      <span class="dot" id="status-dot"></span>
-      <span id="status-text"></span>
-      <a href="#" id="run-link" class="run-link" target="_blank" hidden>view run &rarr;</a>
-    </div>
-    <div class="fqdn-box" id="fqdn-box" hidden>
-      Dashboard is live at <a id="fqdn-link" href="#" target="_blank"></a>
+  <header>
+    <h1>RCA Report</h1>
+    <span class="status-pill" id="status-pill">
+      <span class="led checking" id="led"></span>
+      <span id="health-text">checking</span>
+    </span>
+  </header>
+  <p class="repo"><b>repo</b> <span id="repo"></span></p>
+
+  <div class="actions">
+    <button class="tile" id="btn-deploy">
+      <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+      <span class="tile-label">Deploy RCA</span>
+      <span class="tile-desc">Build, push, and apply to <code>eks_samv</code></span>
+    </button>
+    <button class="tile" id="btn-decommission">
+      <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+      <span class="tile-label">Decommission RCA</span>
+      <span class="tile-desc">Remove Deployment, Service, Secret, PVC</span>
+    </button>
+  </div>
+
+  <div id="idle-hint" class="idle-hint">Trigger a run above to watch it live.</div>
+
+  <div class="pipeline-wrap" id="pipeline-wrap">
+    <div class="pipeline">
+      <div class="pipeline-head">
+        <span class="pipeline-title" id="pipeline-title">Pipeline</span>
+        <a href="#" id="run-link" class="pipeline-link" target="_blank">view on GitHub &rarr;</a>
+      </div>
+      <div class="steps" id="steps">
+        <div class="conduit"><div class="conduit-fill" id="conduit-fill"></div></div>
+      </div>
+      <div id="result-slot"></div>
     </div>
   </div>
-  <p class="muted">Runs locally against your <code>gh</code> CLI session — no credentials stored in this page or sent to your browser beyond what you see here.</p>
+
+  <footer>Runs locally against your <code>gh</code> CLI session — no credentials stored in this page or sent to your browser beyond what you see here.</footer>
 </main>
 <script>
 const repoEl = document.getElementById('repo');
 const btnDeploy = document.getElementById('btn-deploy');
 const btnDecommission = document.getElementById('btn-decommission');
-const statusRow = document.getElementById('status-row');
-const statusDot = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
+const idleHint = document.getElementById('idle-hint');
+const pipelineWrap = document.getElementById('pipeline-wrap');
+const pipelineTitle = document.getElementById('pipeline-title');
 const runLink = document.getElementById('run-link');
-const fqdnBox = document.getElementById('fqdn-box');
-const fqdnLink = document.getElementById('fqdn-link');
+const stepsEl = document.getElementById('steps');
+const conduitFill = document.getElementById('conduit-fill');
+const resultSlot = document.getElementById('result-slot');
+const led = document.getElementById('led');
+const statusPill = document.getElementById('status-pill');
+const healthText = document.getElementById('health-text');
 
 let polling = null;
+let healthPollTimer = null;
+const ACCENT = { deploy: '#3ddc84', decommission: '#ff5a5f' };
 
 function setButtonsDisabled(disabled) {
   btnDeploy.disabled = disabled;
   btnDecommission.disabled = disabled;
 }
 
-function setStatus(kind, text, url) {
-  statusRow.hidden = false;
-  statusDot.className = 'dot' + (kind ? ' ' + kind : '');
-  statusText.textContent = text;
-  if (url) {
-    runLink.href = url;
-    runLink.hidden = false;
-  } else {
-    runLink.hidden = true;
+async function checkAppHealth() {
+  led.className = 'led checking';
+  statusPill.className = 'status-pill';
+  healthText.textContent = 'checking';
+  let data;
+  try {
+    const res = await fetch('/api/health');
+    data = await res.json();
+  } catch (e) {
+    led.className = 'led down';
+    statusPill.className = 'status-pill down';
+    healthText.textContent = 'unknown';
+    return;
   }
+  const LABEL = { healthy: 'healthy', 'not-deployed': 'not deployed', unreachable: 'unreachable', unknown: 'unknown' };
+  const isUp = data.state === 'healthy';
+  led.className = 'led ' + (isUp ? 'healthy' : 'down');
+  statusPill.className = 'status-pill ' + (isUp ? 'healthy' : 'down');
+  healthText.textContent = LABEL[data.state] || 'unknown';
+}
+
+function renderSteps(kind, steps) {
+  stepsEl.querySelectorAll('.step').forEach((n) => n.remove());
+  const accent = ACCENT[kind];
+  stepsEl.style.setProperty('--fill-color', accent);
+  if (!steps || !steps.length) return;
+  let doneCount = 0;
+  steps.forEach((s) => {
+    const state = s.status === 'completed'
+      ? (s.conclusion === 'success' ? 'done' : s.conclusion === 'skipped' ? 'skipped' : 'failed')
+      : (s.status === 'in_progress' ? 'running' : 'pending');
+    if (state === 'done') doneCount++;
+    const row = document.createElement('div');
+    row.className = 'step ' + state;
+    row.style.setProperty('--fill-color', accent);
+    const label = { done: 'done', running: 'running', failed: 'failed', skipped: 'skipped', pending: 'queued' }[state];
+    row.innerHTML = '<div class="step-node"><span class="dot"></span></div>' +
+      '<div class="step-row"><span class="step-name"></span><span class="step-state">' + label + '</span></div>';
+    row.querySelector('.step-name').textContent = s.name;
+    stepsEl.appendChild(row);
+  });
+  const pct = steps.length ? Math.round((doneCount / steps.length) * 100) : 0;
+  conduitFill.style.setProperty('--fill-color', accent);
+  conduitFill.style.height = pct + '%';
+}
+
+function renderResult(kind, outcome, message, fqdn) {
+  resultSlot.innerHTML = '';
+  if (!outcome) return;
+  const box = document.createElement('div');
+  box.className = 'result ' + (outcome === 'success' ? 'success' + (kind === 'decommission' ? ' decom' : '') : 'error');
+  const title = document.createElement('div');
+  title.className = 'result-title';
+  title.textContent = message;
+  box.appendChild(title);
+  if (fqdn) {
+    const row = document.createElement('div');
+    row.className = 'fqdn-row';
+    row.innerHTML = '<a href="' + fqdn + '" target="_blank"></a><button class="copy-btn" type="button">copy</button>';
+    row.querySelector('a').textContent = fqdn;
+    row.querySelector('a').href = fqdn;
+    const copyBtn = row.querySelector('.copy-btn');
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(fqdn).then(() => {
+        copyBtn.textContent = 'copied';
+        setTimeout(() => { copyBtn.textContent = 'copy'; }, 1400);
+      });
+    });
+    box.appendChild(row);
+  }
+  resultSlot.appendChild(box);
 }
 
 async function poll(kind, runId) {
-  const res = await fetch('/api/status?workflow=' + encodeURIComponent(kind) + '&runId=' + runId);
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch('/api/status?workflow=' + encodeURIComponent(kind) + '&runId=' + runId);
+    data = await res.json();
+  } catch (e) {
+    return; // transient network hiccup — keep polling, next tick will retry
+  }
   if (data.error) {
-    setStatus('err', data.error);
-    setButtonsDisabled(false);
     clearInterval(polling);
+    setButtonsDisabled(false);
+    renderResult(kind, 'error', data.error);
+    checkAppHealth();
     return;
   }
-  if (data.status !== 'completed') {
-    setStatus('running', 'Running…', data.url);
-    return;
-  }
+  renderSteps(kind, data.steps);
+  if (data.status !== 'completed') return;
+
   clearInterval(polling);
   setButtonsDisabled(false);
   if (data.conclusion === 'success') {
     if (kind === 'deploy') {
-      setStatus('ok', 'Deployed', data.url);
-      if (data.fqdn) {
-        fqdnBox.hidden = false;
-        fqdnLink.href = data.fqdn;
-        fqdnLink.textContent = data.fqdn;
-      } else {
-        setStatus('ok', 'Deployed (no URL found in the run log — check manually)', data.url);
-      }
+      renderResult(kind, 'success', data.fqdn ? 'Deployed' : 'Deployed — no URL found in the run log, check manually', data.fqdn);
     } else {
-      fqdnBox.hidden = true;
-      setStatus('ok', 'Decommissioned', data.url);
+      renderResult(kind, 'success', 'Decommissioned');
     }
   } else {
-    setStatus('err', 'Run failed (' + data.conclusion + ')', data.url);
+    renderResult(kind, 'error', 'Run failed (' + data.conclusion + ')');
   }
+  checkAppHealth();
 }
 
-async function trigger(kind, endpoint, confirmMsg) {
+async function trigger(kind, endpoint, label, confirmMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   setButtonsDisabled(true);
-  fqdnBox.hidden = true;
-  setStatus('running', 'Triggering…');
+  idleHint.hidden = true;
+  pipelineWrap.classList.add('open');
+  pipelineTitle.textContent = label;
+  resultSlot.innerHTML = '';
+  stepsEl.querySelectorAll('.step').forEach((n) => n.remove());
+  conduitFill.style.height = '0%';
+  runLink.hidden = true;
   try {
     const res = await fetch(endpoint, { method: 'POST' });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    setStatus('running', 'Running…', data.url);
-    polling = setInterval(() => poll(kind, data.runId), 4000);
+    runLink.href = data.url;
+    runLink.hidden = false;
+    polling = setInterval(() => poll(kind, data.runId), 3000);
+    poll(kind, data.runId);
   } catch (e) {
-    setStatus('err', e.message);
     setButtonsDisabled(false);
+    renderResult(kind, 'error', e.message);
   }
 }
 
-btnDeploy.addEventListener('click', () => trigger('deploy', '/api/deploy'));
+btnDeploy.addEventListener('click', () => trigger('deploy', '/api/deploy', 'Deploying'));
 btnDecommission.addEventListener('click', () =>
-  trigger('decommission', '/api/decommission', 'This deletes the Deployment, Service, Secret, and PVC. Continue?')
+  trigger('decommission', '/api/decommission', 'Decommissioning',
+    'This deletes the Deployment, Service, Secret, and PVC. Continue?')
 );
 
 fetch('/api/repo').then((r) => r.json()).then((d) => { repoEl.textContent = d.repo; });
+checkAppHealth();
+healthPollTimer = setInterval(checkAppHealth, 20000);
 </script>
 </body>
 </html>
@@ -267,6 +533,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/repo') {
       return sendJson(res, 200, { repo: REPO });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/health') {
+      const health = await getAppHealth();
+      return sendJson(res, 200, health);
     }
 
     if (req.method === 'POST' && url.pathname === '/api/deploy') {
@@ -288,7 +559,7 @@ const server = http.createServer(async (req, res) => {
       const runId = url.searchParams.get('runId');
       if (!runId) return sendJson(res, 400, { error: 'missing runId' });
       const status = await getRunStatus(runId);
-      const payload = { status: status.status, conclusion: status.conclusion, url: status.url };
+      const payload = { status: status.status, conclusion: status.conclusion, url: status.url, steps: status.steps };
       if (workflow === 'rca-deploy.yml' && status.status === 'completed' && status.conclusion === 'success') {
         payload.fqdn = await getDeployFqdn(runId);
       }
