@@ -1,21 +1,5 @@
 name: RCA Tear Down (CD)
 
-# Manual only — never runs on push. Removes RCA resources from the `rca` namespace on the
-# eks_samv EKS cluster, mirroring cnapp_rca/rca_ui/k8s/rca_tear_down.sh but callable from any
-# machine (same GitHub Secrets-based auth as rca-deploy.yml — see that workflow's header
-# comment for the IAM user's exact scope).
-#
-# Unlike rca_tear_down.sh's local --full mode (`kubectl delete namespace rca`), this
-# workflow's "full" mode does NOT delete the Namespace object itself — it can't: Namespace is
-# a cluster-scoped resource, outside what the gh-actions-rca-deploy IAM user's
-# namespace-scoped EKS access entry (AmazonEKSEditPolicy + AmazonEKSSecretAdminPolicy, both
-# scoped to `rca` only) grants. Instead "full" here deletes every namespaced resource
-# (Deployment, Service, Secret, PVC — PVC deletion still releases the underlying EBS volume
-# via gp2's reclaim policy) and leaves an empty `rca` namespace behind. Functionally
-# equivalent for the app (nothing running, no data) and actually convenient — the next CD
-# deploy run doesn't need the namespace recreated first (rca-deploy.yml's IAM user can't do
-# that either). If you genuinely want the namespace object gone too, run
-# `k8s/rca_tear_down.sh --full` locally with your own broader kubectl access.
 on:
   workflow_dispatch:
     inputs:

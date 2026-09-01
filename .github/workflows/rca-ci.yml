@@ -1,24 +1,5 @@
 name: RCA CI
 
-# `checks` job: automatic, no credentials involved — safe to run on every push/PR. Validates
-# that server.js still parses, the k8s manifests still kustomize-build cleanly (the same
-# failure mode that broke deploy_k8s.sh earlier — namespace.yaml missing from its temp dir —
-# would have been caught here), and the deploy/teardown shell scripts pass shellcheck.
-#
-# `build-and-push` job: builds/pushes the image to ECR — moved here from rca-deploy.yml so the
-# image for a given commit exists by the time anyone clicks Deploy, instead of building it
-# during the deploy click itself. Two things keep this from touching cloud infrastructure on
-# every commit or from ever running against untrusted code:
-#   - `if: github.event_name == 'push'` — never runs on pull_request. This repo is public,
-#     and a PR (even from this same account) shouldn't get a workflow run with push-scoped AWS
-#     credentials just by opening it — only a direct push to a branch does.
-#   - "Check if the image needs rebuilding" — diffs the files that actually feed the Docker
-#     build (Dockerfile, server.js, roi-calculator.html, entrypoint.sh) between this push's
-#     before/after SHA. A push that only touches k8s/ manifests, README, etc. builds nothing.
-# Pushes two tags on a real build: the commit SHA (immutable, traceable to exactly what
-# produced it) and `latest` (what rca-deploy.yml deploys by default). rca-deploy.yml checks
-# ECR for the requested tag before deploying and only builds itself as a fallback when this
-# job hasn't put it there yet — see that workflow's header comment.
 on:
   push:
     branches: ['**']

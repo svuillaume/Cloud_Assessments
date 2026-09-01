@@ -4,38 +4,7 @@ name: RCA Deploy (CD)
 # mirroring cnapp_rca/rca_ui/k8s/deploy_k8s.sh but sourcing all credentials from GitHub
 # Secrets instead of a local .env/.env.k8s file, so this doesn't depend on any one machine
 # having those files.
-#
-# Building is normally rca-ci.yml's job (its "build-and-push" job, on every push where the
-# Docker-relevant files actually changed) — this workflow checks ECR for the requested tag
-# first and, if it's already there, skips straight to deploying it (no rebuild). Only when
-# it's genuinely missing (a fresh ECR repo, an image_tag that doesn't correspond to any CI
-# push, or CI's build-and-push job having skipped for this exact commit) does this workflow
-# fall back to building and pushing it itself, so a Deploy click never hard-fails just
-# because CI hasn't built this specific tag yet — see "Check if image exists in ECR" /
-# "Build and push image" below.
-#
-# AWS auth: a dedicated IAM user (gh-actions-rca-deploy), not the account admin — scoped to
-# eks:DescribeCluster on this one cluster, namespace-scoped EKS access entries
-# (AmazonEKSEditPolicy + AmazonEKSSecretAdminPolicy, both scoped to the `rca` namespace only)
-# for in-cluster permissions, and ECR push+describe on the rca-dashboard repo (the same grant
-# rca-ci.yml's build-and-push job uses — one IAM user, shared by both workflows). It
-# deliberately cannot create the `rca` namespace itself (Namespace is a cluster-scoped
-# resource, outside what a namespace-scoped access policy grants) — the namespace must
-# already exist. It does today; if a full teardown (rca_tear_down.sh with no flags, or
-# --full) ever removes it again, recreate it once with your own (broader) kubectl access
-# before re-running this workflow:
-#   kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml
-#
-# One narrow addition on top of the above: this user also needs `get`/`list` on `nodes`
-# (cluster-scoped, so outside any namespace-scoped grant too) purely to read a node's public
-# address for the "Status and access URL" step below. Confirmed live that omitting this
-# fails hard — `Error from server (Forbidden): nodes is forbidden: User "...gh-actions-
-# rca-deploy" cannot list resource "nodes" ... at the cluster scope` — not the transient
-# flakiness an earlier version of this comment assumed. Rather than broadening to AWS's full
-# (read-everywhere) AmazonEKSViewPolicy, this is granted as a minimal native Kubernetes
-# ClusterRole + ClusterRoleBinding (get/list on nodes only, nothing else) — see
-# cnapp_rca/rca_ui/k8s/ci-node-reader-rbac.yaml, applied once, out-of-band (not part of any
-# `kubectl apply -k`, since it's cluster-scoped RBAC, not a namespaced app resource).
+
 on:
   workflow_dispatch:
     inputs:
