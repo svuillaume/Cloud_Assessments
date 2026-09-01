@@ -1,6 +1,7 @@
 #!/bin/sh
-# Tears down RCA from Kubernetes — see k8s/README.md's "Tear down" section for the manual
-# walkthrough this automates. Three modes, picked by flag:
+# Tears down RCA from Kubernetes — see k8s/README.md's "Local scripts" section (manual
+# teardown equivalents, in the collapsed walkthrough) for the manual commands this automates.
+# Three modes, picked by flag:
 #
 #   ./rca_tear_down.sh              full teardown (default) — deletes the whole `rca`
 #                                    namespace, cascading to the Deployment, Service, PVC
@@ -18,8 +19,8 @@
 # aws-ebs-csi-driver add-on, the AmazonEBSCSIDriverPolicy IAM attachment, or any security
 # group rule opened for external access) — those are left in place on purpose so a later
 # deploy_k8s.sh run doesn't need to repeat the fresh-cluster prerequisites. See
-# k8s/README.md's "Tear down" section for the (manual, account-specific) commands to reverse
-# those too.
+# k8s/README.md's "Local scripts" section for the (manual, account-specific) commands to
+# reverse those too.
 set -eu
 
 MODE="full"
