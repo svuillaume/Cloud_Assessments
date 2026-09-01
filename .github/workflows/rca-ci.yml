@@ -16,8 +16,9 @@ name: RCA CI
 #     build (Dockerfile, server.js, roi-calculator.html, entrypoint.sh) between this push's
 #     before/after SHA. A push that only touches k8s/ manifests, README, etc. builds nothing.
 # Pushes two tags on a real build: the commit SHA (immutable, traceable to exactly what
-# produced it) and `latest` (what rca-deploy.yml deploys by default). rca-deploy.yml no longer
-# builds anything itself — it just verifies whatever tag it's asked to deploy already exists.
+# produced it) and `latest` (what rca-deploy.yml deploys by default). rca-deploy.yml checks
+# ECR for the requested tag before deploying and only builds itself as a fallback when this
+# job hasn't put it there yet — see that workflow's header comment.
 on:
   push:
     branches: ['**']

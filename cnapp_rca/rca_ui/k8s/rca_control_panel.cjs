@@ -359,7 +359,6 @@ const PAGE_HTML = `<!doctype html>
   .btn-primary:disabled, .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
   .cred-error { margin-top: 12px; font: 12px var(--mono); color: var(--decom); }
 
-
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
   }
@@ -388,7 +387,6 @@ const PAGE_HTML = `<!doctype html>
       <span class="tile-desc">Remove Deployment, Service, Secret, PVC</span>
     </button>
   </div>
-
 
   <div class="modal-overlay" id="cred-modal" hidden>
     <div class="modal">

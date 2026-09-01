@@ -12,7 +12,7 @@ Service with a self-signed TLS cert, single replica only.
 | **Deploy** (this machine — needs Docker + AWS CLI + `.env`) | `k8s/deploy_k8s.sh` |
 | **Tear everything down** | `gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=full` |
 | **Restart the pod** | `gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=restart` |
-| **Update FortiCNAPP creds** in GitHub | `k8s/rca_update_secrets.sh` |
+| **Update FortiCNAPP creds** in GitHub | `k8s/rca_update_secrets.sh`, or the credentials modal on Deploy RCA in the control panel |
 | **Watch a workflow run** | `gh run watch <run-id> -R svuillaume/Cloud_Assessments --exit-status` |
 
 **Access:** `https://<node-fqdn-or-ip>:30443` — browser will warn about the self-signed cert
@@ -79,6 +79,20 @@ successful CI run alone doesn't guarantee the app is actually reachable right no
 missing security group rule, etc.) — both signals matter, and `UNREACHABLE` means they
 disagree.
 
+**Deploy RCA** first opens a "FortiCNAPP Credentials" modal (Account, Key ID, Secret, optional
+Subaccount) — Key ID and Secret render as masked password fields. Any field you fill in is
+pushed straight to GitHub Secrets (`gh secret set`, same mechanism as `rca_update_secrets.sh`
+below) before the deploy workflow is triggered; a field left blank keeps whatever's already
+stored, so re-deploying with nothing changed just means submitting the modal empty. This is
+the only place secrets are updated from the browser — `rca_update_secrets.sh` is still there
+for updating creds from the CLI without triggering a deploy.
+
+**Decommission RCA** deletes the `LW_ACCOUNT`/`LW_KEY_ID`/`LW_SECRET`/`LW_SUBACCOUNT` GitHub
+Secrets (best-effort — a secret that's already gone is silently skipped, not an error) right
+after dispatching the teardown workflow, and the confirm dialog says so. This means a
+subsequent Deploy needs credentials re-entered in the modal; it does not touch anything in
+FortiCNAPP itself, only this repo's GitHub Secrets.
+
 ---
 
 ## GitHub Actions CI/CD — recommended
@@ -94,6 +108,13 @@ name → **Run workflow** in the GitHub UI.
 | `rca-teardown.yml` | Manual | Removes RCA resources — 3 modes |
 
 Building normally happens in `rca-ci.yml` on push, so most Deploy clicks are just "check ECR, then apply manifests" — no build. `rca-deploy.yml` only builds when the requested tag genuinely isn't in ECR yet, so a Deploy click never hard-fails just because CI hasn't built this specific tag.
+
+> **The `rca-dashboard` ECR repository itself has to exist** — `docker push` creates a new
+> *image* inside a repository, but never creates the *repository*. If it's ever deleted (confirmed
+> live: `docker push` then fails with `name unknown: The repository with name 'rca-dashboard'
+> does not exist...`, distinct from a missing-tag error), recreate it once before the next
+> push/deploy: `aws ecr create-repository --repository-name rca-dashboard --region <region>
+> --image-scanning-configuration scanOnPush=true`.
 
 ### Deploy
 
