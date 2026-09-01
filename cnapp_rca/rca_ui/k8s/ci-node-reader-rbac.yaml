@@ -1,0 +1,41 @@
+# One-time, cluster-scoped RBAC grant for the gh-actions-rca-deploy IAM user (see
+# .github/workflows/rca-deploy.yml's header comment for the full IAM/EKS-access-entry setup
+# this sits alongside). Not part of `kubectl apply -k k8s/` — that kustomization is
+# namespace-scoped to `rca` and this is deliberately NOT namespace-scoped: `nodes` is a
+# cluster-scoped Kubernetes resource, so no namespace-scoped access policy (the
+# AmazonEKSEditPolicy/AmazonEKSSecretAdminPolicy associations that user already has) can ever
+# grant access to it, no matter how it's configured.
+#
+# Needed for exactly one thing: rca-deploy.yml's "Status and access URL" step reads a node's
+# public address to print the dashboard's access URL. Confirmed live that omitting this
+# fails hard — `Error from server (Forbidden): nodes is forbidden: User "arn:aws:iam::
+# 244822573207:user/gh-actions-rca-deploy" cannot list resource "nodes" ... at the cluster
+# scope` — not a transient issue, a real and permanent permission gap.
+#
+# Deliberately a minimal, purpose-built ClusterRole (get/list on nodes, nothing else) rather
+# than associating AWS's built-in AmazonEKSViewPolicy, which would grant broad read access to
+# every resource in every namespace cluster-wide — far more than this one narrow need.
+#
+# Apply once, out-of-band, with your own (broader) kubectl access:
+#   kubectl apply -f k8s/ci-node-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rca-ci-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rca-ci-node-reader-binding
+subjects:
+  - kind: User
+    name: arn:aws:iam::244822573207:user/gh-actions-rca-deploy
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: rca-ci-node-reader
+  apiGroup: rbac.authorization.k8s.io

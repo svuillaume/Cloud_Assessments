@@ -82,10 +82,12 @@ kubectl get pods -n rca
 # FQDN is stable across an EC2 instance's public IP changing on stop/start, and is what
 # EKS/AWS itself calls the address. Falls back to ExternalIP (works on non-AWS clusters, or
 # if ExternalDNS isn't populated), and finally to a private-IP note if neither is present.
-# Retries a few times — confirmed live (via rca-deploy.yml, same lookup) that a single
-# `kubectl get nodes` call can transiently come back empty even when the nodes do have
-# ExternalDNS addresses; with 2>/dev/null silencing the actual error, that looked identical
-# to "these node IPs are genuinely private-only".
+# Retries a few times as defense-in-depth against genuine transient API-server hiccups. (The
+# CD workflow's version of this same lookup once failed hard here too, but for a different,
+# non-transient reason specific to *that* context — its dedicated IAM user lacked cluster-
+# scoped permission to read nodes at all; see rca-deploy.yml's header comment. This script
+# runs with your own broader kubectl credentials, so that particular failure mode doesn't
+# apply here.)
 NODE_ADDR=""
 for _ in 1 2 3 4 5; do
   NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
