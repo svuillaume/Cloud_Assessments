@@ -118,6 +118,34 @@ async function lastSuccessfulRun(workflow) {
   return runs[0] || null;
 }
 
+// FortiCNAPP credentials, pushed straight to GitHub's encrypted secret store — same fields
+// rca_update_secrets.sh manages, just driven from the Deploy button instead of a local .env
+// file. `mask: true` fields render as <input type="password"> client-side so a pasted key/
+// secret is hidden immediately, same as any password field.
+const LW_SECRET_FIELDS = [
+  { name: 'LW_ACCOUNT', label: 'FortiCNAPP Account', placeholder: 'your-tenant.lacework.net', mask: false },
+  { name: 'LW_KEY_ID', label: 'API Key ID', placeholder: 'FORTINET_XXXXXXXX', mask: true },
+  { name: 'LW_SECRET', label: 'API Secret', placeholder: '_xxxxxxxx', mask: true },
+  { name: 'LW_SUBACCOUNT', label: 'Subaccount (optional)', placeholder: 'leave blank if not used', mask: false },
+];
+
+async function setSecret(name, value) {
+  await gh(['secret', 'set', name, '-b', value, '-R', REPO]);
+}
+
+// gh exits non-zero when asked to delete a secret that doesn't exist — that's not a real
+// failure for this tool's purposes (nothing to remove), so it resolves false instead of
+// rejecting; any other error still propagates.
+async function deleteSecret(name) {
+  try {
+    await gh(['secret', 'delete', name, '-R', REPO]);
+    return true;
+  } catch (err) {
+    if (/not found|no secret/i.test(err.message)) return false;
+    throw err;
+  }
+}
+
 // self-signed cert (SELF_SIGNED=true, entrypoint.sh) — rejectUnauthorized:false is
 // deliberate here, same trust decision a browser makes when you click through the "unsafe
 // cert" warning, just made server-side so this check doesn't depend on the browser having
@@ -188,7 +216,7 @@ const PAGE_HTML = `<!doctype html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RCA Report</title>
+<title>Security Cloud Assessment — Report Generation</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -221,10 +249,11 @@ const PAGE_HTML = `<!doctype html>
   main { max-width: 640px; margin: 0 auto; padding: 40px 24px 80px; animation: fade-up .4s ease both; }
   @keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
-  h1 { font: 700 20px/1 var(--mono); margin: 0; letter-spacing: -0.01em; }
-  .repo { margin: 8px 0 28px; color: var(--text-dim); font: 13px var(--mono); }
-  .repo b { color: var(--text-faint); font-weight: 500; }
+  .brand { position: fixed; top: 20px; left: 24px; z-index: 20; }
+  .brand-logo { height: 22px; width: auto; color: var(--text); display: block; }
+
+  header { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; margin-bottom: 34px; }
+  h1 { font: 700 22px/1.4 var(--mono); margin: 0; letter-spacing: -0.01em; }
 
   .status-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 10px;
                  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
@@ -304,9 +333,32 @@ const PAGE_HTML = `<!doctype html>
               border-radius: 6px; padding: 3px 8px; flex: none; }
   .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
 
-  .idle-hint { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--text-faint); }
-  footer { margin-top: 40px; font: 12px/1.6 var(--sans); color: var(--text-faint); }
-  footer code { font-family: var(--mono); }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(4,6,8,.72); display: flex;
+                   align-items: center; justify-content: center; padding: 20px; z-index: 10; }
+  .modal-overlay[hidden] { display: none; }
+  .modal { width: 100%; max-width: 420px; background: var(--surface); border: 1px solid var(--line);
+           border-radius: 12px; padding: 24px; animation: fade-up .2s ease both; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .modal-title { font: 600 14px var(--mono); }
+  .modal-close { all: unset; cursor: pointer; color: var(--text-dim); font-size: 20px; line-height: 1; padding: 2px 6px; }
+  .modal-close:hover { color: var(--text); }
+  .modal-hint { margin: 0 0 18px; font: 12px/1.5 var(--sans); color: var(--text-dim); }
+  .field { display: block; margin-bottom: 14px; }
+  .field span { display: block; font: 500 11px var(--mono); text-transform: uppercase; letter-spacing: .04em;
+                color: var(--text-dim); margin-bottom: 6px; }
+  .field input { width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--line);
+                 border-radius: 8px; padding: 9px 10px; color: var(--text); font: 13px var(--mono); }
+  .field input:focus { outline: none; border-color: var(--deploy); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+  .btn-secondary, .btn-primary { all: unset; box-sizing: border-box; cursor: pointer; font: 600 12px var(--mono);
+                                  padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); }
+  .btn-secondary { color: var(--text-dim); }
+  .btn-secondary:hover { color: var(--text); border-color: var(--text-dim); }
+  .btn-primary { color: #06110b; background: var(--deploy); border-color: var(--deploy); }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-primary:disabled, .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
+  .cred-error { margin-top: 12px; font: 12px var(--mono); color: var(--decom); }
+
 
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
@@ -314,21 +366,21 @@ const PAGE_HTML = `<!doctype html>
 </style>
 </head>
 <body>
+<div class="brand"><svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 487.6 55" aria-label="Fortinet"><path fill="currentColor" d="M279.9 11.7V0h13.4v54.8h-13.4V11.7zM220.9 0h51.7v11.8h-24.3v43.1H235V11.8h-14.1V0zm266.7 0v11.8h-24.3v43.1H450V11.8h-14.1V0h51.7zM0 0h58v11.8H13.4v11.7h38v11.8h-38v19.5H0V0zm374.5 0h54v11.8h-40.6v9.8h33.3v11.8h-33.3v9.8h41.3V55h-54.7V0zm-10.3 15.5v39.3h-13.4V15.5c0-2.1-1.6-3.7-3.7-3.7h-30v43.1h-13.4V0h45c8.5 0 15.5 7 15.5 15.5zM200.3 0h-45.7v54.8H168V35.3h30c1.6.1 2.9 1.4 2.9 3v16.6h13.4V38.1c0-2.9-1.6-5.4-4-6.8 2.9-2.7 4.7-6.6 4.7-10.8v-5.8c.1-8.1-6.5-14.7-14.7-14.7zm1.4 20.5c0 1.6-1.3 3-3 3H168V11.8h30.7c1.6 0 3 1.3 3 3v5.7z"/><path fill="#da291c" d="M144.2 20.4v14.2H122V20.4h22.2zM93.9 54.8H116V40.6H93.9v14.2zm50.3-42.9c0-6.6-5.3-11.9-11.9-11.9h-10.2v14.2h22.1v-2.3zM93.9 0v14.2H116V0H93.9zM65.7 20.4v14.2h22.1V20.4H65.7zM122 54.8h10.2c6.6 0 11.9-5.3 11.9-11.9v-2.3H122v14.2zM65.7 42.9c0 6.6 5.3 11.9 11.9 11.9h10.2V40.6H65.7v2.3zm0-31v2.3h22.1V0H77.6C71 0 65.7 5.3 65.7 11.9z"/></svg></div>
 <main>
   <header>
-    <h1>RCA Report</h1>
+    <h1>Security Cloud Assessment<br>Report Generation</h1>
     <span class="status-pill" id="status-pill">
       <span class="led checking" id="led"></span>
       <span id="health-text">checking</span>
     </span>
   </header>
-  <p class="repo"><b>repo</b> <span id="repo"></span></p>
 
   <div class="actions">
     <button class="tile" id="btn-deploy">
       <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
       <span class="tile-label">Deploy RCA</span>
-      <span class="tile-desc">Build, push, and apply to <code>eks_samv</code></span>
+      <span class="tile-desc">Apply the latest built image to <code>eks_samv</code></span>
     </button>
     <button class="tile" id="btn-decommission">
       <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
@@ -337,7 +389,27 @@ const PAGE_HTML = `<!doctype html>
     </button>
   </div>
 
-  <div id="idle-hint" class="idle-hint">Trigger a run above to watch it live.</div>
+
+  <div class="modal-overlay" id="cred-modal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">FortiCNAPP Credentials</span>
+        <button class="modal-close" id="cred-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-hint">Pushed straight to GitHub Secrets on this repo before deploying. Leave a field blank to keep its current value.</p>
+      <form id="cred-form">
+        ${LW_SECRET_FIELDS.map((f) => `<label class="field">
+          <span>${f.label}</span>
+          <input type="${f.mask ? 'password' : 'text'}" name="${f.name}" placeholder="${f.placeholder}" autocomplete="off">
+        </label>`).join('\n        ')}
+        <div id="cred-error" class="cred-error" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-secondary" id="cred-cancel">Cancel</button>
+          <button type="submit" class="btn-primary" id="cred-submit">Save &amp; Deploy</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <div class="pipeline-wrap" id="pipeline-wrap">
     <div class="pipeline">
@@ -352,13 +424,10 @@ const PAGE_HTML = `<!doctype html>
     </div>
   </div>
 
-  <footer>Runs locally against your <code>gh</code> CLI session — no credentials stored in this page or sent to your browser beyond what you see here.</footer>
 </main>
 <script>
-const repoEl = document.getElementById('repo');
 const btnDeploy = document.getElementById('btn-deploy');
 const btnDecommission = document.getElementById('btn-decommission');
-const idleHint = document.getElementById('idle-hint');
 const pipelineWrap = document.getElementById('pipeline-wrap');
 const pipelineTitle = document.getElementById('pipeline-title');
 const runLink = document.getElementById('run-link');
@@ -371,7 +440,52 @@ const healthText = document.getElementById('health-text');
 
 let polling = null;
 let healthPollTimer = null;
+let lastDeletedSecrets = [];
 const ACCENT = { deploy: '#3ddc84', decommission: '#ff5a5f' };
+
+const credModal = document.getElementById('cred-modal');
+const credForm = document.getElementById('cred-form');
+const credClose = document.getElementById('cred-close');
+const credCancel = document.getElementById('cred-cancel');
+const credSubmit = document.getElementById('cred-submit');
+const credError = document.getElementById('cred-error');
+
+function openCredModal() {
+  credError.hidden = true;
+  credForm.reset();
+  credModal.hidden = false;
+}
+function closeCredModal() {
+  credModal.hidden = true;
+}
+credClose.addEventListener('click', closeCredModal);
+credCancel.addEventListener('click', closeCredModal);
+credModal.addEventListener('click', (e) => { if (e.target === credModal) closeCredModal(); });
+
+credForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  credError.hidden = true;
+  credSubmit.disabled = true;
+  credSubmit.textContent = 'Saving…';
+  const data = Object.fromEntries(new FormData(credForm).entries());
+  try {
+    const res = await fetch('/api/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    if (result.error) throw new Error(result.error);
+    closeCredModal();
+    trigger('deploy', '/api/deploy', 'Deploying');
+  } catch (err) {
+    credError.textContent = err.message;
+    credError.hidden = false;
+  } finally {
+    credSubmit.disabled = false;
+    credSubmit.textContent = 'Save & Deploy';
+  }
+});
 
 function setButtonsDisabled(disabled) {
   btnDeploy.disabled = disabled;
@@ -475,7 +589,10 @@ async function poll(kind, runId) {
     if (kind === 'deploy') {
       renderResult(kind, 'success', data.fqdn ? 'Deployed' : 'Deployed — no URL found in the run log, check manually', data.fqdn);
     } else {
-      renderResult(kind, 'success', 'Decommissioned');
+      const secretsMsg = lastDeletedSecrets.length
+        ? 'Decommissioned — GitHub secrets removed: ' + lastDeletedSecrets.join(', ')
+        : 'Decommissioned — no matching GitHub secrets found';
+      renderResult(kind, 'success', secretsMsg);
     }
   } else {
     renderResult(kind, 'error', 'Run failed (' + data.conclusion + ')');
@@ -486,7 +603,6 @@ async function poll(kind, runId) {
 async function trigger(kind, endpoint, label, confirmMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   setButtonsDisabled(true);
-  idleHint.hidden = true;
   pipelineWrap.classList.add('open');
   pipelineTitle.textContent = label;
   resultSlot.innerHTML = '';
@@ -497,6 +613,7 @@ async function trigger(kind, endpoint, label, confirmMsg) {
     const res = await fetch(endpoint, { method: 'POST' });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
+    if (kind === 'decommission') lastDeletedSecrets = data.deletedSecrets || [];
     runLink.href = data.url;
     runLink.hidden = false;
     polling = setInterval(() => poll(kind, data.runId), 3000);
@@ -507,13 +624,12 @@ async function trigger(kind, endpoint, label, confirmMsg) {
   }
 }
 
-btnDeploy.addEventListener('click', () => trigger('deploy', '/api/deploy', 'Deploying'));
+btnDeploy.addEventListener('click', openCredModal);
 btnDecommission.addEventListener('click', () =>
   trigger('decommission', '/api/decommission', 'Decommissioning',
-    'This deletes the Deployment, Service, Secret, and PVC. Continue?')
+    'This deletes the Deployment, Service, Secret, PVC, and the FortiCNAPP GitHub Secrets (LW_ACCOUNT, LW_KEY_ID, LW_SECRET, LW_SUBACCOUNT). Continue?')
 );
 
-fetch('/api/repo').then((r) => r.json()).then((d) => { repoEl.textContent = d.repo; });
 checkAppHealth();
 healthPollTimer = setInterval(checkAppHealth, 20000);
 </script>
@@ -531,13 +647,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'GET' && url.pathname === '/api/repo') {
-      return sendJson(res, 200, { repo: REPO });
-    }
-
     if (req.method === 'GET' && url.pathname === '/api/health') {
       const health = await getAppHealth();
       return sendJson(res, 200, health);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/credentials') {
+      const body = await readJsonBody(req);
+      const updated = [];
+      for (const { name } of LW_SECRET_FIELDS) {
+        const val = typeof body[name] === 'string' ? body[name].trim() : '';
+        if (!val) continue; // blank field = keep whatever's already stored
+        await setSecret(name, val);
+        updated.push(name);
+      }
+      return sendJson(res, 200, { updated });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/deploy') {
@@ -551,7 +675,15 @@ const server = http.createServer(async (req, res) => {
       await readJsonBody(req);
       const runId = await dispatchAndFindRun('rca-teardown.yml', ['-f', 'mode=full']);
       const status = await getRunStatus(runId);
-      return sendJson(res, 200, { runId, url: status.url });
+      // Best-effort: the k8s teardown itself doesn't depend on these, so one failing to
+      // delete (or not existing) shouldn't fail the whole decommission response.
+      const deletedSecrets = [];
+      for (const { name } of LW_SECRET_FIELDS) {
+        try {
+          if (await deleteSecret(name)) deletedSecrets.push(name);
+        } catch { /* leave it — surfaced nowhere, but doesn't block the response */ }
+      }
+      return sendJson(res, 200, { runId, url: status.url, deletedSecrets });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/status') {
