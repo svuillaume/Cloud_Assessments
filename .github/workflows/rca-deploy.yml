@@ -114,12 +114,23 @@ jobs:
       - name: Status and access URL
         run: |
           kubectl get pods -n rca
-          NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
-          if [ -z "$NODE_ADDR" ]; then
+
+          # A single `kubectl get nodes` call here occasionally comes back empty on a
+          # transient API-server hiccup (confirmed live: nodes had ExternalDNS addresses at
+          # the time, but the run's own query returned nothing) — with 2>/dev/null silencing
+          # the actual error, that looked identical to "these node IPs are genuinely
+          # private-only" and was reported as such. Retry a few times before concluding that.
+          NODE_ADDR=""
+          for _ in 1 2 3 4 5; do
+            NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+            [ -n "$NODE_ADDR" ] && break
             NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
-          fi
+            [ -n "$NODE_ADDR" ] && break
+            sleep 3
+          done
+
           if [ -n "$NODE_ADDR" ]; then
             echo "Reachable at https://$NODE_ADDR:30443 (self-signed cert — accept the browser warning)."
           else
-            echo "No external node address found — node IPs are likely private-only on this cluster."
+            echo "No external node address found after 5 attempts — node IPs may be private-only on this cluster, or kubectl is having trouble reaching the API server. Check manually: kubectl get nodes -o wide"
           fi

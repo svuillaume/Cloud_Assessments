@@ -82,17 +82,25 @@ kubectl get pods -n rca
 # FQDN is stable across an EC2 instance's public IP changing on stop/start, and is what
 # EKS/AWS itself calls the address. Falls back to ExternalIP (works on non-AWS clusters, or
 # if ExternalDNS isn't populated), and finally to a private-IP note if neither is present.
-NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
-if [ -z "$NODE_ADDR" ]; then
+# Retries a few times — confirmed live (via rca-deploy.yml, same lookup) that a single
+# `kubectl get nodes` call can transiently come back empty even when the nodes do have
+# ExternalDNS addresses; with 2>/dev/null silencing the actual error, that looked identical
+# to "these node IPs are genuinely private-only".
+NODE_ADDR=""
+for _ in 1 2 3 4 5; do
+  NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
+  [ -n "$NODE_ADDR" ] && break
   NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
-fi
+  [ -n "$NODE_ADDR" ] && break
+  sleep 3
+done
 
 echo
 if [ -n "$NODE_ADDR" ]; then
   echo "Reachable at https://$NODE_ADDR:30443 (self-signed cert — accept the browser warning)."
 else
-  echo "No external node address found — node IPs are likely private-only on this cluster."
-  echo "You'll need a jump host/VPN into the cluster's network. Node IPs:"
+  echo "No external node address found after 5 attempts — node IPs may be private-only on"
+  echo "this cluster, or kubectl is having trouble reaching the API server. Node IPs:"
   kubectl get nodes -o wide
 fi
 echo "You likely also need a security group/firewall rule opening 30443 to your IP — see"
