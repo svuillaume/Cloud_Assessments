@@ -120,6 +120,10 @@ jobs:
           # the time, but the run's own query returned nothing) — with 2>/dev/null silencing
           # the actual error, that looked identical to "these node IPs are genuinely
           # private-only" and was reported as such. Retry a few times before concluding that.
+          echo "::group::DEBUG kubectl get nodes (unfiltered, temporary diagnostic)"
+          kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}'
+          echo "::endgroup::"
+
           NODE_ADDR=""
           for _ in 1 2 3 4 5; do
             NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
