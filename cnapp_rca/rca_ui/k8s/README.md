@@ -44,54 +44,77 @@ events waiting on `ebs.csi.aws.com` with no matching pods in `kube-system` point
 
 ## GitHub Actions CI/CD — deploy/tear down from any machine, no local `.env` needed
 
-Three workflows live in `.github/workflows/` at the repo root:
+Three workflows live in `.github/workflows/` at the repo root. `rca-ci.yml` runs
+automatically; `rca-deploy.yml` and `rca-teardown.yml` are manual (`workflow_dispatch`) —
+trigger them with `gh workflow run`, or via the **Actions** tab → workflow name → **Run
+workflow** button in the GitHub UI, which shows the same inputs as a form.
 
-- **`rca-ci.yml`** — automatic on every push/PR touching `cnapp_rca/rca_ui/**`. No AWS or
-  FortiCNAPP credentials involved. Syntax-checks `server.js`, shellchecks the deploy/teardown
-  scripts, and validates the `k8s/` manifests still `kustomize build` cleanly (this would have
-  caught the missing-`namespace.yaml`-in-temp-dir bug that broke `deploy_k8s.sh` earlier).
-- **`rca-deploy.yml`** — manual `workflow_dispatch` only, never runs on push. Builds/pushes the
-  image to ECR and deploys to the `eks_samv` cluster's `rca` namespace, reading credentials
-  from **GitHub Secrets** instead of a local `.env`/`.env.k8s` file:
+### CI (automatic, nothing to run)
 
-  ```bash
-  gh workflow run rca-deploy.yml -R <owner>/<repo> -f image_tag=<tag>
-  ```
+`rca-ci.yml` fires on every push/PR touching `cnapp_rca/rca_ui/**` — no AWS or FortiCNAPP
+credentials involved. Syntax-checks `server.js`, shellchecks the deploy/teardown scripts, and
+validates the `k8s/` manifests still `kustomize build` cleanly (this would have caught the
+missing-`namespace.yaml`-in-temp-dir bug that broke `deploy_k8s.sh` earlier).
 
-- **`rca-teardown.yml`** — manual `workflow_dispatch` only. Remote equivalent of
-  `k8s/rca_tear_down.sh`, same three modes:
-
-  ```bash
-  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=full       # default
-  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=keep-pvc
-  gh workflow run rca-teardown.yml -R <owner>/<repo> -f mode=restart
-  ```
-
-  One real difference from the local script: this workflow's `full` mode does **not** delete
-  the `rca` namespace object itself (only `rca_tear_down.sh --full`, run locally with your own
-  broader `kubectl` access, does that) — it deletes every namespaced resource instead
-  (Deployment, Service, Secret, PVC) and leaves an empty namespace behind. See the workflow
-  file's header comment for why (same namespace-scoped IAM limitation as deploy, below).
-
-Both `rca-deploy.yml` and `rca-teardown.yml` are the only paths that don't require the
-machine running them to have Docker, AWS CLI, `kubectl`, or a copy of `.env` — everything
-runs on GitHub's runners. Trade-off: they authenticate as a dedicated, narrowly-scoped IAM
-user (`gh-actions-rca-deploy`), not your own admin credentials — see either workflow file's
-header comment for exactly what it can and can't do (notably: it cannot create *or delete*
-the `rca` namespace object itself, only manage resources inside an already-existing one).
-
-**GitHub Secrets this depends on** (repo → Settings → Secrets and variables → Actions):
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `EKS_CLUSTER_NAME`,
-`ECR_REGISTRY`, `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, and optionally `LW_SUBACCOUNT`.
-
-**Updating the `LW_*` secrets** (e.g. after rotating a FortiCNAPP API key) — `k8s/rca_update_secrets.sh`
-pushes fresh values straight to GitHub's encrypted secret store via `gh secret set`:
+### Deploy
 
 ```bash
-k8s/rca_update_secrets.sh                            # pulls LW_ACCOUNT/LW_KEY_ID/LW_SECRET/
-                                                       # LW_SUBACCOUNT from rca_ui/.env
-LW_KEY_ID=FORTINET_NEW... k8s/rca_update_secrets.sh   # override just one value
+gh workflow run rca-deploy.yml -R svuillaume/Cloud_Assessments -f image_tag=latest
 ```
+
+`image_tag` is optional (defaults to `latest`) — use a git SHA or version string to deploy a
+specific build instead of overwriting `latest`.
+
+### Tear down
+
+```bash
+gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=full       # default — Deployment, Service, Secret, PVC
+gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=keep-pvc   # drop Deployment/Service/Secret, keep cached data
+gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=restart    # just recreate the pod
+```
+
+`full` mode removes everything with credentials or data in it (Deployment, Service, Secret,
+PVC — PVC deletion also releases the underlying EBS volume, so no leftover storage cost) but
+leaves an empty `rca` namespace behind; see "Notes" below for why.
+
+### Watching a run / checking status
+
+`gh workflow run` returns immediately without printing a run ID — grab it right after:
+
+```bash
+gh run list -R svuillaume/Cloud_Assessments --limit 1          # get the run ID (rightmost column)
+gh run watch <run-id> -R svuillaume/Cloud_Assessments --exit-status   # stream logs until it finishes
+```
+
+`rca-deploy.yml`'s last step prints the dashboard's access URL directly in its log; open it
+with `gh run view <run-id> -R svuillaume/Cloud_Assessments --log` (or just watch it live —
+`gh run watch` streams the same output).
+
+### Notes
+
+- Neither workflow needs the machine running it to have Docker, AWS CLI, `kubectl`, or a copy
+  of `.env` — everything runs on GitHub's runners, authenticated as a dedicated,
+  narrowly-scoped IAM user (`gh-actions-rca-deploy`), not your own admin credentials. See
+  either workflow file's header comment for its exact scope.
+- That IAM user's EKS access is scoped to the `rca` namespace only, and specifically **cannot
+  create or delete the `rca` namespace object itself** (Namespace is cluster-scoped — outside
+  what a namespace-scoped access policy grants). It already exists today; if it's ever gone
+  (e.g. after a local `rca_tear_down.sh --full`, which *can* delete it), recreate it once with
+  your own broader `kubectl` access before the next `rca-deploy.yml` run:
+  `kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml`.
+- **GitHub Secrets both workflows depend on** (repo → Settings → Secrets and variables →
+  Actions): `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `EKS_CLUSTER_NAME`,
+  `ECR_REGISTRY`, `LW_ACCOUNT`, `LW_KEY_ID`, `LW_SECRET`, and optionally `LW_SUBACCOUNT`.
+- **Updating the `LW_*` secrets** (e.g. after rotating a FortiCNAPP API key) —
+  `k8s/rca_update_secrets.sh` pushes fresh values straight to GitHub's encrypted secret store
+  via `gh secret set`, run locally (deliberately *not* a workflow input — see the script's own
+  header comment for why that matters on a public repo):
+
+  ```bash
+  k8s/rca_update_secrets.sh                            # pulls LW_ACCOUNT/LW_KEY_ID/LW_SECRET/
+                                                         # LW_SUBACCOUNT from rca_ui/.env
+  LW_KEY_ID=FORTINET_NEW... k8s/rca_update_secrets.sh   # override just one value
+  ```
 
 **Deliberately not** a `workflow_dispatch` input for the credential values themselves —
 GitHub Actions workflow inputs are shown in plain text on the run's summary page, visible to
