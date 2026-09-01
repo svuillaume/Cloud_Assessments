@@ -380,7 +380,7 @@ const PAGE_HTML = `<!doctype html>
     <button class="tile" id="btn-deploy">
       <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
       <span class="tile-label">Deploy RCA</span>
-      <span class="tile-desc">Apply the latest built image to <code>eks_samv</code></span>
+      <span class="tile-desc">Build if needed, then apply to <code>eks_samv</code></span>
     </button>
     <button class="tile" id="btn-decommission">
       <svg class="tile-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
