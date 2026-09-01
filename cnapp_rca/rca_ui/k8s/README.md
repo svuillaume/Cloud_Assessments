@@ -7,6 +7,7 @@ Service with a self-signed TLS cert, single replica only.
 
 | I want to... | Run |
 |---|---|
+| **Deploy or decommission from a web page**, with live status | `node k8s/rca_control_panel.cjs` → open `http://127.0.0.1:4321` |
 | **Deploy** (any machine — no local Docker/AWS/`.env` needed) | `gh workflow run rca-deploy.yml -R svuillaume/Cloud_Assessments -f image_tag=latest` |
 | **Deploy** (this machine — needs Docker + AWS CLI + `.env`) | `k8s/deploy_k8s.sh` |
 | **Tear everything down** | `gh workflow run rca-teardown.yml -R svuillaume/Cloud_Assessments -f mode=full` |
@@ -20,6 +21,7 @@ Service with a self-signed TLS cert, single replica only.
 ## Contents
 
 - [How it's exposed](#how-its-exposed)
+- [RCA Report — web control panel](#rca-report--web-control-panel)
 - [GitHub Actions CI/CD](#github-actions-cicd--recommended) — recommended path
 - [Local scripts](#local-scripts--alternative-path)
 - [Fresh EKS cluster? Read this first](#fresh-eks-cluster-read-this-first)
@@ -46,6 +48,36 @@ If your cluster's `--service-node-port-range` has been widened to include 8443, 
 `nodePort: 30443` back to `8443` in `service.yaml` — verify with a real (non-dry-run) apply.
 
 </details>
+
+---
+
+## RCA Report — web control panel
+
+```bash
+node k8s/rca_control_panel.cjs        # then open http://127.0.0.1:4321
+```
+
+A small local web page — Deploy RCA / Decommission RCA buttons, a live pipeline view of each
+GitHub Actions step as it runs, and a persistent health pill (top-right: **HEALTHY** / **NOT
+DEPLOYED** / **UNREACHABLE**). It's a browser front end for the two workflows below — every
+click just calls `gh workflow run` and polls `gh run view` under the hood, using whatever
+`gh auth login` session is already active on your machine. No GitHub token is stored in the
+page or the server.
+
+Runs on `127.0.0.1` only by default (`HOST=0.0.0.0` to open it up, `PORT` to change the port)
+and is deliberately **not** deployed into the cluster it manages — clicking Decommission would
+otherwise kill the very server showing you the result. It's also intentionally separate from
+the customer-facing dashboard (`server.js`): that app's `@fortinet.com` email gate is a
+courtesy lock, not real access control, and isn't where "deploy/destroy live infrastructure"
+buttons belong.
+
+**Health pill logic:** "deployed" is inferred from GitHub Actions history — whichever of
+`rca-deploy.yml`/`rca-teardown.yml` most recently succeeded — then, only when that says
+deployed, confirmed with a real HTTPS request to the app's own `/health` endpoint (self-signed
+cert accepted server-side, same trust decision as clicking through the browser warning). A
+successful CI run alone doesn't guarantee the app is actually reachable right now (crash-loop,
+missing security group rule, etc.) — both signals matter, and `UNREACHABLE` means they
+disagree.
 
 ---
 
