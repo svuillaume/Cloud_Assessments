@@ -14,6 +14,17 @@ name: RCA Deploy (CD)
 # if a full teardown (rca_tear_down.sh with no flags, or --full) ever removes it again,
 # recreate it once with your own (broader) kubectl access before re-running this workflow:
 #   kubectl apply -f cnapp_rca/rca_ui/k8s/namespace.yaml
+#
+# One narrow addition on top of the above: this user also needs `get`/`list` on `nodes`
+# (cluster-scoped, so outside any namespace-scoped grant too) purely to read a node's public
+# address for the "Status and access URL" step below. Confirmed live that omitting this
+# fails hard — `Error from server (Forbidden): nodes is forbidden: User "...gh-actions-
+# rca-deploy" cannot list resource "nodes" ... at the cluster scope` — not the transient
+# flakiness an earlier version of this comment assumed. Rather than broadening to AWS's full
+# (read-everywhere) AmazonEKSViewPolicy, this is granted as a minimal native Kubernetes
+# ClusterRole + ClusterRoleBinding (get/list on nodes only, nothing else) — see
+# cnapp_rca/rca_ui/k8s/ci-node-reader-rbac.yaml, applied once, out-of-band (not part of any
+# `kubectl apply -k`, since it's cluster-scoped RBAC, not a namespaced app resource).
 on:
   workflow_dispatch:
     inputs:
@@ -115,15 +126,10 @@ jobs:
         run: |
           kubectl get pods -n rca
 
-          # A single `kubectl get nodes` call here occasionally comes back empty on a
-          # transient API-server hiccup (confirmed live: nodes had ExternalDNS addresses at
-          # the time, but the run's own query returned nothing) — with 2>/dev/null silencing
-          # the actual error, that looked identical to "these node IPs are genuinely
-          # private-only" and was reported as such. Retry a few times before concluding that.
-          echo "::group::DEBUG kubectl get nodes (unfiltered, temporary diagnostic)"
-          kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}'
-          echo "::endgroup::"
-
+          # Requires the ClusterRole/ClusterRoleBinding grant described in this file's header
+          # comment (get/list on nodes) — without it this fails hard with a Forbidden error,
+          # confirmed live. The retry loop below is defense-in-depth for genuine transient
+          # API-server hiccups, not a workaround for that permission gap.
           NODE_ADDR=""
           for _ in 1 2 3 4 5; do
             NODE_ADDR="$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalDNS")]}{.address}{"\n"}{end}{end}' 2>/dev/null | head -1)"
