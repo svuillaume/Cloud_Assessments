@@ -7,7 +7,4 @@ Security assessment tools powered by Fortinet APIs.
 | FortiCNAPP | [cnapp_rca/](cnapp_rca/) | Live |
 | FortiCASB / SSPM | [sspm_rca/](sspm_rca/) | Coming Soon |
 
-[![Architecture diagram of svuillaume/cloud_assessments](https://gitdiagram.com/svuillaume/cloud_assessments/diagram.png)](https://gitdiagram.com/svuillaume/cloud_assessments?utm_source=readme&utm_medium=picture)
-
-
-[![Architecture diagram of svuillaume/cloud_assessments](https://gitdiagram.com/svuillaume/cloud_assessments/diagram.png)](https://gitdiagram.com/svuillaume/cloud_assessments?utm_source=readme&utm_medium=picture)
+<img width="1154" height="921" alt="image" src="https://github.com/user-attachments/assets/c4d9cde7-51e4-4e03-8a32-d01e03a07edc" />
