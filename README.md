@@ -8,3 +8,6 @@ Security assessment tools powered by Fortinet APIs.
 | FortiCASB / SSPM | [sspm_rca/](sspm_rca/) | Coming Soon |
 
 [![Architecture diagram of svuillaume/cloud_assessments](https://gitdiagram.com/svuillaume/cloud_assessments/diagram.png)](https://gitdiagram.com/svuillaume/cloud_assessments?utm_source=readme&utm_medium=picture)
+
+
+[![Architecture diagram of svuillaume/cloud_assessments](https://gitdiagram.com/svuillaume/cloud_assessments/diagram.png)](https://gitdiagram.com/svuillaume/cloud_assessments?utm_source=readme&utm_medium=picture)
